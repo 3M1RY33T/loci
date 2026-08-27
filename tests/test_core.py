@@ -397,6 +397,11 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
     than replace it. `upsert` preserved a stored `groups` wholesale, which meant
     the first `group set` on a sub-scope silently dropped its parent label the
     next time `scan` ran -- and nothing would ever put it back.
+
+    `me` rides along because `scan` now labels what it registers with the
+    provenance it inferred, and a sub-scope inherits its container's groups.
+    The sets are still pinned by equality: the point is that nothing is LOST,
+    and a subset check would not notice a loss.
     """
     from argparse import Namespace
     from dataclasses import replace
@@ -414,7 +419,7 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
     cmd_scan(Namespace(roots=[str(repo)], depth=1))
     assert {s.id for s in load_scopes()} == {"delroy", "delroy-glasses"}
     assert next(s for s in load_scopes() if s.id == "delroy-glasses").group_set() \
-        == {"delroy"}
+        == {"delroy", "me"}
 
     # the user groups the sub-project by hand, naming nothing about containment
     save_scopes([replace(s, groups=["client:acme"]) if s.id == "delroy-glasses"
@@ -422,7 +427,7 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
     cmd_scan(Namespace(roots=[str(repo)], depth=1))
 
     sub = next(s for s in load_scopes() if s.id == "delroy-glasses")
-    assert sub.group_set() == {"delroy", "client:acme"}, \
+    assert sub.group_set() == {"delroy", "client:acme", "me"}, \
         "a re-scan dropped a label the user's edit never mentioned"
 
 
@@ -2807,3 +2812,345 @@ def test_route_names_the_group_when_nothing_is_indexed_in_it(loci_home, capsys):
     assert "no indexed project is in group ghost" in out
     assert "out_of_group" not in out
     assert "candidates:" not in out
+
+
+# -- doctor: groups --------------------------------------------------------
+def test_doctor_names_vendor_groups_still_in_the_routable_set(tmp_path):
+    """A stranger's repository competing for every question is the problem this
+    feature exists to solve; doctor must say so out loud.
+
+    The remedy is NOT `group set vendor:stranger --mode explicit`. A mode
+    governs what a scope in that group does to questions asked from inside it,
+    and `explicit` is the mode that confines least -- measured, the vendor
+    still ranks. `test_forced_group_narrows_even_under_explicit` pins the same
+    thing one layer down: under `explicit`, cwd yields `eligible is None`.
+
+    The line is asserted whole rather than by keyword: a report that merely
+    lists every group and its members satisfies "vendor:stranger appears"
+    without telling anybody anything.
+    """
+    from loci.doctor import group_report
+    from loci.groups import Policy
+
+    scopes = [Scope(id="a", name="Alpha", root=tmp_path / "a", groups=["me"]),
+              Scope(id="b", name="Odysseus", root=tmp_path / "b",
+                    groups=["vendor:stranger"])]
+    vendor = next(ln for ln in group_report(scopes, Policy())
+                  if ln.startswith("vendor:"))
+
+    assert vendor.startswith("vendor:stranger: Odysseus - not yours, and still "
+                             "in the routable set.")
+    assert "loci group set me --mode hard" in vendor
+    assert "--mode explicit" not in vendor, "advice that does not do what it says"
+
+
+def test_doctor_names_ungrouped_scopes(tmp_path):
+    """A scope in no group is the state every registry written before this
+    feature is in: no `--group` reaches it and no cwd confines for it.
+
+    Beta is here to keep the check discriminating -- a report that names every
+    scope it was handed satisfies "Alpha appears" without having found anything.
+    """
+    from loci.doctor import group_report
+    from loci.groups import Policy
+
+    scopes = [Scope(id="a", name="Alpha", root=tmp_path / "a"),
+              Scope(id="b", name="Beta", root=tmp_path / "b", groups=["me"])]
+    lines = "\n".join(group_report(scopes, Policy()))
+
+    assert "1 scope(s) in no group: Alpha" in lines
+    assert "loci groups infer" in lines
+    assert "Beta" not in lines
+
+
+def test_doctor_names_the_confinement_nobody_chose(tmp_path):
+    """`discover` writes a containment label onto every sub-project of a
+    monorepo, `DEFAULT_MODE` is soft, and `ask` reads both on every call. So the
+    first question asked from inside a re-scanned monorepo demotes every outside
+    scope, and nothing anywhere says so. Silent registration is the failure this
+    feature exists to close; a silent default is the same failure re-labelled.
+
+    A DECLARED mode is not silent -- the user typed it -- and an `explicit`
+    default confines nothing, so neither is reported.
+    """
+    from loci.doctor import group_report
+    from loci.groups import Policy
+
+    scopes = [Scope(id="mono", name="Mono", root=tmp_path / "m", groups=["mono"]),
+              Scope(id="mono-client", name="Mono/client",
+                    root=tmp_path / "m" / "c", groups=["mono"]),
+              Scope(id="loci", name="Loci", root=tmp_path / "l", groups=["me"])]
+
+    lines = "\n".join(group_report(scopes, Policy()))
+    assert "which nobody chose: me, mono" in lines
+    assert "x0.5" in lines, "the penalty that does it is never named"
+    assert "loci group set <group> --mode explicit" in lines
+
+    declared = "\n".join(group_report(
+        scopes, Policy(groups={"mono": "soft", "me": "soft"})))
+    assert "nobody chose" not in declared
+    assert "mono: mode soft (declared), 2 member(s)" in declared
+
+    chosen = "\n".join(group_report(scopes, Policy(default_mode="explicit")))
+    assert "nobody chose" not in chosen
+
+
+def test_doctor_names_a_declared_group_nobody_is_in(tmp_path):
+    """`loci group set` declares a mode for a name that need not exist yet, so a
+    typo produces a group that confines nothing, and `--group` on the name the
+    user meant then reports an unknown group rather than an empty one.
+    """
+    from loci.doctor import group_report
+    from loci.groups import Policy
+
+    scopes = [Scope(id="a", name="Alpha", root=tmp_path / "a", groups=["me"])]
+    lines = "\n".join(group_report(scopes, Policy(groups={"clinet:acme": "hard"})))
+
+    assert "'clinet:acme'" in lines
+    assert "no members" in lines
+    assert "hard" in lines
+
+
+# -- scan: provenance before registration ----------------------------------
+def _owned_corpus(base):
+    """Two repos owned by ACME and one by a stranger.
+
+    Two, not one: `infer_identity` refuses a tie, so a corpus of one repo each
+    yields no confident identity and classifies everything as `me` -- which
+    passes an assertion about `mine` while proving nothing about `theirs`.
+    """
+    corpus = base / "corpus"
+    corpus.mkdir()
+    return (corpus,
+            _repo(corpus, "mine", origin="git@github.com:ACME/mine.git"),
+            _repo(corpus, "mine2", origin="https://github.com/acme/mine2.git"),
+            _repo(corpus, "theirs", origin="https://github.com/stranger/x.git"))
+
+
+def test_scan_summary_groups_repositories_by_owner(tmp_path, hermetic_git):
+    from loci.provenance import Identity
+    from loci.setup import group_summary
+
+    _corpus, mine, mine2, theirs = _owned_corpus(tmp_path)
+
+    summary = group_summary([make_scope(mine), make_scope(mine2),
+                             make_scope(theirs)],
+                            Identity(org="acme", email="me@example.com",
+                                     confident=True))
+
+    assert {s.name for s in summary["me"]} == {"mine", "mine2"}
+    assert {s.name for s in summary["vendor:stranger"]} == {"theirs"}
+
+
+def test_scan_reports_the_split_and_labels_it_with_nobody_to_ask(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """Non-interactive keeps today's behaviour -- register everything -- but
+    silence is the bug, not the registration. The report is printed either way,
+    and what was registered carries its provenance label.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    corpus, *_ = _owned_corpus(tmp_path)
+
+    assert main(["scan", str(corpus)]) == 0
+    out = capsys.readouterr().out
+
+    assert "you are acme" in out
+    assert "vendor:stranger" in out and "theirs" in out
+    registered = {s.name: s.group_set() for s in load_scopes()}
+    assert set(registered) == {"mine", "mine2", "theirs"}, "silence, not registration"
+    assert registered["theirs"] == {"vendor:stranger"}
+    assert registered["mine"] == {"me"}
+
+
+def test_scan_puts_a_vendor_group_to_a_vote_and_never_your_own(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """The asymmetry is the flow. The user asked to scan their own projects, so
+    a prompt about `me` has one honest answer and is worth deleting; a stranger's
+    repository entering the corpus is the decision they were never offered.
+    """
+    import builtins
+    import sys as _sys
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus, *_ = _owned_corpus(tmp_path)
+
+    class _Tty:
+        def isatty(self):
+            return True
+
+    asked: list[str] = []
+    monkeypatch.setattr(_sys, "stdin", _Tty())
+    monkeypatch.setattr(builtins, "input",
+                        lambda prompt="": (asked.append(prompt), "n")[1])
+
+    assert main(["scan", str(corpus)]) == 0
+    assert len(asked) == 1, f"asked about more than the vendor group: {asked}"
+    assert "vendor:stranger" in asked[0]
+    assert {s.name for s in load_scopes()} == {"mine", "mine2"}
+
+
+def test_setup_counts_repositories_and_scopes_separately(tmp_path, monkeypatch,
+                                                         capsys):
+    """One repository holding four projects registers five scopes, and the line
+    called them all repositories -- in the onboarding flow, where a wrong number
+    is least likely to be questioned.
+    """
+    import loci.paths as P
+    from loci.setup import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus = tmp_path / "corpus"
+    mono = _fake_repo(corpus, "mono", "Signs the admin session cookie with a "
+                                      "rotating HMAC key and refuses SameSite "
+                                      "None on localhost.")
+    (mono / "pkg").mkdir()
+    (mono / "pkg" / "package.json").write_text("{}", encoding="utf-8")
+
+    assert run([corpus], assume_yes=True, graphs=False, embed=False,
+               calibrate=False) == 0
+    out = capsys.readouterr().out
+
+    assert "1 git repository under" in out
+    assert "2 scope(s), 2 new" in out
+    assert "2 git repositories" not in out
+
+
+# -- scopes: inherited groups ----------------------------------------------
+def test_subscopes_inherit_the_groups_the_registry_holds(tmp_path):
+    """`discover` cannot do this: it reads the filesystem and never the
+    registry, so the parent it builds always has `groups is None`. At
+    registration time the registry IS in hand, and a user who tagged the
+    monorepo `client:acme` needs its sub-projects in `client:acme` too -- that
+    is what makes a hard group confine to the client's work rather than to one
+    directory of it.
+
+    Both halves of "sub-scope" are load-bearing, and each has a negative here:
+    the containment LABEL (Sibling carries it and is nowhere near the parent)
+    and the PATH (Nested lies inside the parent and never claimed the label).
+    """
+    from loci.scopes import inherit_parent_groups
+
+    mono = tmp_path / "mono"
+    (mono / "client").mkdir(parents=True)
+    (mono / "nested").mkdir()
+    (tmp_path / "sibling").mkdir()
+
+    scopes = [Scope(id="mono", name="Mono", root=mono,
+                    groups=["mono", "client:acme", "me"]),
+              Scope(id="mono-client", name="Mono/client", root=mono / "client",
+                    groups=["mono"]),
+              Scope(id="nested", name="Nested", root=mono / "nested",
+                    groups=["me"]),
+              Scope(id="sibling", name="Sibling", root=tmp_path / "sibling",
+                    groups=["mono"])]
+
+    by_id = {s.id: s.group_set() for s in inherit_parent_groups(scopes)}
+
+    assert by_id["mono-client"] == {"mono", "client:acme", "me"}
+    assert by_id["nested"] == {"me"}, "inherited without ever claiming the label"
+    assert by_id["sibling"] == {"mono"}, "inherited from a container it is not in"
+    assert by_id["mono"] == {"mono", "client:acme", "me"}, "the parent changed"
+
+
+def test_doctor_prints_the_group_report_it_was_given(loci_home, capsys):
+    """Nothing else proves the report is WIRED. `group_report` returning the
+    right lines into nobody's hands is the same silence the whole feature is
+    against, and every test above it exercises the function directly.
+
+    The exit code stays a COVERAGE verdict -- this fixture's scopes have no
+    structure sources, hence 1 -- and a group finding must not change it: a
+    vendor scope in the corpus is not a broken install.
+    """
+    from loci.cli import main
+    from loci.scopes import save_scopes
+
+    a, b = loci_home / "a", loci_home / "b"
+    a.mkdir()
+    b.mkdir()
+    save_scopes([Scope(id="a", name="Alpha", root=a, groups=["me"]),
+                 Scope(id="b", name="Odysseus", root=b,
+                       groups=["vendor:stranger"])])
+    _install_index(_index(a=("Alpha", str(a), {"widget": 40}, 500),
+                          b=("Odysseus", str(b), {"flange": 25}, 400)))
+
+    assert main(["doctor"]) == 1
+    out = capsys.readouterr().out
+    assert "\ngroups\n" in out
+    assert "vendor:stranger: Odysseus" in out
+    assert "loci group set me --mode hard" in out
+
+
+def test_scan_does_not_let_one_monorepo_outvote_the_corpus(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """git resolves `origin` by walking upward, so every sub-scope of a monorepo
+    reports its parent's org again. Inferring identity from scope roots lets one
+    foreign repository holding four projects outvote three of the user's own,
+    and a wrong identity does not degrade gracefully -- it inverts every
+    classification at once, filing the user's own work under `vendor:`.
+
+    5 votes for `big` against 3 for `acme` is exactly that inversion; 1 against
+    3 is the answer.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    mono = _repo(corpus, "mono", origin="git@github.com:big/mono.git")
+    for sub in ("a", "b", "c", "d"):
+        (mono / sub).mkdir()
+        (mono / sub / "package.json").write_text("{}", encoding="utf-8")
+    for name in ("one", "two", "three"):
+        _repo(corpus, name, origin=f"https://github.com/acme/{name}.git")
+
+    assert main(["scan", str(corpus)]) == 0
+    groups = {s.name: s.group_set() for s in load_scopes()}
+
+    assert groups["one"] == {"me"}, "the user's own repository filed as a vendor's"
+    assert groups["mono"] == {"mono", "vendor:big"}
+    assert groups["mono/a"] == {"mono", "vendor:big"}
+
+
+def test_scan_reads_who_you_are_from_the_whole_scan_not_the_new_arrivals(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """A re-scan that picks up one repository would infer identity from that
+    one repository, whose org is then unanimously "yours" -- so the first
+    stranger's project a user clones gets filed as their own work, which is the
+    exact registration this feature exists to stop.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    corpus, *_ = _owned_corpus(tmp_path)
+    assert main(["scan", str(corpus)]) == 0
+
+    _repo(corpus, "newcomer", origin="https://github.com/outsider/n.git")
+    assert main(["scan", str(corpus)]) == 0
+
+    groups = {s.name: s.group_set() for s in load_scopes()}
+    assert groups["newcomer"] == {"vendor:outsider"}
+    assert groups["mine"] == {"me"}, "the first scan's labels were rewritten"

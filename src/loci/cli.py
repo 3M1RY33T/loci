@@ -77,18 +77,44 @@ def _unknown_group(group: str | None, scopes, policy) -> bool:
 
 # ==========================================================================
 def cmd_scan(args) -> int:
-    from .scopes import discover, load_scopes, save_scopes, upsert
+    """Register what is under `roots`, having first said who owns it.
+
+    Shares `accept_by_group` with `loci setup` rather than growing a second
+    report: the two commands do the same thing to the same registry, and a
+    corpus labelled by one and not the other is worse than either.
+    """
+    from .scopes import (discover, inherit_parent_groups, load_scopes,
+                         save_scopes, upsert)
+    from .setup import accept_by_group
+
     roots = [Path(r) for r in (args.roots or [Path.cwd()])]
     found = discover(roots, max_depth=args.depth)
     if not found:
         print("no git repositories found; use `loci add <path>` instead")
         return 1
-    existing = load_scopes()
+    registry = load_scopes()
+    known = {s.id for s in registry}
+    fresh = [s for s in found if s.id not in known]
+
+    accepted: list = []
+    declined: dict = {}
+    if fresh:
+        accepted, declined = accept_by_group(
+            fresh, found, interactive=sys.stdin.isatty())
+    else:
+        print("  nothing new; every repository here is already registered")
+
     for sc in found:
-        existing = upsert(existing, sc)
-        print(f"  + {sc.name:<20} {sc.root}")
-    save_scopes(existing)
-    print(f"\n{len(found)} scope(s) registered -> {home()/'scopes.json'}")
+        if sc.id in known:
+            registry = upsert(registry, sc)
+    for sc in accepted:
+        registry = upsert(registry, sc)
+    save_scopes(inherit_parent_groups(registry))
+
+    print(f"\n{len(registry)} scope(s) registered -> {home()/'scopes.json'}")
+    for g, listed in declined.items():
+        print(f"  {g}: {len(listed)} left out; `loci scan` again to reconsider, "
+              f"or `loci add <path>` for one of them")
     print("next:  loci graphs   # optional, adds code symbols (free)")
     print("       loci index")
     return 0
@@ -490,12 +516,20 @@ def cmd_setup(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from .doctor import check, render
+    from .doctor import check, group_report, render
     from .index import embeddings_status, load_episodes
     from .scopes import load_scopes
     index = _load_index_or_die()
-    healths = check(index, load_episodes(), load_scopes())
+    scopes = load_scopes()
+    healths = check(index, load_episodes(), scopes)
     print(render(healths, embeddings_status()))
+    # Coverage is one gap; who a scope belongs to and what that does to routing
+    # is the other, and no other command reports the second without being asked.
+    lines = group_report(scopes, _policy_or_die())
+    if lines:
+        print("\ngroups")
+        for ln in lines:
+            print(f"  {ln}")
     return 0 if all(h.ok for h in healths) else 1
 
 

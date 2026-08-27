@@ -291,6 +291,59 @@ def upsert(scopes: list[Scope], new: Scope, *,
     return sorted(out, key=lambda s: s.name.lower())
 
 
+def repositories(scopes: list[Scope]) -> list[Scope]:
+    """The scopes in `scopes` that no other one contains.
+
+    `discover` returns a monorepo AND the projects inside it, so `len(found)`
+    counts scopes and not repositories -- the setup line read "5 git
+    repositories" for one repo holding four projects, in the onboarding flow,
+    where a wrong number is least likely to be questioned.
+
+    It is also the wrong input to `infer_identity`: git resolves `origin` by
+    walking upward, so every sub-scope votes again for its parent's org and one
+    monorepo can outvote the rest of the corpus.
+    """
+    return [s for s in scopes
+            if not any(o.root in s.root.parents for o in scopes)]
+
+
+def inherit_parent_groups(scopes: list[Scope]) -> list[Scope]:
+    """Give each sub-scope the groups of the container it lives in.
+
+    `discover` cannot do this and the attempt was deleted from it: discovery
+    reads the filesystem and never the registry, so the parent it constructs
+    always has `groups is None` and the union there is unreachable. Here the
+    registry IS loaded, which is why this runs at registration time -- a user
+    who tagged the monorepo `client:acme` gets its sub-projects into
+    `client:acme` too, and a hard group then confines to the client's work
+    rather than to one directory of it.
+
+    Containment is matched on the LABEL and on the PATH, both. A scope is free
+    to join a group whose name happens to be some container's id without being
+    anything of that container's (`loci group add solo mono` is legal), and
+    inheriting there would hand it labels nobody asserted.
+
+    Additive, like `groups infer`: it never removes, and a label inherited once
+    survives the parent losing it. Membership is a claim, and the user removes
+    their own claims with `loci group rm`.
+    """
+    by_id = {s.id: s for s in scopes}
+    # Snapshotted so the result does not depend on registry order: a sub-scope
+    # visited before its parent must inherit the same set as one visited after.
+    frozen = {s.id: s.group_set() for s in scopes}
+    for s in scopes:
+        inherited: set[str] = set()
+        for g in frozen[s.id]:
+            parent = by_id.get(g)
+            if parent is None or parent.id == s.id:
+                continue
+            if parent.root in s.root.parents:
+                inherited |= frozen[parent.id]
+        if inherited - frozen[s.id]:
+            s.groups = sorted(frozen[s.id] | inherited)
+    return scopes
+
+
 def resolve(scopes: list[Scope], want: str) -> Scope | None:
     """Look up a scope by id, name or alias (case-insensitive)."""
     w = want.strip().lower()

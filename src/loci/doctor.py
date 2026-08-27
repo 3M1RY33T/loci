@@ -87,6 +87,74 @@ def check(index: dict, store: dict, registry: list | None = None) -> list[ScopeH
     return sorted(out, key=lambda s: (s.ok, s.name.lower()))
 
 
+def group_report(scopes: list, policy) -> list[str]:
+    """Group coverage, as renderable lines.
+
+    Four things worth naming: a declared mode with no members (almost always a
+    typo in a group name), vendor scopes still competing in the routable set,
+    the confinement nobody chose, and scopes in no group at all.
+
+    The third is the one no other surface reports. `discover` writes a
+    containment label onto every sub-project of a monorepo, `DEFAULT_MODE` is
+    soft, and `ask` reads both on every call -- so the first question asked from
+    inside a re-scanned monorepo demotes every scope outside it, and nothing
+    announces that. Silent registration is the failure this feature exists to
+    close; a silent default is the same failure with a better label on it.
+    """
+    from .router import GROUP_PENALTY
+
+    lines: list[str] = []
+    silent: list[str] = []
+    names = sorted({g for s in scopes for g in s.group_set()} | set(policy.groups))
+    for g in names:
+        mode, source = policy.mode_for(g)
+        owned = sorted(s.name for s in scopes if g in s.group_set())
+        if not owned:
+            lines.append(f"group {g!r} declares mode {mode} but has no members "
+                         f"- check the name")
+        elif g.startswith("vendor:"):
+            # NOT `group set {g} --mode explicit`. A mode governs what a scope
+            # in that group does to questions asked from INSIDE it; it is not a
+            # way to exclude the group from everyone else's questions, and
+            # `explicit` is the mode that confines least. What takes a vendor
+            # out of the routable set is the asking scope's own group being
+            # hard. Measured: with `vendor:x` explicit the vendor still ranks;
+            # with `me` hard it is "excluded by group me".
+            lines.append(f"{g}: {', '.join(owned)} - not yours, and still in "
+                         f"the routable set. `loci group set me --mode hard` "
+                         f"(or whichever group your own work is in) keeps them "
+                         f"out of every question asked from inside it.")
+        elif source == "declared":
+            lines.append(f"{g}: mode {mode} (declared), {len(owned)} member(s)")
+        elif mode != "explicit":
+            silent.append(g)
+
+    if silent:
+        # Reported once, not per group: a scope in two groups is confined by
+        # their union, so "every scope outside THIS group" would be false of
+        # every line it appeared on.
+        effect = (f"scores every scope outside that member's groups "
+                  f"x{GROUP_PENALTY}" if policy.default_mode == "soft"
+                  else "reaches nothing outside that member's groups")
+        # "stops one confining", not "turns it off": `confining_groups` takes
+        # the strictest mode among ALL of the anchor's groups, so a scope in
+        # three soft groups is still confined after one of them goes explicit.
+        lines.append(f"{len(silent)} group(s) confine on the default mode, which "
+                     f"nobody chose: {', '.join(silent)} - a question asked from "
+                     f"inside a member {effect}. "
+                     f"`loci group set <group> --mode explicit` stops one "
+                     f"confining; a scope is unconfined once every group it is "
+                     f"in is explicit.")
+
+    ungrouped = sorted(s.name for s in scopes if not s.group_set())
+    if ungrouped:
+        shown = ", ".join(ungrouped[:6])
+        more = f" +{len(ungrouped) - 6} more" if len(ungrouped) > 6 else ""
+        lines.append(f"{len(ungrouped)} scope(s) in no group: {shown}{more} "
+                     f"- `loci groups infer` labels them")
+    return lines
+
+
 def render(healths: list[ScopeHealth], stale: list[str] | None = None) -> str:
     lines = [f"{'scope':<20} {'nodes':>8} {'tokens':>7} {'chunks':>7}  status",
              "-" * 74]

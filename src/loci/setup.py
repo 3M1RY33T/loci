@@ -89,6 +89,70 @@ def _prompt_paths(question: str, default: list[Path], *,
 
 
 # ---------------------------------------------------------------------------
+# who owns what
+# ---------------------------------------------------------------------------
+def group_summary(scopes: list, identity) -> dict:
+    """Discovered scopes bucketed by inferred provenance group."""
+    from .provenance import classify
+
+    out: dict = {}
+    for s in scopes:
+        out.setdefault(classify(s.root, identity), []).append(s)
+    return out
+
+
+def accept_by_group(fresh: list, found: list, *,
+                    interactive: bool) -> tuple[list, dict]:
+    """Print who owns what, ask about what is not yours, label what was taken.
+
+    `found` is everything the scan turned up and `fresh` the subset not already
+    registered. Identity is inferred from all of it -- one new repository is no
+    evidence of who you are -- and from its REPOSITORY roots only, because git
+    resolves `origin` by walking upward: counting sub-scopes lets one monorepo
+    outvote the corpus and label the user's own work as a vendor's.
+
+    Returns (accepted, declined-by-group). Shared by `loci setup` and
+    `loci scan`, which differ only in what they do with the answer.
+
+    Registering in silence is the failure this exists to close -- a stranger's
+    repository entered the corpus with no label and competed for every question
+    -- so the split is printed whether or not anyone is there to read it. Only
+    the QUESTION depends on a terminal, and with none it takes its default,
+    which is still "register everything".
+
+    `me` is not put to a vote. The user asked to scan their own projects, and a
+    prompt whose only honest answer is yes is a prompt worth deleting.
+    """
+    from .provenance import infer_identity
+    from .scopes import repositories
+
+    identity = infer_identity([s.root for s in repositories(found)])
+    print(f"  {identity.describe()}")
+    summary = group_summary(fresh, identity)
+    for g in sorted(summary):
+        listed = summary[g]
+        print(f"\n  {g:<28} {len(listed)} new")
+        for s in listed[:MAX_LISTED]:
+            print(f"    + {s.name:<22} {s.root}")
+        if len(listed) > MAX_LISTED:
+            print(f"    ... and {len(listed) - MAX_LISTED} more")
+
+    accepted: list = []
+    declined: dict = {}
+    for g in sorted(summary):
+        if g == "me" or _confirm(f"register {g} ({len(summary[g])})?",
+                                 default=True, interactive=interactive):
+            for s in summary[g]:
+                # Labelled here rather than at discovery: provenance is read
+                # from git, and only what was accepted is ever registered.
+                s.groups = sorted(s.group_set() | {g})
+            accepted += summary[g]
+        else:
+            declined[g] = summary[g]
+    return accepted, declined
+
+
+# ---------------------------------------------------------------------------
 # steps
 # ---------------------------------------------------------------------------
 def build_graphs(sb, scopes: list, *, timeout: int = 600) -> list[str]:
@@ -116,7 +180,8 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
         model: str | None = None, force: bool = False,
         timeout: int = 600) -> int:
     from .index import DEFAULT_EMBED_MODEL
-    from .scopes import discover, load_scopes, save_scopes, upsert
+    from .scopes import (discover, inherit_parent_groups, load_scopes,
+                         repositories, save_scopes, upsert)
 
     interactive = sys.stdin.isatty() and not assume_yes
     model = model or DEFAULT_EMBED_MODEL
@@ -147,23 +212,32 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
 
     if want:
         found = discover(want, max_depth=depth)
+        repos = repositories(found)
         known = {s.id for s in registry}
         fresh = [s for s in found if s.id not in known]
         where = ", ".join(str(p) for p in want)
-        print(f"  {len(found)} git repositor{'y' if len(found) == 1 else 'ies'} "
-              f"under {where} ({len(fresh)} new)")
-        for s in fresh[:MAX_LISTED]:
-            print(f"    + {s.name:<22} {s.root}")
-        if len(fresh) > MAX_LISTED:
-            print(f"    ... and {len(fresh) - MAX_LISTED} more")
+        print(f"  {len(repos)} git repositor{'y' if len(repos) == 1 else 'ies'} "
+              f"under {where} -> {len(found)} scope(s), {len(fresh)} new")
         if not found:
             print("  nothing there looks like a git repository. `loci add <path>` "
                   "registers a directory that is not one.")
-        elif not fresh or _confirm(f"register {len(fresh)} new project(s)?",
-                                   default=True, interactive=interactive):
+        else:
+            accepted: list = []
+            if fresh:
+                accepted, declined = accept_by_group(fresh, found,
+                                                    interactive=interactive)
+                for g, listed in declined.items():
+                    skipped.append((f"{g} ({len(listed)} repos)",
+                                    "loci scan <root>, or loci add <path>"))
+            # Scopes already known are re-upserted so `upsert` carries their
+            # preserved fields forward; a declined vendor group is simply never
+            # added.
             for s in found:
+                if s.id in known:
+                    registry = upsert(registry, s)
+            for s in accepted:
                 registry = upsert(registry, s)
-            save_scopes(registry)
+            save_scopes(inherit_parent_groups(registry))
 
     if not registry:
         print("\n  no projects registered, and loci needs at least one:")
