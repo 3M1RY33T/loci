@@ -2119,9 +2119,9 @@ def test_a_rendered_abstention_says_what_caused_it():
 
     index = _index(a=("Alpha", "/a", {"widget": 40}, 500))
 
-    def headline(reason, group=None):
-        rt = RouteResult(question="q", query_tokens=[], ranked=["a"], selected=[],
-                         abstain=True, top_score=0.0, top_matched=0,
+    def headline(reason, group=None, ranked=("a",)):
+        rt = RouteResult(question="q", query_tokens=[], ranked=list(ranked),
+                         selected=[], abstain=True, top_score=0.0, top_matched=0,
                          group=group, abstain_reason=reason)
         return render(Answer(question="q", routing=rt), index=index).splitlines()[0]
 
@@ -2130,6 +2130,11 @@ def test_a_rendered_abstention_says_what_caused_it():
     assert "points at its subject" in headline("deictic")
     assert "not enough of the question" in headline("no_evidence")
     assert headline(None) == "ABSTAINED - not specific enough to route."
+    # An empty candidate list is only the GROUP's fault when a group is in
+    # force. Without one it means an empty index, and "no indexed project is in
+    # group None" is not a sentence.
+    assert headline("no_evidence", ranked=()) == \
+        "ABSTAINED - not enough of the question exists in any project."
 
 
 def test_an_unknown_group_asked_through_ask_answers_from_nothing(tmp_path):
@@ -2141,7 +2146,7 @@ def test_an_unknown_group_asked_through_ask_answers_from_nothing(tmp_path):
     section passes with that mutation in place, because a group somebody IS in
     is truthy.
     """
-    from loci.ask import ask
+    from loci.ask import ask, render
     from loci.groups import Policy
 
     a = tmp_path / "a"
@@ -2157,6 +2162,14 @@ def test_an_unknown_group_asked_through_ask_answers_from_nothing(tmp_path):
     assert answer.routing.abstain
     assert answer.routing.ranked == []
     assert answer.scopes == [], "an unknown group answered from the whole corpus"
+
+    # And it must not blame the question. `eligible=set()` leaves `route` weighing
+    # the question against an empty candidate set, so it reports `no_evidence` --
+    # true of that set, false of the question. An abstention has to name its real
+    # cause, and this is the likeliest user error the feature has.
+    text = render(answer, index=index)
+    assert text.splitlines()[0] == "ABSTAINED - no indexed project is in group typo."
+    assert "not enough of the question" not in text
 
 
 def test_a_soft_group_demotes_through_ask_but_still_includes(tmp_path):
@@ -2193,3 +2206,43 @@ def test_a_soft_group_demotes_through_ask_but_still_includes(tmp_path):
     assert soft.ranked[0] == "b", "the soft group did not demote Alpha"
     assert "a" in soft.selected, "soft demotes; only hard excludes"
     assert (soft.group, soft.mode) == ("me", "soft")
+
+
+@pytest.mark.parametrize("body", ['{"scopes": ', '[]', '{"scopes": ["me"]}',
+                                  '{"scopes": [{"name": "Alpha"}]}'])
+def test_a_malformed_registry_degrades_to_unconfined(tmp_path, monkeypatch, body):
+    """`ask` reads the registry on every call now, and `load_scopes` raises.
+
+    `load_policy` swallows every malformed shape on the stated ground that a
+    traceback out of `loci ask` is a worse answer than "no groups configured".
+    The registry is read on that same new path -- until confinement arrived
+    `ask` ran off the index alone -- so the sibling loader must not differ.
+    These four bodies raise four different types (JSONDecodeError,
+    AttributeError, TypeError, KeyError), which is why the catch is broad.
+
+    The guard is in `ask`, NOT in `load_scopes`: a silent [] there would let the
+    next `upsert` write a registry with every registered scope discarded.
+    """
+    import loci.paths as P
+    from loci.ask import ask
+    from loci.groups import Policy
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    P.registry_file().write_text(body, encoding="utf-8")
+    with pytest.raises(Exception):
+        load_scopes()             # the fixture really is malformed
+
+    a = tmp_path / "a"
+    a.mkdir()
+    index = _index(a=("Alpha", str(a), {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                   b=("Beta", "/b", {"flange": 25}, 400))
+
+    # cwd is passed so the degraded registry is actually WALKED: `scope_for_cwd`
+    # iterates it, so degrading to None rather than [] raises a TypeError one
+    # frame further down and the guard buys nothing.
+    answer = ask("how does the widget gizmo sprocket work", cwd=str(a),
+                 index=index, store={}, policy=Policy(), with_structure=False)
+
+    assert answer.routing.selected == ["a"]
+    assert answer.routing.group is None

@@ -142,7 +142,26 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
         # `store` are -- a caller already holding them should not re-read
         # $LOCI_HOME, and a test should not need one at all.
         policy = load_policy() if policy is None else policy
-        registry = load_scopes() if registry is None else registry
+        if registry is None:
+            # A malformed registry degrades to unconfined rather than raising.
+            # `load_policy` already swallows every bad shape on the stated
+            # ground that a traceback out of `loci ask` is a worse answer than
+            # "no groups configured", and this is the same new code path: until
+            # confinement arrived, `ask` ran off the index alone and never read
+            # the registry at all. Measured, a hand-edited scopes.json raises
+            # four different types -- JSONDecodeError, AttributeError, TypeError
+            # and KeyError -- depending on which level is wrong, so the catch
+            # is broad, like `_calibrated_floor`, which guards another
+            # disk-loaded routing input the same way.
+            #
+            # The guard belongs HERE and not in `load_scopes`: `cmd_scan` and
+            # `cmd_add` both do `save_scopes(upsert(load_scopes(), ...))`, so a
+            # silent [] there would rewrite the registry with every scope but
+            # the new one discarded.
+            try:
+                registry = load_scopes()
+            except Exception:
+                registry = []
         conf = confinement(policy, registry, cwd=cwd, forced_group=group)
         rt = route(question, index, cwd=cwd,
                    eligible=conf.eligible, demoted=conf.demoted,
@@ -198,11 +217,19 @@ def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
         # The cause REPLACES the old headline rather than trailing it: "not
         # specific enough to route" is false for `out_of_group`, where the
         # question was specific and merely aimed outside the group.
-        reason = {
-            "out_of_group": f"best match was outside group {rt.group}",
-            "deictic": "the question points at its subject without naming it",
-            "no_evidence": "not enough of the question exists in any project",
-        }.get(rt.abstain_reason or "", "not specific enough to route")
+        if rt.group and not rt.ranked:
+            # `eligible` filtered every scope out, so `route` weighed the
+            # question against an empty candidate set and reported `no_evidence`
+            # -- true of that set, false of the question, whose vocabulary was
+            # never the problem. Naming the group is the only honest cause, and
+            # `--group <typo>` is the likeliest way a user reaches this line.
+            reason = f"no indexed project is in group {rt.group}"
+        else:
+            reason = {
+                "out_of_group": f"best match was outside group {rt.group}",
+                "deictic": "the question points at its subject without naming it",
+                "no_evidence": "not enough of the question exists in any project",
+            }.get(rt.abstain_reason or "", "not specific enough to route")
         out.append(f"ABSTAINED - {reason}.")
         out.append(f"  candidates: {', '.join(names.get(s, s) for s in rt.ranked)}")
         out.append("  re-run with --scope <name>, or from inside the project directory.")
