@@ -116,6 +116,60 @@ def test_resolve_by_alias():
     assert resolve([s], "nope") is None
 
 
+def test_absent_groups_is_not_the_same_as_empty_groups():
+    """A registry written before groups existed must not read as "the user
+    deliberately ungrouped this" -- that would make `groups infer` a no-op on
+    every pre-upgrade install. Same trap as code_globs; see types.py.
+    """
+    absent = Scope.from_json({"id": "a", "name": "A", "root": "/a"})
+    empty = Scope.from_json({"id": "a", "name": "A", "root": "/a", "groups": []})
+
+    assert absent.groups is None
+    assert empty.groups == []
+    assert "groups" not in absent.to_json()
+    assert empty.to_json()["groups"] == []
+
+
+def test_group_set_is_empty_for_both_absent_and_empty():
+    assert Scope(id="a", name="A", root=Path("/a")).group_set() == set()
+    assert Scope(id="a", name="A", root=Path("/a"), groups=[]).group_set() == set()
+    assert Scope(id="a", name="A", root=Path("/a"),
+                 groups=["me", "client:acme"]).group_set() == {"me", "client:acme"}
+
+
+def test_upsert_preserves_user_edits_across_a_rescan(tmp_path):
+    """`upsert` replaces by id wholesale and `make_scope` regenerates defaults,
+    so a re-scan silently discarded custom aliases. Groups would inherit that.
+    """
+    from loci.scopes import upsert
+
+    root = tmp_path / "proj"
+    root.mkdir()
+
+    first = make_scope(root, name="proj")
+    first.aliases = ["custom-alias"]
+    first.groups = ["me", "client:acme"]
+    registry = upsert([], first)
+
+    registry = upsert(registry, make_scope(root, name="proj"))
+
+    kept = registry[0]
+    assert kept.aliases == ["custom-alias"], "re-scan discarded a custom alias"
+    assert kept.groups == ["me", "client:acme"], "re-scan discarded groups"
+
+
+def test_upsert_preserves_a_deliberate_ungrouping(tmp_path):
+    from loci.scopes import upsert
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    first = make_scope(root, name="proj")
+    first.groups = []                      # deliberate, not "unset"
+    registry = upsert([], first)
+    registry = upsert(registry, make_scope(root, name="proj"))
+    assert registry[0].groups == []
+
+
 # -- router ----------------------------------------------------------------
 def _index(**scopes) -> dict:
     postings: dict[str, dict[str, int]] = {}

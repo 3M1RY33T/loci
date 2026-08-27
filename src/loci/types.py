@@ -24,14 +24,25 @@ class Scope:
     code_globs: list[str] = field(default_factory=list)
     updated_at: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
+    groups: list[str] | None = None
+
+    def group_set(self) -> set[str]:
+        """Membership as a set. `None` and `[]` both mean "belongs to nothing"."""
+        return set(self.groups or [])
 
     def to_json(self) -> dict:
-        return {
+        d = {
             "id": self.id, "name": self.name, "root": str(self.root),
             "aliases": self.aliases, "episode_globs": self.episode_globs,
             "code_globs": self.code_globs,
             "updated_at": self.updated_at, "meta": self.meta,
         }
+        # ABSENT means "not yet inferred"; an explicit [] means "deliberately
+        # ungrouped". Writing [] for both would make `groups infer` skip every
+        # scope it had never seen.
+        if self.groups is not None:
+            d["groups"] = list(self.groups)
+        return d
 
     @classmethod
     def from_json(cls, d: dict) -> "Scope":
@@ -48,6 +59,7 @@ class Scope:
             code_globs=(list(d["code_globs"]) if "code_globs" in d
                         else list(DEFAULT_CODE_GLOBS)),
             updated_at=d.get("updated_at", ""), meta=dict(d.get("meta") or {}),
+            groups=(list(d["groups"]) if "groups" in d else None),
         )
 
 

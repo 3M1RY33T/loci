@@ -109,8 +109,26 @@ def save_scopes(scopes: list[Scope]) -> Path:
     return f
 
 
-def upsert(scopes: list[Scope], new: Scope) -> list[Scope]:
-    """Add or replace by id, preserving registry order."""
+# Fields a re-scan must not clobber. `make_scope` regenerates defaults for all
+# of them, so without this a user's `loci add --alias` is discarded the next
+# time `loci scan` runs over the same directory.
+PRESERVED_FIELDS = ("groups", "aliases", "episode_globs", "code_globs")
+
+
+def upsert(scopes: list[Scope], new: Scope, *,
+           preserve: tuple[str, ...] = PRESERVED_FIELDS) -> list[Scope]:
+    """Add or replace by id, keeping user-edited fields from the existing entry."""
+    old = next((s for s in scopes if s.id == new.id), None)
+    if old is not None:
+        for field_name in preserve:
+            current = getattr(old, field_name)
+            # `groups` is tri-state: None means never inferred, so only an
+            # inferred value (including a deliberate []) is worth preserving.
+            if field_name == "groups":
+                if current is not None:
+                    new.groups = list(current)
+            elif current:
+                setattr(new, field_name, list(current))
     out = [s for s in scopes if s.id != new.id]
     out.append(new)
     return sorted(out, key=lambda s: s.name.lower())
