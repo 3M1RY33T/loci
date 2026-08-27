@@ -433,9 +433,15 @@ def test_nested_roots_finds_subscopes_of_one_scope(tmp_path):
     parent = Scope(id="mono", name="mono", root=tmp_path / "mono")
     child = Scope(id="mono-a", name="mono/a", root=tmp_path / "mono" / "a")
     sibling = Scope(id="other", name="other", root=tmp_path / "other")
+    # A sibling whose name merely STARTS WITH the parent's. Containment is by
+    # path component, not by string prefix: `str(root).startswith(...)` swallows
+    # `mono-old` whole, and the scope silently stops being collected at all.
+    prefix = Scope(id="mono-old", name="mono-old", root=tmp_path / "mono-old")
 
-    assert nested_roots(parent, [parent, child, sibling]) == [tmp_path / "mono" / "a"]
-    assert nested_roots(child, [parent, child, sibling]) == []
+    everyone = [parent, child, sibling, prefix]
+    assert nested_roots(parent, everyone) == [tmp_path / "mono" / "a"]
+    assert nested_roots(child, everyone) == []
+    assert nested_roots(prefix, everyone) == []
 
 
 def test_iter_files_does_not_descend_into_an_excluded_root(tmp_path, monkeypatch):
@@ -551,6 +557,10 @@ def test_a_parent_graph_does_not_lend_its_subscope_symbols(tmp_path):
 
     Filtered at read time, not re-extracted: the nodes already carry
     `source_file`, and it may be relative to the root or absolute.
+
+    `glasses-old/` is the string-prefix trap. Containment is by path component,
+    so a directory whose NAME merely starts with an excluded one keeps its
+    nodes; `source_file.startswith(str(excluded))` would silently delete them.
     """
     from loci.backends.graphify import GraphifyBackend
 
@@ -560,18 +570,141 @@ def test_a_parent_graph_does_not_lend_its_subscope_symbols(tmp_path):
         {"label": "parentWidget", "source_file": "src/app.py"},
         {"label": "childLens", "source_file": "glasses/src/lens.ts"},
         {"label": "childAbsolute", "source_file": str(root / "glasses" / "b.ts")},
+        {"label": "legacyWidget", "source_file": "glasses-old/src/legacy.ts"},
     ]}), encoding="utf-8")
 
     sb = GraphifyBackend()
     scope = make_scope(root, name="mono")
     excl = [root / "glasses"]
 
-    assert sb.labels(scope) == ["parentWidget", "childLens", "childAbsolute"]
-    assert sb.labels(scope, exclude=excl) == ["parentWidget"]
-    assert sb.node_count(scope) == 3
-    assert sb.node_count(scope, exclude=excl) == 1
+    assert sb.labels(scope) == ["parentWidget", "childLens", "childAbsolute",
+                                "legacyWidget"]
+    assert sb.labels(scope, exclude=excl) == ["parentWidget", "legacyWidget"]
+    assert sb.node_count(scope) == 4
+    assert sb.node_count(scope, exclude=excl) == 2
     assert "lens" in sb.vocabulary(scope), "control: unexcluded, the token is there"
     assert "lens" not in sb.vocabulary(scope, exclude=excl)
+    assert "legacy" in sb.vocabulary(scope, exclude=excl), \
+        "a sibling whose name starts with the excluded one was swallowed"
+
+
+def _monorepo(tmp_path):
+    """A parent scope holding one sub-scope: prose and code in each, and a
+    single graph at the parent covering the whole tree -- which is what
+    graphify actually produces for a monorepo. Returns (parent, child).
+    """
+    root = tmp_path / "mono"
+    (root / "glasses").mkdir(parents=True)
+    (root / "README.md").write_text(
+        "# mono\n\n## Settlement\n\nReconciles invoices against bank statements "
+        "nightly and files any discrepancy as a dunning notice for review.\n",
+        encoding="utf-8")
+    (root / "app.py").write_text(
+        '"""Parent prose, long enough to clear the twelve word minimum that the '
+        'docstring collector applies to every candidate."""\n', encoding="utf-8")
+    (root / "glasses" / "README.md").write_text(
+        "# glasses\n\n## Windowing\n\nApplies radiograph windowing to DICOM voxel "
+        "data before handing it to the viewer, so contrast stays stable.\n",
+        encoding="utf-8")
+    (root / "glasses" / "lens.py").write_text(
+        '"""Child prose, long enough to clear the twelve word minimum that the '
+        'docstring collector applies to every candidate."""\n', encoding="utf-8")
+    (root / "graphify-out").mkdir()
+    (root / "graphify-out" / "graph.json").write_text(json.dumps({"nodes": [
+        {"label": "parentWidget", "source_file": "app.py"},
+        {"label": "childLens", "source_file": "glasses/lens.py"},
+    ]}), encoding="utf-8")
+    return (make_scope(root, name="mono"),
+            make_scope(root / "glasses", name="mono/glasses"))
+
+
+def test_build_gives_a_subscopes_content_to_the_subscope_alone(tmp_path, monkeypatch):
+    """`build` is the seam this exclusion exists for, and the one place a
+    missing `exclude=` is invisible: every reader below it defaults to
+    collecting everything, so dropping the argument restores the duplication
+    silently instead of raising. All four call sites are asserted here.
+    """
+    import loci.paths as P
+    from loci.backends.graphify import GraphifyBackend
+    from loci.index import build, load_episodes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    # The readers below never shell out; only `available` gates them, and a
+    # machine without the CLI would otherwise skip the whole structure path.
+    monkeypatch.setattr(GraphifyBackend, "available", lambda self: True)
+    parent, child = _monorepo(tmp_path)
+
+    idx = build([parent, child], verbose=False)
+    store = load_episodes()
+
+    def sources(sid):
+        return {c["source"] for c in store["chunks"][sid]
+                if not c["source"].startswith("git:")}
+
+    # vocabulary, and the node count the size prior is computed from
+    assert parent.id in idx["postings"].get("widget", {}), \
+        "control: the parent's own graph was never read"
+    assert parent.id not in idx["postings"].get("lens", {})
+    assert idx["scopes"][parent.id]["structure_nodes"] == 1
+
+    # collect
+    assert "code:glasses/lens.py" not in sources(parent.id), \
+        "the parent collected a file its sub-scope already owns"
+    assert sources(parent.id) == {"code:app.py", "doc:README.md"}
+    assert "code:lens.py" in sources(child.id), \
+        "control: the sub-scope must own that file itself"
+
+    # fingerprint. A NEW file rather than an edited one, because the signature
+    # stats mtime at one-second resolution and a path is hashed immediately.
+    (child.root / "extra.py").write_text("x = 1\n", encoding="utf-8")
+    again = build([parent, child], verbose=False)
+    assert again["scopes"][parent.id]["fingerprint"] \
+        == idx["scopes"][parent.id]["fingerprint"]
+    assert again["scopes"][child.id]["fingerprint"] \
+        != idx["scopes"][child.id]["fingerprint"], \
+        "control: a new file must move the fingerprint of the scope owning it"
+
+
+def test_symbol_seeding_never_encodes_a_subscopes_labels(tmp_path, monkeypatch):
+    """The graph's second reader. `build_embeddings` seeds semantic search from
+    symbol labels, so without the same exclusion a parent answers questions
+    about its sub-project out of its own vectors -- the failure `build` was just
+    fixed for, reintroduced one function later.
+
+    The encoder is stubbed: sentence-transformers is an optional extra, and what
+    matters is WHICH labels were selected, never what a model made of them.
+    """
+    import sys
+    import types
+
+    import loci.paths as P
+    from loci.backends.graphify import GraphifyBackend
+    from loci.index import build, build_embeddings
+    from loci.scopes import save_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(GraphifyBackend, "available", lambda self: True)
+    parent, child = _monorepo(tmp_path)
+    build([parent, child], verbose=False)
+    save_scopes([parent, child])
+
+    class _Encoder:
+        def __init__(self, *a, **kw):
+            pass
+
+        def encode(self, texts, **kw):
+            return [[float(len(t)), 0.0] for t in texts]
+
+    fake = types.ModuleType("sentence_transformers")
+    fake.SentenceTransformer = _Encoder
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake)
+
+    build_embeddings(verbose=False)
+
+    seeded = json.loads((P.embeddings_file().parent / f".symbols-{parent.id}.json")
+                        .read_text(encoding="utf-8"))
+    assert seeded == ["parentWidget"], \
+        "the parent seeded semantic search from its sub-scope's symbols"
 
 
 # -- router ----------------------------------------------------------------
