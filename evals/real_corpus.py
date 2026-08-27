@@ -76,8 +76,14 @@ REPOS: list[Repo] = [
     Repo("rfcs", "https://github.com/rust-lang/rfcs", "prose only, long-form argument"),
 
     # --- non-English documentation
-    Repo("hutool", "https://github.com/dromara/hutool", "Java, Chinese documentation"),
-    Repo("vue-zh", "https://github.com/vuejs/docs", "docs, i18n, mixed scripts"),
+    Repo("hutool", "https://github.com/dromara/hutool", "Java, Chinese docs and commits"),
+    Repo("advanced-java", "https://github.com/doocs/advanced-java",
+         "Chinese prose, almost no code"),
+    # Labelled "i18n, mixed scripts" originally, which was wrong: this is the
+    # English documentation site and contains no CJK at all. Kept as the
+    # mixed-script CONTROL -- a docs repo that looks like it should be
+    # non-English and is not.
+    Repo("vue-docs", "https://github.com/vuejs/docs", "docs site, English (control)"),
 
     # --- adversarial shapes
     Repo("awesome-python", "https://github.com/vinta/awesome-python", "a list, almost no prose"),
@@ -88,7 +94,7 @@ SUBSETS = {
     "smoke": ["cjson", "fd", "requests", "public-apis"],
     "polyglot": ["cjson", "ripgrep", "hugo", "guava", "flask", "express", "rails"],
     "prose": ["public-apis", "free-programming-books", "rfcs", "awesome-python"],
-    "nonenglish": ["hutool", "vue-zh"],
+    "nonenglish": ["hutool", "advanced-java", "vue-docs"],
     "all": [r.name for r in REPOS],
 }
 

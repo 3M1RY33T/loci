@@ -471,17 +471,54 @@ A user can do nothing about a warning in code they did not write.
 three corpora while the summary read "routing looks healthy on this corpus".
 A summary that disagrees with the numbers above it is worse than no summary.
 
+### Prose-only and non-English subsets
+
+Both were fetched on the theory that they were the most likely to break
+something. Routing held: four repositories of pure documentation
+(public-apis, free-programming-books, rust-lang/rfcs, awesome-python) and three
+mixed Chinese/English documentation repositories each scored 100% on the four
+families that transfer, with `contended` failing as everywhere else.
+
+**What the Chinese corpus exposed is a retrieval defect, not a routing one.**
+CJK reached the index -- 55% of the routing vocabulary -- but unsegmented, one
+token per phrase rather than per word:
+
+```
+usable as search terms (<= 4 chars)   821 / 2373   (35%)
+effectively unmatchable (> 8 chars)   597 / 2373
+longest token                          30 characters, a whole sentence
+```
+
+A thirty-character token is reachable only by a query containing that exact
+sentence. Character bigrams are the standard answer where no segmenter is
+available, and the whole run is still kept so an exact phrase matches exactly:
+
+| | before | after |
+|---|---|---|
+| CJK tokens usable as search terms | 35% | **79%** |
+| 30-char phrase reachable by a 2-char query | no | **yes** |
+| index size | 231KB | 339KB |
+
+This is the clearest example of why the held-out set exists. Every English
+corpus in the project scores identically with and without the fix; the defect is
+invisible unless the corpus is non-English, and it had been shipped.
+
+**One manifest entry was wrong.** `vuejs/docs` was labelled "i18n, mixed
+scripts" and contains no CJK at all -- it is the English documentation site. It
+is kept as an explicit control, and a genuinely Chinese-prose repository
+(`doocs/advanced-java`) was added. With the corrected set, `contended` rose from
+0% to 17% -- the first non-zero score on any real corpus.
+
 ### Cost
 
 ```
-smoke     4 repos    12MB    2s to index
-polyglot  7 repos   149MB   11s to index
+smoke        4 repos    12MB    2s to index
+polyglot     7 repos   149MB   11s to index
+prose        4 repos    20MB
+nonenglish   3 repos    41MB
 ```
 
-Subsets are named (`smoke`, `polyglot`, `prose`, `nonenglish`, `all`) so the
-expensive ones are opt-in. The `prose` and `nonenglish` subsets are unfetched;
-they are the ones most likely to break the tokenizer, and Phase 1 already found
-two length-and-script assumptions that only a non-English corpus would surface.
+Subsets are named so the expensive ones stay opt-in.
 
 ## Honest limits## Phase 1: the test bed
 
@@ -620,17 +657,54 @@ A user can do nothing about a warning in code they did not write.
 three corpora while the summary read "routing looks healthy on this corpus".
 A summary that disagrees with the numbers above it is worse than no summary.
 
+### Prose-only and non-English subsets
+
+Both were fetched on the theory that they were the most likely to break
+something. Routing held: four repositories of pure documentation
+(public-apis, free-programming-books, rust-lang/rfcs, awesome-python) and three
+mixed Chinese/English documentation repositories each scored 100% on the four
+families that transfer, with `contended` failing as everywhere else.
+
+**What the Chinese corpus exposed is a retrieval defect, not a routing one.**
+CJK reached the index -- 55% of the routing vocabulary -- but unsegmented, one
+token per phrase rather than per word:
+
+```
+usable as search terms (<= 4 chars)   821 / 2373   (35%)
+effectively unmatchable (> 8 chars)   597 / 2373
+longest token                          30 characters, a whole sentence
+```
+
+A thirty-character token is reachable only by a query containing that exact
+sentence. Character bigrams are the standard answer where no segmenter is
+available, and the whole run is still kept so an exact phrase matches exactly:
+
+| | before | after |
+|---|---|---|
+| CJK tokens usable as search terms | 35% | **79%** |
+| 30-char phrase reachable by a 2-char query | no | **yes** |
+| index size | 231KB | 339KB |
+
+This is the clearest example of why the held-out set exists. Every English
+corpus in the project scores identically with and without the fix; the defect is
+invisible unless the corpus is non-English, and it had been shipped.
+
+**One manifest entry was wrong.** `vuejs/docs` was labelled "i18n, mixed
+scripts" and contains no CJK at all -- it is the English documentation site. It
+is kept as an explicit control, and a genuinely Chinese-prose repository
+(`doocs/advanced-java`) was added. With the corrected set, `contended` rose from
+0% to 17% -- the first non-zero score on any real corpus.
+
 ### Cost
 
 ```
-smoke     4 repos    12MB    2s to index
-polyglot  7 repos   149MB   11s to index
+smoke        4 repos    12MB    2s to index
+polyglot     7 repos   149MB   11s to index
+prose        4 repos    20MB
+nonenglish   3 repos    41MB
 ```
 
-Subsets are named (`smoke`, `polyglot`, `prose`, `nonenglish`, `all`) so the
-expensive ones are opt-in. The `prose` and `nonenglish` subsets are unfetched;
-they are the ones most likely to break the tokenizer, and Phase 1 already found
-two length-and-script assumptions that only a non-English corpus would surface.
+Subsets are named so the expensive ones stay opt-in.
 
 ## Honest limits
 

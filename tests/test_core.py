@@ -28,7 +28,7 @@ def test_common_verbs_survive_stopwording():
         assert t in tokens(f"how do I {t} this")
 
 
-@pytest.mark.parametrize("text,expected", [
+@pytest.mark.parametrize("text,must_contain", [
     # A mixed-script identifier must not lose its non-Latin half. This one
     # tokenized to ['invoice'] before the fix, and the part that identified the
     # project silently vanished.
@@ -38,8 +38,31 @@ def test_common_verbs_survive_stopwording():
     ("na\u00efve_handler", ["naive", "handler"]),
     ("invoice_record", ["invoice", "record"]),
 ])
-def test_tokenizer_keeps_every_script(text, expected):
-    assert tokens(text) == expected
+def test_tokenizer_keeps_every_script(text, must_contain):
+    """Containment, not equality: unsegmented scripts also emit bigrams.
+
+    What matters is that no script is silently dropped and that the whole run
+    survives for exact matching.
+    """
+    got = tokens(text)
+    for expected in must_contain:
+        assert expected in got, f"{expected!r} missing from {got!r}"
+
+
+def test_unsegmented_scripts_also_emit_bigrams():
+    """A space-free script yields one token per phrase without segmentation.
+
+    Measured on a real Chinese repository: only 35% of CJK tokens were short
+    enough to be searchable and the longest was a 30-character sentence. Bigrams
+    approximate word boundaries without a segmenter; the whole run is kept too,
+    so an exact phrase still matches exactly.
+    """
+    got = tokens("\u8a2d\u5b9a\u51e6\u7406\u7ba1\u7406")
+    assert "\u8a2d\u5b9a\u51e6\u7406\u7ba1\u7406" in got      # whole run kept
+    assert "\u8a2d\u5b9a" in got and "\u51e6\u7406" in got       # bigrams present
+    # Scripts that DO use spaces are already segmented and must not be exploded.
+    assert tokens("\u043f\u0435\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f") == ["\u043f\u0435\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f"]
+    assert tokens("handler") == ["handler"]
 
 
 def test_unique_tokens_preserves_order():
