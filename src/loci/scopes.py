@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .defaults import DEFAULT_CODE_GLOBS, DEFAULT_EPISODE_GLOBS, SKIP_DIRS
-from .paths import ensure_home, registry_file
+from .paths import atomic_write, ensure_home, registry_file
 from .types import Scope
 
 
@@ -101,11 +101,11 @@ def load_scopes() -> list[Scope]:
 def save_scopes(scopes: list[Scope]) -> Path:
     ensure_home()
     f = registry_file()
-    f.write_text(json.dumps(
+    atomic_write(f, json.dumps(
         {"version": 1,
          "updated_at": datetime.now(timezone.utc).isoformat(),
          "scopes": [s.to_json() for s in scopes]},
-        indent=2), encoding="utf-8")
+        indent=2))
     return f
 
 

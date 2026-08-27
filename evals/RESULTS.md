@@ -274,22 +274,67 @@ graph does not change that.
 
 The fix for a cold scope is `loci graphs`, which is free and takes seconds.
 
-## Note on a single-item movement
+## A drop I misdiagnosed as noise
 
-Pruning vendored directories out of traversal removed ~85 tokens from one
-scope's vocabulary, which cost `cross-macos-app` two matched tokens and tipped
-it into abstention. Uncontaminated top-1 moved 85.7% -> 71.4% as a result.
+Pruning vendored directories out of traversal moved uncontaminated top-1 from
+85.7% to 71.4% and cross-scope routing from 100% to 66.7%. I attributed that to
+single-item variance on a seven-item family, re-swept `MIN_MATCHED` to confirm
+the threshold was not the cause, and recorded it as noise.
 
-`MIN_MATCHED` was re-swept on the pruned corpus and 4 is still correct: clean
-accuracy is flat at 71.4% across 2, 3 and 4, while negatives (50% -> 67% -> 83%)
-and deictic abstention (75% -> 87.5% -> 100%) both peak at 4. The threshold is
-not the cause, and lowering it recovers nothing.
+It was a bug. The replacement traversal matched globs with `fnmatch`, which has
+no notion of `**`, so `docs/**/*.md` -- one of the three default episode globs --
+compiled to something requiring an intervening directory and silently skipped
+every `docs/guide.md`. **28 documentation files were dropped**, 25 of them from
+one project. Fixing the matcher to use pathlib's semantics (`**` matches *zero*
+or more directories) restored both numbers exactly:
 
-With seven items in that family, one item is 14.3 points. This is recorded
-rather than chased: tuning a threshold until a single question passes is the
-failure mode this whole eval exists to avoid.
+| | before pruning | after pruning (bug) | after fix |
+|---|---|---|---|
+| uncontaminated top-1 | 85.7% | 71.4% | **85.7%** |
+| cross-scope | 100% | 66.7% | **100%** |
 
-## Honest limits
+The lesson is not about globs. Re-sweeping the threshold was the right instinct
+and it correctly cleared `MIN_MATCHED` -- but ruling out the *parameter* is not
+the same as ruling out the *corpus*, and "small sample, call it noise" is
+exactly how a real regression gets filed away. The cheap check that would have
+caught it immediately -- compare the file list before and after a traversal
+change -- now runs as a test.
+
+## Scale
+
+Synthetic scopes, each with its own domain vocabulary plus a shared pool of
+ordinary engineering English. Overlap is the fraction of a scope's domain terms
+that its same-domain peers also use.
+
+| scopes | overlap | index | route | abstains | top-1 of routed | set |
+|---|---|---|---|---|---|---|
+| 25 | 0.0–0.4 | 0.7s | 0.1ms | 0% | **100%** | 1.00 |
+| 25 | 0.6 | 0.7s | 0.2ms | 0% | 88% | 1.12 |
+| 25 | 0.8 | 0.7s | 0.1ms | 0% | **36%** | 2.48 |
+| 50 | 0.0–0.4 | 1.4s | 0.3ms | 0% | **100%** | 1.00 |
+| 50 | 0.6 | 1.4s | 0.3ms | 0% | 90% | 1.20 |
+| 50 | 0.8 | 1.4s | 0.3ms | **90%** | — | 3.00 |
+| 100 | 0.0–0.4 | 2.8s | 0.5ms | 0% | **100%** | 1.00 |
+| 100 | 0.6 | 2.8s | 0.6ms | 0% | 90% | 1.20 |
+| 100 | 0.8 | 2.8s | 0.5ms | **90%** | — | 3.00 |
+
+**Scope count is not the limit.** From 25 to 100 scopes accuracy is identical at
+every overlap level; index time and routing latency both scale linearly and
+routing stays under a millisecond.
+
+**Vocabulary overlap is the limit**, and the interesting result is that the
+failure gets *safer* as scope count rises. At 0.8 overlap with 25 scopes the
+router answers, and is wrong 64% of the time. With 50 or 100 scopes the same
+questions abstain 90% of the time, because more scopes sharing a term means less
+evidence for any one of them and the gate fires. A small corpus of highly
+similar projects is the dangerous configuration -- just enough evidence to look
+confident.
+
+A first attempt at this measurement cycled ten fixed domains, so at fifty scopes
+five shared identical vocabulary and the gold label was genuinely ambiguous.
+That measured the generator, not the router; terms are now unique per scope.
+
+## Honest limits## Honest limits
 
 - One machine, ten scopes, one author. The author had read parts of these
   corpora before writing family B, which is why `contamination` is a field and

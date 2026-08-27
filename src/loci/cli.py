@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .paths import home
+from .paths import BuildLock, home
 
 
 def _load_index_or_die():
@@ -73,9 +73,10 @@ def cmd_index(args) -> int:
         return 1
     if not args.quiet:
         print(f"indexing {len(scopes)} scope(s)")
-    idx = build(scopes, episodes=not args.no_episodes,
-                episode_vocab=args.episode_vocab, verbose=not args.quiet,
-                force=args.force)
+    with BuildLock():
+        idx = build(scopes, episodes=not args.no_episodes,
+                    episode_vocab=args.episode_vocab, verbose=not args.quiet,
+                    force=args.force)
     print(f"\n{len(idx['scopes'])} scopes, {len(idx['postings'])} tokens -> {home()}")
     missing = [m["name"] for m in idx["scopes"].values() if not m.get("sources")]
     if missing:
@@ -96,7 +97,8 @@ def cmd_index(args) -> int:
 def cmd_embed(args) -> int:
     from .index import build_embeddings
     try:
-        out = build_embeddings(args.model)
+        with BuildLock("embed"):
+            out = build_embeddings(args.model)
     except ImportError:
         print("error: needs sentence-transformers. pip install 'loci-mem[embeddings]'",
               file=sys.stderr)

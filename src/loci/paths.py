@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 ENV_HOME = "LOCI_HOME"
+LOCK_STALE_SECONDS = 3600
 
 
 def home() -> Path:
@@ -61,3 +62,121 @@ def rankers_dir() -> Path:
     graph to decide which project a question is about.
     """
     return home() / "rankers"
+
+
+# ---------------------------------------------------------------------------
+# durable writes
+# ---------------------------------------------------------------------------
+def atomic_write(path: Path, data: "str | bytes") -> None:
+    """Write via a sibling temp file and rename.
+
+    `Path.write_text` truncates and then fills, so a reader can observe a
+    half-written file. Measured on an 8MB store: 11 torn reads in a few seconds
+    of concurrent access. A long-lived MCP server reading while `loci index`
+    runs hits exactly that window, and a JSONDecodeError there is indistinguishable
+    from a corrupt index.
+
+    `os.replace` is atomic on POSIX and on Windows, and the temp file is created
+    beside the target so the rename never crosses a filesystem boundary.
+    """
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "wb" if isinstance(data, bytes) else "w"
+    kwargs = {} if isinstance(data, bytes) else {"encoding": "utf-8"}
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, mode, **kwargs) as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_via(path: Path, writer) -> None:
+    """Same guarantee for libraries that insist on writing to a path themselves."""
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=str(path.parent), prefix=f".{path.name}.")) / path.name
+    try:
+        writer(tmp)
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.parent.rmdir()
+        except OSError:
+            pass
+
+
+class BuildLock:
+    """Advisory lock so two `loci index` runs cannot interleave their writes.
+
+    Atomic writes stop a reader seeing half a file; they do not stop two writers
+    producing an index and a store that disagree with each other, because those
+    are separate files written at separate moments.
+    """
+
+    def __init__(self, name: str = "index") -> None:
+        self.path = home() / f".{name}.lock"
+
+    def __enter__(self) -> "BuildLock":
+        import os
+        import time
+
+        ensure_home()
+        for _ in range(2):
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{os.getpid()} {int(time.time())}".encode())
+                os.close(fd)
+                return self
+            except FileExistsError:
+                if self._stale():
+                    try:
+                        self.path.unlink()
+                        continue
+                    except OSError:
+                        pass
+                raise SystemExit(
+                    f"error: another loci index is running (lock: {self.path}). "
+                    f"If that is wrong, delete the lock file and retry.")
+        return self
+
+    def _stale(self) -> bool:
+        import os
+        import time
+
+        try:
+            pid_s, ts_s = self.path.read_text().split()
+            pid, ts = int(pid_s), int(ts_s)
+        except (OSError, ValueError):
+            return True
+        if time.time() - ts > LOCK_STALE_SECONDS:
+            return True
+        # signal 0 is a POSIX liveness probe; on Windows os.kill actually
+        # terminates, so never send one there -- fall back to the age check
+        # already applied above.
+        if os.name != "posix":
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return False
+
+    def __exit__(self, *exc) -> None:
+        try:
+            self.path.unlink()
+        except OSError:
+            pass

@@ -284,6 +284,88 @@ def test_docstring_routing_fallback_stays_disabled():
     assert DOCSTRING_FALLBACK_VOCAB == 0
 
 
+# -- glob matching ---------------------------------------------------------
+@pytest.mark.parametrize("rel,pattern,expected", [
+    # `**` matches ZERO or more directories, as pathlib does. This exact case
+    # silently dropped 28 documentation files before it was fixed.
+    ("docs/guide.md", "docs/**/*.md", True),
+    ("docs/a/b/guide.md", "docs/**/*.md", True),
+    ("guide.md", "docs/**/*.md", False),
+    # a single `*` must NOT cross a separator, as pathlib does and fnmatch does not
+    ("README.md", "*.md", True),
+    ("docs/nested.md", "*.md", False),
+    ("README.md", "README*", True),
+    ("src/a/b.py", "**/*.py", True),
+    ("main.py", "**/*.py", True),
+    ("src/a/b.ts", "**/*.py", False),
+    # Windows hands back backslashes
+    ("docs\\guide.md", "docs/**/*.md", True),
+    ("src\\a\\b.py", "**/*.py", True),
+])
+def test_glob_matching_follows_pathlib_semantics(rel, pattern, expected):
+    from loci.walk import _matches
+    assert _matches(rel, pattern) is expected
+
+
+# -- durability ------------------------------------------------------------
+def test_atomic_write_is_never_observed_half_written(tmp_path):
+    """write_text truncates then fills; a reader can catch it mid-flight.
+
+    Measured on an 8MB payload: 11 torn reads in a few seconds of concurrent
+    access with write_text, 0 with atomic_write.
+    """
+    import json
+    import threading
+
+    from loci.paths import atomic_write
+
+    target = tmp_path / "big.json"
+    payload = json.dumps({"k": {str(i): "x" * 200 for i in range(8000)}})
+    torn, done = [0], [False]
+
+    def writer():
+        for _ in range(10):
+            atomic_write(target, payload)
+        done[0] = True
+
+    def reader():
+        while not done[0]:
+            try:
+                if target.exists():
+                    json.loads(target.read_text())
+            except json.JSONDecodeError:
+                torn[0] += 1
+            except (FileNotFoundError, UnicodeDecodeError):
+                pass
+
+    w, r = threading.Thread(target=writer), threading.Thread(target=reader)
+    w.start(), r.start(), w.join(), r.join()
+    assert torn[0] == 0
+
+
+def test_build_lock_refuses_a_second_writer(tmp_path, monkeypatch):
+    import loci.paths as P
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    with P.BuildLock():
+        with pytest.raises(SystemExit):
+            with P.BuildLock():
+                pass
+    # released on exit
+    with P.BuildLock():
+        pass
+
+
+def test_build_lock_breaks_a_stale_lock(tmp_path, monkeypatch):
+    import loci.paths as P
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    (tmp_path / ".index.lock").write_text("999999 0")  # dead pid, ancient
+    with P.BuildLock():
+        pass
+    assert not (tmp_path / ".index.lock").exists()
+
+
 # -- redaction -------------------------------------------------------------
 SECRETS = [
     ('aws_key = "AKIAIOSFODNN7EXAMPLE"', "aws-key-id"),

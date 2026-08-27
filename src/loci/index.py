@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .backends import get_episode_backend, get_structure_backend
-from .paths import embeddings_file, ensure_home, episode_store_file, scope_index_file
+from .paths import (BuildLock, atomic_write, atomic_write_via, embeddings_file,
+                    ensure_home, episode_store_file, scope_index_file)
 from .types import Chunk, Scope
 
 INDEX_VERSION = 1
@@ -209,14 +210,17 @@ def build(scopes: list[Scope], *, structure: str = "graphify",
         "postings": dict(postings),
     }
     ensure_home()
-    scope_index_file().write_text(json.dumps(index), encoding="utf-8")
+    # Store first, index second: the index is what readers gate on, so a crash
+    # between the two leaves a stale index pointing at a store that is a
+    # superset of it, never an index promising chunks that do not exist.
     if episodes:
-        episode_store_file().write_text(json.dumps({
+        atomic_write(episode_store_file(), json.dumps({
             "version": INDEX_VERSION,
             "built_at": index["built_at"],
             "scopes": {sid: m["name"] for sid, m in meta.items()},
             "chunks": store,
-        }), encoding="utf-8")
+        }))
+    atomic_write(scope_index_file(), json.dumps(index))
     return index
 
 
@@ -305,5 +309,6 @@ def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
                   f"-> {arrays[sid].shape}")
     out = embeddings_file()
     ensure_home()
-    np.savez_compressed(out, _model=np.array([model_name]), **arrays)
+    atomic_write_via(out, lambda tmp: np.savez_compressed(
+        tmp, _model=np.array([model_name]), **arrays))
     return out

@@ -25,7 +25,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..paths import embeddings_file, rankers_dir
+from ..paths import atomic_write_via, embeddings_file, rankers_dir
 from ..redact import is_sensitive_file, redact
 from ..text import tokens as vtokens
 from ..text import token_set
@@ -411,8 +411,9 @@ def save_rankers(scope_id: str, chunks: list[Chunk]) -> None:
     d = rankers_dir()
     d.mkdir(parents=True, exist_ok=True)
     bm25, vec, mat, vocab = fit(chunks)
-    joblib.dump({"n": len(chunks), "bm25": bm25, "vec": vec, "mat": mat,
-                 "vocab": vocab}, d / f"{scope_id}.joblib", compress=3)
+    blob = {"n": len(chunks), "bm25": bm25, "vec": vec, "mat": mat, "vocab": vocab}
+    atomic_write_via(d / f"{scope_id}.joblib",
+                     lambda tmp: joblib.dump(blob, tmp, compress=3))
 
 
 def _load_rankers(scope_id: str, n_chunks: int):

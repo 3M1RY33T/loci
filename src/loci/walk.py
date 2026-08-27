@@ -7,32 +7,53 @@ walk brings the same enumeration to well under a second.
 """
 from __future__ import annotations
 
-import fnmatch
 import os
-from pathlib import Path, PurePosixPath
+import re
+from functools import lru_cache
+from pathlib import Path
 
 from .defaults import SKIP_DIRS
 
 
-def _matches(rel: str, pattern: str) -> bool:
-    """Glob match with pathlib semantics, not fnmatch semantics.
+@lru_cache(maxsize=512)
+def _compile(pattern: str) -> re.Pattern:
+    """Translate a glob to a regex with pathlib semantics, not fnmatch's.
 
-    fnmatch lets `*` cross a path separator, so `"*.md"` -- which pathlib treats
-    as root-only -- would silently start matching every nested markdown file in
-    the tree. Only an explicit `**` may descend.
+    Two differences matter and both caused real bugs:
+
+    `fnmatch` lets a single ``*`` cross a path separator, so ``"*.md"`` -- which
+    pathlib treats as root-only -- would match every nested markdown file.
+
+    `fnmatch` has no notion of ``**`` at all, so ``"docs/**/*.md"`` compiled to
+    something requiring an intervening directory and silently skipped
+    ``docs/guide.md``. Measured: 28 documentation files dropped across the test
+    corpus, 25 of them from one project. pathlib's ``**`` matches ZERO or more
+    directories, and so does this.
     """
-    if pattern.startswith("**/"):
-        tail = pattern[3:]
-        return fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(rel, tail) or \
-            fnmatch.fnmatch(PurePosixPath(rel).name, tail)
-    if "**" in pattern:
-        return fnmatch.fnmatch(rel, pattern)
-    # no `**`: every segment must line up
-    pat_parts = PurePosixPath(pattern).parts
-    rel_parts = PurePosixPath(rel).parts
-    if len(pat_parts) != len(rel_parts):
-        return False
-    return all(fnmatch.fnmatch(r, p) for r, p in zip(rel_parts, pat_parts))
+    i, out = 0, []
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:[^/]+/)*")     # zero or more directories
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def _matches(rel: str, pattern: str) -> bool:
+    # Windows hands back backslashes; every pattern here is written with
+    # forward slashes, so normalize rather than branch on os.sep.
+    return _compile(pattern).match(rel.replace("\\", "/")) is not None
 
 
 def iter_files(root: Path, patterns: list[str]) -> list[Path]:

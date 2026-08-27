@@ -125,6 +125,22 @@ plaintext file and a vector index. Verified end to end against a repository with
 planted secrets across a README, a docstring and a commit body — all four were
 removed, and `.env` was never read.
 
+## Durability
+
+Writes go through a temp file and `os.replace`, so a reader never sees a
+half-written index. `Path.write_text` truncates before it fills: measured on an
+8MB store, **11 torn reads** in a few seconds of concurrent access, and 0 after
+the change. An MCP server reading while `loci index` runs sat squarely in that
+window.
+
+`loci index` and `loci embed` hold an advisory lock, so two builds refuse to
+interleave rather than producing an index and a store that disagree. Locks left
+by a dead process are detected and broken.
+
+The store is written before the index, because the index is what readers gate
+on: a crash between the two leaves a stale index pointing into a store that is a
+superset of it, never an index promising chunks that do not exist.
+
 ## Performance
 
 ```
