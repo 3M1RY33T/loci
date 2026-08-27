@@ -37,7 +37,7 @@ from .eval import (NONSENSE, SIGNATURE_TEMPLATES, TAXONOMY, contended_terms,
                    halve, signature_terms)
 from .paths import atomic_write, home
 
-CALIBRATION_VERSION = 2
+CALIBRATION_VERSION = 4
 # Weight on correctly refusing an unroutable question, relative to correctly
 # routing one. Above 1.0 because the errors are not symmetric: a false route
 # hands back a confident wrong project, a false abstention asks "which project
@@ -59,6 +59,10 @@ def calibration_file():
 @dataclass
 class Calibration:
     evidence_floor: float
+    semantic_floor: float               # fallback for a scope with no fit
+    semantic_separation: float
+    semantic_n: int
+    semantic_by_scope: dict
     separation: float          # accuracy of the fitted threshold on its own samples
     n_route: int
     n_abstain: int
@@ -68,6 +72,83 @@ class Calibration:
 
     def to_json(self) -> dict:
         return {"version": CALIBRATION_VERSION, **self.__dict__}
+
+
+# Queries guaranteed to be unrelated to any software corpus. The floor they
+# produce is this model's "no relationship" baseline, which is what the shipped
+# 0.57 was silently assuming was the same everywhere.
+UNRELATED = list(NONSENSE) + [
+    "the emperor penguin incubates a single egg through the antarctic winter",
+    "sourdough starter needs equal parts flour and water refreshed daily",
+    "a sonnet has fourteen lines and a volta somewhere near the ninth",
+    "monarch butterflies migrate several thousand kilometres each autumn",
+    "the 1966 final went to extra time at wembley stadium",
+]
+SEMANTIC_MARGIN = 0.35     # where to sit between the two bands
+MIN_SEMANTIC_SAMPLES = 8
+
+
+def fit_semantic_floor(index: dict, store: dict) -> tuple[dict, float, int]:
+    """Fit the cosine floor PER SCOPE, to this corpus and this embedding model.
+
+    `SEMANTIC_FLOOR` was picked from one corpus with one model: real questions
+    scored 0.61-0.80 and unrelated ones 0.46-0.52, so 0.57 sat in the gap. Cosine
+    scale is a property of the model and the size of the gap is a property of the
+    corpus, so a number from one pairing describes neither in general.
+
+    Per scope, not pooled. The floor is compared against a MAXIMUM over a
+    scope's chunks, and the expected maximum of an unrelated query grows with
+    how many chunks you take it over -- a scope with 8,000 chunks throws up a
+    spurious 0.60 that a scope with 119 never will. Measured, the bands separate
+    cleanly inside each scope (0.78 vs 0.52 for one, 0.69 vs 0.55 for another)
+    and collapse to nothing when pooled: separation -0.002 across 170 samples.
+
+    Both bands are label-free. A section's own heading is related to its body by
+    construction; the UNRELATED queries are related to no software corpus.
+    """
+    from .backends import episodes as ep
+    from .index import chunks_for
+
+    emb = ep._embeddings()
+    if not emb or "_model" not in emb:
+        return {}, 0.0, 0
+    model_name = str(emb["_model"][0])
+
+    floors: dict[str, float] = {}
+    seps: list[float] = []
+    total = 0
+    for sid in index["scopes"]:
+        vecs = emb.get(sid)
+        chunks = chunks_for(store, sid)
+        if vecs is None or len(chunks) != vecs.shape[0]:
+            continue
+        related: list[float] = []
+        for c in chunks:
+            leaf = c.heading.split(">")[-1].strip()
+            if len(leaf.split()) >= 3 and len(c.text) >= 200:
+                qv = ep._encode_query(leaf, model_name)
+                if qv is not None:
+                    related.append(float((vecs @ qv).max()))
+            if len(related) >= 25:
+                break
+        unrelated = []
+        for q in UNRELATED:
+            qv = ep._encode_query(q, model_name)
+            if qv is not None:
+                unrelated.append(float((vecs @ qv).max()))
+        if len(related) < MIN_SEMANTIC_SAMPLES or len(unrelated) < MIN_SEMANTIC_SAMPLES:
+            continue
+        related.sort()
+        unrelated.sort()
+        lo = related[len(related) // 10]          # 10th percentile of related
+        hi = unrelated[-1 - len(unrelated) // 10]  # 90th percentile of unrelated
+        sep = lo - hi
+        floors[sid] = round((hi + SEMANTIC_MARGIN * sep) if sep > 0 else min(lo, hi), 3)
+        seps.append(sep)
+        total += len(related) + len(unrelated)
+
+    mean_sep = round(sum(seps) / len(seps), 3) if seps else 0.0
+    return floors, mean_sep, total
 
 
 def _evidence_total(r, idf_max: float) -> float:
@@ -120,11 +201,19 @@ def collect_samples(index: dict) -> tuple[list[float], list[float]]:
     return should_route, should_abstain
 
 
-def fit(index: dict) -> Calibration:
+def fit(index: dict, store: dict | None = None) -> Calibration:
+    if store is None:
+        from .index import load_episodes
+        store = load_episodes()
+    sem_by_scope, sem_sep, sem_n = fit_semantic_floor(index, store)
+    from .backends.episodes import SEMANTIC_FLOOR as _DEFAULT_SEM
+    sem_floor = (round(sum(sem_by_scope.values()) / len(sem_by_scope), 3)
+                 if sem_by_scope else _DEFAULT_SEM)
     route_s, abstain_s = collect_samples(index)
     if len(route_s) < MIN_SAMPLES or len(abstain_s) < MIN_SAMPLES:
         from .router import EVIDENCE_FLOOR
-        return Calibration(EVIDENCE_FLOOR, 0.0, len(route_s), len(abstain_s),
+        return Calibration(EVIDENCE_FLOOR, sem_floor, sem_sep, sem_n,
+                           sem_by_scope, 0.0, len(route_s), len(abstain_s),
                            0.0, 0.0, False)
 
     route_s.sort()
@@ -149,8 +238,9 @@ def fit(index: dict) -> Calibration:
     accuracy = ((sum(1 for v in route_s if v >= best_floor)
                  + sum(1 for v in abstain_s if v < best_floor))
                 / (len(route_s) + len(abstain_s)))
-    return Calibration(best_floor, round(accuracy, 3), len(route_s),
-                       len(abstain_s), round(route_min, 3), round(abstain_max, 3),
+    return Calibration(best_floor, sem_floor, sem_sep, sem_n, sem_by_scope,
+                       round(accuracy, 3), len(route_s), len(abstain_s),
+                       round(route_min, 3), round(abstain_max, 3),
                        accuracy >= 0.9)
 
 
@@ -177,6 +267,12 @@ def load() -> Calibration | None:
 
 def render(cal: Calibration) -> str:
     out = [f"evidence floor      {cal.evidence_floor}",
+           f"semantic floor      {cal.semantic_floor}"
+           + (f"   (mean per-scope, {len(cal.semantic_by_scope)} scopes fitted, "
+              f"bands separate by {cal.semantic_separation:+.3f})"
+              if cal.semantic_n else
+              "   (default; no embeddings built)"),]
+    out += [
            f"fitted from         {cal.n_route} routable + {cal.n_abstain} unroutable "
            f"questions, none hand-labelled",
            f"routable band       from {cal.route_min}",

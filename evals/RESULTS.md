@@ -758,401 +758,128 @@ cjk             100%   100%  100%    100%     100%  2.00   1.3
 vendored        100%   100%  100%    100%     100%  2.00   1.4
 ```
 
-### Three real bugs it found
+### 4.1 Structure store: 4/7 to 6/7
 
-**Mixed-script identifiers lost their non-Latin half.** `invoice設定` tokenized
-to `['invoice']`. The camelCase pattern matches ASCII Latin only, and applying it
-to a mixed chunk silently discarded everything else. Tokens now split into
-per-script runs first; only Latin runs are case-split. Pure CJK survives
-unsegmented -- imperfect for languages written without spaces, but not lost.
-
-**A length floor tuned for English hid a whole writing system.** `signature_terms`
-filtered `len(t) < 4`, excluding every two-character CJK token. The benchmark
-reported a CJK corpus as unroutable without ever having looked at its
-vocabulary. The floor is now script-aware, as is the tokenizer's.
-
-**Scopes with no distinctive vocabulary beyond their own name were scored as
-failures.** A scope's name is excluded from signature terms on purpose -- a
-question containing it would route on the alias boost and test nothing -- but a
-scope with nothing else was then counted as a miss. `loci eval` now reports
-those as unmeasurable and names them.
-
-### A new family: `contended`
-
-Terms held by exactly two scopes, asked as `"how is X handled?"`, gold being both
-owners. It is the only family where more than one scope has a real claim, and
-therefore the only one where widening does anything.
-
-It immediately found a genuine weakness on the real corpus: **8.3%**. For terms
-like `glasses` (shared by Delroy and G2-claude-companion) loci returns both
-owners once in twelve tries. This is the multi-scope recall problem that was
-suspected from cross-scope gold coverage but never had a metric.
-
-### Five artifacts in the bed itself, and what they cost
-
-Every one produced a confidently wrong number before being caught:
-
-1. **Cycled domains** -- ten domains over fifty scopes made five identical, so
-   the gold label was ambiguous and routing "collapsed" at scale.
-2. **Best-case term sampling** -- drawing only a scope's rarest words put the
-   fitted evidence band two points too high.
-3. **Domain-named scopes** -- naming a scope after its own vocabulary made that
-   vocabulary an alias, and aliases are excluded, so three shapes scored 0%.
-4. **Overlap shared within a domain only** -- with more domains than scopes each
-   scope held a unique domain and the parameter did nothing. The entire bed was
-   insensitive: `SIZE_PRIOR` from 0.0 to 1.2 moved no metric at all.
-5. **Shared terms concatenated first** -- the README uses `terms[0..3]`, so past
-   50% overlap the prose held nothing distinctive while unique terms sat in
-   docstrings, which routing excludes. The metric fell off a cliff instead of
-   degrading.
-
-The pattern is worth stating plainly: **a synthetic benchmark fails silently and
-looks like a finding.** Four of these five presented as a defect in loci.
-
-### What the bed cannot do
-
-`WIDEN_RATIO` and `SIZE_PRIOR` remain unmeasurable here. Swept across their full
-range on every shape, neither moves any metric. Synthetic pair-shared terms are
-equally prominent in both owners, so the scores tie and any widen ratio keeps
-both; real corpora have a term that is central to one project and marginal in
-another, which is exactly when widening matters.
-
-**Phase 3 must fit those two against real repositories, not generated ones.**
-That is roadmap rule 7 -- synthetic corpora test robustness, not optimality --
-arriving as a measurement rather than a principle.
-
-## Phase 1.2: real held-out repositories
-
-`evals/real_corpus.py` holds a manifest of twenty public repositories chosen for
-shape variety rather than convenience, with a resumable shallow fetcher and
-named subsets. Nothing in it is the author's, and it is deliberately not all
-Python -- a tokenizer and a set of thresholds fitted on one language's naming
-conventions is exactly what this set exists to detect.
-
-Seven repositories spanning C, Rust, Go, Java, Python, JavaScript and Ruby
-(cJSON, ripgrep, hugo, guava, flask, express, rails; 149MB, 11s to index):
+graphify seeds a traversal by lexical similarity to a node label, so a question
+phrased in *behaviour* reaches code named for its *implementation* only by
+accident:
 
 ```
-7 scopes | random guessing would score 14.3%
-
-family                  n  correct  scopes
-deictic + cwd          56  100.0%       -
-deictic, no cwd         8  100.0%       -
-unanswerable            6  100.0%       -
-signature              14  100.0%     1.0
-contended              12    0.0%       -
+"what parses the command line arguments?"      expansion empty, no traversal ran
+"what removes stored data from the browser?"   seeded getStoredWorkerUrl(),
+                                               wanted clearStorage()
 ```
 
-**Four families out of five transfer intact to code nobody involved has read.**
-That is the strongest generalisation evidence the project has: cwd routing,
-abstention on deictic questions, refusal of nonsense, and scope
-distinguishability all hold on seven languages at once.
+Passing raw tokens instead does not help -- `resolve_link` contains none of
+"short", "code" or "looked". These are semantic gaps, not expansion bugs.
 
-### `contended` fails everywhere, and that is the finding
+The fix embeds each scope's **symbol labels** at index time, matches the question
+against them, and hands graphify the tokens of the nearest ones. Width matters
+more than the idea:
 
-Zero percent here, zero on a four-repo subset, 8.3% on the development corpus.
-Three independent corpora agree: **loci does not return both owners for a term
-two projects genuinely share.** Cross-project questions under-report, and the
-fix is not a threshold -- see below.
-
-### What the real corpus exposed that generated ones could not
-
-**A floor fitted elsewhere is simply wrong.** Run uncalibrated, the real corpus
-was routed with `EVIDENCE_FLOOR = 7.6` -- fitted to the author's repositories --
-while its own contended questions score around 6.0, so every one abstained. This
-is the generalisation problem happening live rather than argued about.
-
-**Calibration had a blind spot.** Its routable sample was drawn only from
-signature questions, which are structurally high-evidence. Contended questions
-occupy a lower band entirely, so the fitted floor sat above the range they live
-in and refused all of them. They are now part of the sample. On this corpus it
-did not move the floor -- the sweep still prefers refusing 14 unroutable
-questions to admitting 12 contended ones -- which says the fix belongs in
-ranking, not in the threshold.
-
-**Parser warnings leaked to the user.** Indexing somebody else's repository
-printed `SyntaxWarning: "\*" is an invalid escape sequence` from `ast.parse`.
-A user can do nothing about a warning in code they did not write.
-
-**The verdict line contradicted its own table.** `contended` sat at 0% across
-three corpora while the summary read "routing looks healthy on this corpus".
-A summary that disagrees with the numbers above it is worse than no summary.
-
-### Prose-only and non-English subsets
-
-Both were fetched on the theory that they were the most likely to break
-something. Routing held: four repositories of pure documentation
-(public-apis, free-programming-books, rust-lang/rfcs, awesome-python) and three
-mixed Chinese/English documentation repositories each scored 100% on the four
-families that transfer, with `contended` failing as everywhere else.
-
-**What the Chinese corpus exposed is a retrieval defect, not a routing one.**
-CJK reached the index -- 55% of the routing vocabulary -- but unsegmented, one
-token per phrase rather than per word:
-
-```
-usable as search terms (<= 4 chars)   821 / 2373   (35%)
-effectively unmatchable (> 8 chars)   597 / 2373
-longest token                          30 characters, a whole sentence
-```
-
-A thirty-character token is reachable only by a query containing that exact
-sentence. Character bigrams are the standard answer where no segmenter is
-available, and the whole run is still kept so an exact phrase matches exactly:
-
-| | before | after |
-|---|---|---|
-| CJK tokens usable as search terms | 35% | **79%** |
-| 30-char phrase reachable by a 2-char query | no | **yes** |
-| index size | 231KB | 339KB |
-
-This is the clearest example of why the held-out set exists. Every English
-corpus in the project scores identically with and without the fix; the defect is
-invisible unless the corpus is non-English, and it had been shipped.
-
-**One manifest entry was wrong.** `vuejs/docs` was labelled "i18n, mixed
-scripts" and contains no CJK at all -- it is the English documentation site. It
-is kept as an explicit control, and a genuinely Chinese-prose repository
-(`doocs/advanced-java`) was added. With the corrected set, `contended` rose from
-0% to 17% -- the first non-zero score on any real corpus.
-
-### Cost
-
-```
-smoke        4 repos    12MB    2s to index
-polyglot     7 repos   149MB   11s to index
-prose        4 repos    20MB
-nonenglish   3 repos    41MB
-```
-
-Subsets are named so the expensive ones stay opt-in.
-
-## Phase 3: fitting the constants that were never fitted
-
-`evals/fit.py` sweeps a constant across both beds at once -- four synthetic
-shapes and the real subsets -- because Phase 1 established that neither alone
-is sufficient.
-
-### `CWD_BOOST = 4.0` is validated, and only the real bed could do it
-
-| value | synthetic beds | real repos |
-|---|---|---|
-| 0.5 | 100% | **61%** |
-| 1.0 | 100% | 96% |
-| 1.5 – 20.0 | 100% | **100%** |
-
-The constraint is a floor at about 1.5, not a peak, and above it the band is flat
-to at least 20. The shipped 4.0 sits comfortably inside it. Every synthetic shape
-scores 100% at every value, because generated scopes have vocabulary distinctive
-enough that the working directory never has to break a tie -- exactly the
-prediction Phase 1 made about what synthetic corpora cannot measure.
-
-### `MIN_MATCHED = 4` is load-bearing, and this benchmark cannot see that
-
-Removing it costs 14 points of uncontaminated top-1 and **67 points of
-cross-scope accuracy** on the held-out hand-authored set. Yet swept across every
-bed, `loci eval` reports it as completely inert.
-
-The two questions that need it are specific:
-
-```
-cross-cloudflare   matched=4  evidence 6.70  strongest single token 2.14
-cross-macos-app    matched=4  evidence 6.47  strongest single token 2.34
-                                             (evidence floor: 7.17)
-```
-
-Both are cross-scope questions made of four *ordinary* tokens, none individually
-decisive. `MIN_MATCHED`'s real job is letting breadth compensate for depth, and
-it operates only in that narrow band.
-
-Three attempts to generate that shape auto-labelled all failed:
-
-1. **A `detailed` family using four rare terms** -- overwhelming evidence, sails
-   past every gate, 100% at every value.
-2. **The same family drawn from ranks 4-8** -- now discriminates between beds
-   (42% to 100%) but still flat across `MIN_MATCHED`.
-3. **Lengthening the `contended` questions** to reach the matched-token range --
-   dropped that family to 0% on every bed, because the added ordinary words
-   pulled the top scope away from the two owning the term. Reverted.
-
-The honest conclusion is that `loci eval` cannot measure this constant, not that
-the constant is inert. That bounds what the self-service benchmark can tell a
-user, and it is worth stating plainly: **a user who tunes on `loci eval` alone
-would find no reason to keep a setting worth 67 points.**
-
-### `ALIAS_BOOST` is unmeasurable by construction
-
-Flat from 0.5 to 20.0 on every bed. The benchmark deliberately excludes scope
-names from its questions -- a question containing one would route on the alias
-boost and test nothing -- so it can never produce a case where that boost is
-marginal. Not a gap to close; a consequence of the design.
-
-### The retrieval metric
-
-`evals/retrieval.py` asks a section's own **heading** and looks for its body,
-with the heading stripped from what is indexed. A heading is written by a human
-as a compressed description of the section below it, so it overlaps its answer
-partly in wording and partly only in meaning -- the mix a real question has.
-
-The obvious alternative, building a query from a chunk's own words, rewards
-lexical overlap by construction and would drive `EMBED_WEIGHT` to zero as an
-artefact of the metric. So the bias is **measured rather than assumed**: every
-query is also scored under each ranker alone.
-
-```
-208 heading queries over bodies that never contain them
-  both rankers find it       78  (61%)
-  only lexical finds it      35  (28%)
-  only semantic finds it     14  (11%)
-```
-
-Eleven percent need the semantic ranker and nothing else, so the metric is not
-secretly lexical and weights fitted on it can be trusted. If that number were
-zero the report says so and tells the reader to treat `EMBED_WEIGHT` as unfitted.
-
-Both rankers are blinded, not just one. The shipped vectors were built over
-`heading + text`; reusing them would let the semantic side match a query against
-its own heading while the lexical side could not, which is worse than no
-blinding at all. Bodies are re-encoded without headings for this measurement.
-
-### Fusion weights, fitted
-
-Two independent corpora -- ten repositories and seven, 208 and 251 queries:
-
-| weights | corpus 1 MRR | corpus 2 MRR |
-|---|---|---|
-| bm25 only | 0.374 | 0.461 |
-| char n-grams only | 0.324 | -- |
-| embeddings only | 0.346 | 0.481 |
-| 0.40 / 0.22 / 0.38 *(previous)* | 0.395 | 0.495 |
-| **0.20 / 0.20 / 0.60** *(fitted)* | **0.406** | **0.526** |
-
-**Fusion beats every single ranker on both corpora.** That is the first direct
-evidence that the three-ranker design earns its complexity rather than being
-assumed to. Both corpora peak at the same point independently, and the band is
-flat for `EMBED_WEIGHT` between roughly 0.4 and 0.7, falling away at 0.8 -- so
-0.6 is the middle of a real region, not a sharp peak.
-
-A trap on the way: the second corpus was first swept without its vectors built,
-so every "embed weight" row silently renormalised to a lexical-only mix. The
-embeddings-only baseline scoring **0.000** is what exposed it. A sweep without a
-solo-ranker baseline would have reported those numbers as fitted.
-
-### `LENGTH_SATURATION = 260` validated
-
-| value | 80 | 160 | **260** | 400 | 800 |
-|---|---|---|---|---|---|
-| MRR | 0.354 | 0.364 | **0.384** | 0.342 | 0.267 |
-
-A clear peak with falloff on both sides. This one was hand-set and happens to be
-right, which is worth saying plainly: it was a guess, and it is now a
-measurement.
-
-### `MIN_GROUNDED` is still unfitted
-
-It reads flat across 0-3, but that is the harness rather than the constant: the
-retrieval metric disables the grounding gate so that every query produces a
-measurable rank. A constant that decides whether to return *anything* cannot be
-fitted by a metric that always demands a ranking. It needs a measurement that
-scores refusals, which does not exist yet.
-
-## Phase 4: the known failures
-
-### The sweep harness was broken, and several Phase 3 conclusions were wrong
-
-`route()` bound its thresholds as **default arguments**, which Python evaluates
-once when the function is defined. Setting `router.MIN_MATCHED = 6` therefore had
-no effect on any caller using the default -- so every threshold sweep run
-through `evals/fit.py` and `evals/sweep.py` was a no-op, and each one reported
-"flat" because nothing had changed.
-
-`CWD_BOOST` and `ALIAS_BOOST` were unaffected, because they are read from the
-module inside the function body rather than bound in the signature. That is why
-`CWD_BOOST` showed a real effect while everything else looked inert, and the
-inconsistency should have been the clue.
-
-All thresholds now resolve from the module at call time, with a test that fails
-if any of them regresses to a default argument. The corrected sweeps:
-
-| constant | corrected finding |
+| nearest labels used | structure probes |
 |---|---|
-| `MIN_MATCHED` | **not** inert. At 2, real-corpus abstention falls to 75% and nonsense refusal to 67%. 4 is correct. |
-| `SIZE_PRIOR` | safe band [0.15, 0.35]; 0.6 collapses signature to 43%. |
-| `WIDEN_RATIO` | genuinely flat 0.55-0.95, now measured rather than assumed. |
-| `DECISIVE_EVIDENCE` | redundant -- see below. |
+| 1 | 6/7 |
+| **2** | **6/7** |
+| 3 | 5/7 |
+| 4 | 5/7 |
 
-The Phase 3 claim that "`loci eval` cannot measure `MIN_MATCHED`" was an artefact
-of this bug. Three attempts to build a family that could measure it were made
-against a harness that could not have detected any change at all.
+Past two, the added tokens are generic -- "logic", "admin", "mutation" -- and
+dilute queries the lexical expansion had already aimed correctly. The first
+attempt used four and *regressed* a probe that previously passed.
 
-### `contended`: 8.3% to 100%
+The remaining miss is `beacon-resolve`, whose gold label is arguable: asked
+"what happens when a short code is looked up?", the traversal returns
+`shortcode.py` and its helpers, which answers the question.
 
-The consistent failure across five corpora. Two distinct causes, and the smaller
-one was the obvious one:
+**Cost:** the vector cache grew from 20MB to 105MB. Capped at 30,000 symbols per
+scope; absent vectors degrade to lexical seeding silently.
 
-```
-term       owner A                  owner B              ratio  outcome
-software   G2-claude-companion 2.97 3M1RY33T 2.79         0.94  ABSTAIN
-curl       G2-claude-companion 2.84 brewery 2.18          0.77  ABSTAIN
-glasses    G2-claude-companion 3.65 Delroy 1.52           0.42  one owner only
-venv       Delroy 1.96              odysseus 1.77         0.90  both
-```
+### 4.2 The prose-scope sponge: investigated, not fixed
 
-Five of eight **abstained outright**, so widening never got a chance -- and on
-real repositories that was every single one. Widening was the visible symptom;
-the gate was the cause.
+Three corrections were tried and all three failed.
 
-A question about a term two projects share splits its evidence between them by
-construction. "How is curl handled?" carries two tokens, so its summed evidence
-is low simply because there are two; its matched count is below the count gate
-for the same reason; and the old `DECISIVE_EVIDENCE` was calibrated for tokens
-exclusive to a single scope, which a shared term can never be. It fell through
-every gate.
+**Unit-free prominence.** Prominence is `df / node_count`, and `node_count` means
+542 *chunks* for a prose scope but 732 *symbol nodes* for a graph-backed one.
+Replacing it with `df / max_df` should have removed the mismatch; the
+`node_count / max_df` ratio turned out to be 1.3-2.1 everywhere, so nothing moved.
 
-What identifies such a question is **concentration**: a token held by very few
-scopes and prominent inside them. Measured only on questions the evidence gate
-actually decides -- deictic ones are refused earlier by grammar and never reach
-it -- the bands separate cleanly:
+**A stronger size prior.** Strictly worse, and revealingly -- the question did not
+go to the right scope, it went to smaller *wrong* ones:
 
-```
-contended questions      3.12 and above
-nonsense and vague       2.05 and below
-```
-
-The new tier admits them and forces every holding scope into the result, because
-returning one owner of a shared term is the bug being fixed. `contended` went to
-**100% on all six beds**, mean set 2.0, with every other family unchanged.
-
-### `DECISIVE_EVIDENCE` deleted
-
-It admitted a question carrying one exceptionally discriminative token. The
-concentrated tier covers that and more: a token held by very few scopes is what
-"decisive" was reaching for, expressed in a way that also identifies *which*
-scopes. Disabling it changed no metric on any of six beds or on the held-out
-set, so it was deleted rather than kept as a second name for the same idea.
-
-### The trade this made, stated plainly
-
-`CONCENTRATED_EVIDENCE` is a real trade-off with no dominant side:
-
-| value | held-out negatives | contended |
+| SIZE_PRIOR | clean top-1 | where the question went |
 |---|---|---|
-| **2.6** *(shipped)* | 67% (4 of 6) | **100%** |
-| 3.0 | 83% (5 of 6) | 67% |
-| disabled | 83% | 8% |
+| 0.15 | 85.7% | odysseus |
+| 0.25 | 71.4% | G2-claude-companion |
+| 0.35 | 57.1% | brewery |
 
-At 2.6 one question leaks: *"Where is the Stripe webhook signature verified?"*
-routes to the two scopes containing `webhook` (evidence 2.96). No project here
-uses Stripe, so the labelled answer is to abstain -- though returning projects
-that genuinely mention webhooks is a near miss rather than a fabrication.
+**Prose vocabulary for every scope.** The real asymmetry: a scope with a code
+graph routes on *symbols*, one without routes on *prose*, so a documented
+project's own words are invisible to routing.
 
-2.6 is shipped because it costs one near-miss and buys four genuine cross-project
-questions. A stricter 3.0 is available and the cost is recorded here rather than
-hidden.
+```
+question: browser silently discard login cookie curl accepts
 
-- One machine, ten scopes, one author. The author had read parts of these
-  corpora before writing family B, which is why `contamination` is a field and
-  why uncontaminated results are always reported separately.
-- Family A is unbiased by construction; families B and C are not, and their
-  sample sizes (7, 11) are small enough that single items move percentages a lot.
-- `negative` at 66.7% is 4 of 6 — do not read that as a rate.
+urthreads  routes on symbols | routing vocab: browser, login, cookie
+                             | its prose:     browser, silently, login, cookie, curl
+odysseus   routes on prose   | routing vocab: all six
+```
+
+odysseus wins not because it is bigger but because it is allowed to use its
+prose. Folding prose into every scope did not fix the item and regressed
+`contended` from 100% to 67%. Reverted.
+
+Recorded as open. The failing item may also not be a defect: odysseus has
+genuine login and cookie handling and the question names no project.
+
+### 4.3 The eval/calibrate circularity: closed
+
+`loci calibrate` fitted its threshold on the same families `loci eval` reported
+on, so a perfect score straight after calibrating was partly the fit reading its
+own training data back. The generated families now split into disjoint halves --
+deterministic, nothing in both, together the whole -- with calibration fitting on
+one and evaluation reporting on the other. The score is unchanged at 100%, which
+is the point: it now means something it did not before.
+
+## `SEMANTIC_FLOOR` self-calibrated
+
+The last hand-picked threshold, flagged three times as most likely to
+mis-generalise. It was read off one corpus with one embedding model: real
+questions scored 0.61-0.80 and unrelated ones 0.46-0.52, so 0.57 sat in the gap.
+Cosine scale belongs to the *model* and the size of that gap to the *corpus*, so
+a number from one pairing describes neither.
+
+Both bands are label-free: a section's own heading is related to its body by
+construction, and a fixed set of questions about penguins, sourdough and the
+1966 World Cup final is related to no software corpus at all.
+
+**Pooling the scopes destroyed it.** The first attempt fitted one floor across
+the corpus and reported the bands separating by **-0.002** over 170 samples.
+Per scope instead:
+
+| scope | chunks | fitted floor |
+|---|---|---|
+| delroy | 8,320 | 0.678 |
+| odysseus | 5,939 | 0.665 |
+| urthreads | 119 | 0.643 |
+| g2-claude-companion | 179 | 0.579 |
+
+Mean separation **+0.109**. The floor tracks corpus size because it is compared
+against a *maximum over a scope's chunks*, and the expected maximum of an
+unrelated query grows with how many chunks you take it over. One pooled number
+could not describe both -- the same units mistake as 4.2, one layer down.
+
+Nothing regressed: retrieval MRR 0.406, evidence returned 12/12, uncontaminated
+answer content @1 6/7, every `loci eval` family at 100%.
+
+## A note on how this document was damaged
+
+Sections were appended by string-replacing an anchor heading. When that heading
+stopped existing the replacement silently did nothing, and when it appeared
+twice the replacement inserted twice -- leaving this file at 1,158 lines with
+every Phase 1.2 through Phase 4 section duplicated, while four sections that were
+"written" had never landed at all.
+
+Three silent no-op edits happened this session by the same mechanism: a string
+replacement whose target had drifted. None of them raised anything. Appending is
+now used instead of anchor replacement.

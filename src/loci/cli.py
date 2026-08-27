@@ -256,7 +256,8 @@ def cmd_calibrate(args) -> int:
     if len(index["scopes"]) < 2:
         print("error: calibration needs at least 2 scopes to compare", file=sys.stderr)
         return 1
-    cal = fit(index)
+    from .index import load_episodes
+    cal = fit(index, load_episodes())
     if not args.dry_run:
         save(cal)
     print(render(cal))

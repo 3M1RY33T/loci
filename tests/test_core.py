@@ -441,10 +441,13 @@ def test_calibration_round_trips(tmp_path, monkeypatch):
     from loci.calibrate import Calibration, load, save
 
     monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
-    cal = Calibration(7.17, 0.84, 149, 14, 5.228, 7.123, False)
+    cal = Calibration(7.17, 0.58, 0.09, 40, {"alpha": 0.61}, 0.84, 149, 14,
+                      5.228, 7.123, False)
     save(cal)
     back = load()
     assert back is not None and back.evidence_floor == 7.17 and not back.trustworthy
+    assert back.semantic_floor == 0.58 and back.semantic_n == 40
+    assert back.semantic_by_scope == {"alpha": 0.61}
 
 
 # -- self-service eval -----------------------------------------------------
@@ -511,6 +514,35 @@ def test_verdict_never_says_healthy_while_a_family_is_at_zero(tmp_path):
     out = render({"families": fams, "n_scopes": 4, "chance": 0.25})
     assert "healthy" not in out
     assert "share" in out.lower()
+
+
+def test_semantic_floor_is_per_scope_not_pooled(tmp_path, monkeypatch):
+    """The floor is compared against a MAXIMUM over a scope's chunks.
+
+    The expected maximum of an unrelated query grows with how many chunks you
+    take it over, so a scope with 8,000 chunks throws up a spurious 0.60 that a
+    scope with 119 never will. Pooling the two collapsed the separation from
+    +0.109 to -0.002 and produced a floor that fit neither.
+    """
+    import loci.paths as P
+    from loci.backends import episodes as ep
+    from loci.calibrate import Calibration, save
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    save(Calibration(7.0, 0.60, 0.11, 200, {"big": 0.68, "small": 0.58},
+                     0.9, 100, 20, 8.0, 7.0, True))
+    assert ep._calibrated_semantic_floor("big") == 0.68
+    assert ep._calibrated_semantic_floor("small") == 0.58
+    # a scope with no fit of its own falls back to the corpus mean
+    assert ep._calibrated_semantic_floor("unknown") == 0.60
+
+
+def test_semantic_floor_falls_back_without_calibration(tmp_path, monkeypatch):
+    import loci.paths as P
+    from loci.backends import episodes as ep
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    assert ep._calibrated_semantic_floor("anything") == ep.SEMANTIC_FLOOR
 
 
 def test_fit_and_report_halves_never_overlap():

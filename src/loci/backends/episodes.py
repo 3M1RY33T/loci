@@ -322,7 +322,8 @@ class BuiltinEpisodeBackend:
         min_grounded = MIN_GROUNDED if min_grounded is None else min_grounded
         min_grounded_frac = (MIN_GROUNDED_FRAC if min_grounded_frac is None
                              else min_grounded_frac)
-        semantic_floor = SEMANTIC_FLOOR if semantic_floor is None else semantic_floor
+        semantic_floor = (_calibrated_semantic_floor(scope_id)
+                          if semantic_floor is None else semantic_floor)
         rerank_depth = RERANK_DEPTH if rerank_depth is None else rerank_depth
         if not chunks:
             return []
@@ -469,6 +470,24 @@ def _fit(scope_id: str, chunks: list[Chunk]):
         return cached
     _FIT[scope_id] = fit(chunks)
     return _FIT[scope_id]
+
+
+def _calibrated_semantic_floor(scope_id: str | None = None) -> float:
+    """The cosine floor fitted to this corpus, or the shipped default.
+
+    The default was read off one corpus with one embedding model. Cosine scale
+    belongs to the model and the size of the related/unrelated gap belongs to
+    the corpus, so a number from one pairing describes neither in general.
+    """
+    try:
+        from ..calibrate import load
+        cal = load()
+    except Exception:
+        cal = None
+    if not cal or not cal.semantic_n:
+        return SEMANTIC_FLOOR
+    per = getattr(cal, "semantic_by_scope", None) or {}
+    return per.get(scope_id, cal.semantic_floor)
 
 
 def _embeddings(path: Path | None = None):
