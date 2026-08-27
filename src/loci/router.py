@@ -26,6 +26,7 @@ from .types import RouteResult
 ALIAS_BOOST = 6.0      # the question names the project outright
 CWD_BOOST = 4.0        # cwd is inside the project tree
 RECENCY_BOOST = 0.15   # tiebreak only; must never outrank real evidence
+GROUP_PENALTY = 0.5    # multiplicative on the evidence base; see below
 WIDEN_RATIO = 0.85     # keep scopes scoring >= WIDEN_RATIO * top
 MAX_SCOPES = 3
 MIN_MATCHED = 4           # legacy count gate; see EVIDENCE_FLOOR
@@ -154,6 +155,27 @@ SIZE_PRIOR = 0.15
 # exclusive to one scope clears it at ~3% node prominence, a token shared by two
 # scopes needs ~15%. Exclusivity and prominence trade off, as they should.
 
+# GROUP_PENALTY is HAND-SET and has never been fitted. It is recorded here in
+# the same terms as ALIAS_BOOST and CWD_BOOST, which is to say: the property
+# that matters is the ORDERING, not the magnitude.
+#
+# It is multiplicative, and applied to the evidence base BEFORE the boosts.
+# Measured on a real corpus, evidence scores occupy 0.1-1.5 while CWD_BOOST is
+# 4.0:
+#
+#   why was the session cookie dropped on localhost?
+#       urthreads 1.4279   odysseus 0.8369   Delroy 0.6980
+#   how is this deployed?          (cwd = Delroy)
+#       Delroy 4.8987 (cwd)        urthreads 0.1333
+#
+# An ADDITIVE penalty large enough to reorder that first row would drive most
+# scopes negative and collapse `soft` into `hard`. A multiplicative one at 0.5
+# moves urthreads to 0.7140 -- still just above Delroy -- and cannot invert a
+# cwd or alias signal at any magnitude, because those are added afterwards.
+#
+# Sweep it across corpus shapes with the Phase 3 harness. What must hold is that
+# no value of it reorders a scope carrying a cwd or alias signal.
+
 
 def _alias_hit(q_tokens: list[str], alias: str) -> bool:
     a = vtokens(alias)
@@ -187,8 +209,22 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
           min_matched: int | None = None,
           evidence_floor: float | None = None,
           concentrated_evidence: float | None = None,
-          size_prior: float | None = None) -> RouteResult:
+          size_prior: float | None = None,
+          eligible: set[str] | None = None,
+          demoted: set[str] | None = None,
+          group_penalty: float | None = None,
+          strict_group: bool = False,
+          group: str | None = None,
+          mode: str | None = None) -> RouteResult:
     """Route a question to scope(s).
+
+    `eligible` and `demoted` come from a group's mode. They filter SELECTION;
+    they never change scoring, and `S` below stays the full corpus count --
+    shrinking it would inflate scope-IDF for survivors and move every
+    calibrated threshold silently.
+
+    `group` and `mode` are carried through for reporting only; the router does
+    not resolve policy.
 
     Every threshold defaults to None and is resolved from the module here, not
     in the signature. A default argument is evaluated once at import time, so
@@ -202,6 +238,7 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     concentrated_evidence = (CONCENTRATED_EVIDENCE if concentrated_evidence is None
                              else concentrated_evidence)
     size_prior = SIZE_PRIOR if size_prior is None else size_prior
+    group_penalty = GROUP_PENALTY if group_penalty is None else group_penalty
     scopes = index["scopes"]
     postings = index["postings"]
     S = len(scopes)
@@ -249,6 +286,10 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         base = total / max(1, len(q))
         if size_prior:
             base /= max(1, meta.get("token_count", 1)) ** size_prior
+        # Before the boosts, deliberately: a multiplicative penalty here cannot
+        # invert a cwd or alias signal that is added below.
+        if demoted and sid in demoted:
+            base *= group_penalty
 
         signals: dict[str, str] = {}
         alias = next((a for a in meta.get("aliases", []) if _alias_hit(q_all, a)), None)
@@ -273,7 +314,11 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
             "top_tokens": matched[:6], "signals": signals,
         }
 
-    ranked = sorted(scores, key=lambda s: -scores[s])
+    ranked_all = sorted(scores, key=lambda s: -scores[s])
+    top_all = ranked_all[0] if ranked_all else None
+    ranked = ([s for s in ranked_all if s in eligible] if eligible is not None
+              else ranked_all)
+
     top = ranked[0] if ranked else None
     top_score = scores.get(top, 0.0) if top else 0.0
     top_matched = detail[top]["matched"] if top else 0
@@ -285,6 +330,10 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # only a problem when nothing else identifies what "this" refers to.
     forced = bool(top and detail[top]["signals"])
     deictic = is_deictic(question)
+    # A concentrated token held only by scopes outside the group must not force
+    # routing. With `eligible` unset this intersection is a no-op, because
+    # concentrated_owners is always a subset of the corpus.
+    concentrated_here = concentrated_owners & set(ranked)
     # Three independent ways to have enough evidence, any one of which routes:
     # one exceptionally discriminative token, enough summed evidence, or enough
     # matched tokens. They fail on different question shapes -- a short question
@@ -292,8 +341,20 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # about a familiar subsystem has the reverse -- so requiring all three
     # abstains on both.
     enough = (top_total >= floor or top_matched >= min_matched
-              or bool(concentrated_owners))
-    abstain = not forced and (deictic or not enough)
+              or bool(concentrated_here))
+
+    reason: str | None = None
+    if strict_group and eligible is not None and top_all is not None \
+            and top_all not in eligible:
+        # The best answer is outside the group. Returning the in-group runner-up
+        # would be a confident answer from the wrong project.
+        abstain, reason = True, "out_of_group"
+    elif not forced and deictic:
+        abstain, reason = True, "deictic"
+    elif not forced and not enough:
+        abstain, reason = True, "no_evidence"
+    else:
+        abstain = False
 
     if abstain:
         selected = ranked            # caller should ask, not pick
@@ -302,9 +363,9 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         selected = [s for s in ranked if scores[s] >= cutoff][:max_scopes]
         # Every scope holding a concentrated token belongs in the answer, in
         # rank order. Returning one owner of a shared term is the bug.
-        if concentrated_owners:
+        if concentrated_here:
             merged = list(dict.fromkeys(
-                selected + [s for s in ranked if s in concentrated_owners]))
+                selected + [s for s in ranked if s in concentrated_here]))
             selected = merged[:max_scopes]
 
     if top:
@@ -312,5 +373,5 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     return RouteResult(
         question=question, query_tokens=q, ranked=ranked, selected=selected,
         abstain=abstain, top_score=top_score, top_matched=top_matched,
-        detail=detail,
+        detail=detail, group=group, mode=mode, abstain_reason=reason,
     )

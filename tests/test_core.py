@@ -415,6 +415,129 @@ def test_is_deictic_detects_pointing_phrases():
     assert not is_deictic("which projects use wrangler?")
 
 
+# -- router: groups --------------------------------------------------------
+def test_scope_idf_is_computed_over_the_whole_corpus_not_the_eligible_set():
+    """Filtering candidates must not change how discriminative a token looks.
+
+    If `eligible` shrank S in `scope_idf = log(1 + S/scope_df)`, surviving
+    scopes' evidence would inflate and every calibrated threshold would move
+    silently. Selection is filtered; scoring is not.
+    """
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30}, 500),
+                 b=("Beta", "/b", {"widget": 25, "flange": 10}, 400),
+                 c=("Gamma", "/c", {"widget": 15}, 300))
+    q = "how does the widget gizmo work"
+
+    full = route(q, idx)
+    narrowed = route(q, idx, eligible={"a"})
+
+    assert narrowed.detail["a"]["evidence_total"] == full.detail["a"]["evidence_total"]
+    assert narrowed.detail["a"]["score"] == full.detail["a"]["score"]
+
+
+def test_group_parameters_left_unset_change_nothing():
+    """The upgrade guarantee: inert until groups exist."""
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30}, 500),
+                 b=("Beta", "/b", {"flange": 25}, 400))
+    q = "how does the widget gizmo work"
+    assert route(q, idx).to_json() == route(
+        q, idx, eligible=None, demoted=None, strict_group=False).to_json()
+
+
+def test_hard_group_abstains_rather_than_returning_the_runner_up():
+    """Returning the best in-group scope when the answer is elsewhere is the
+    merged-index failure wearing a different hat. Design rule 2.
+    """
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                 b=("Beta", "/b", {"flange": 25}, 400))
+    q = "how does the widget gizmo sprocket work"
+
+    open_result = route(q, idx)
+    assert not open_result.abstain and open_result.ranked[0] == "a"
+
+    confined = route(q, idx, eligible={"b"}, strict_group=True)
+    assert confined.abstain
+    assert confined.abstain_reason == "out_of_group"
+
+
+def test_explicit_narrowing_does_not_abstain():
+    """--group narrows because you asked. Only `hard` refuses."""
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                 b=("Beta", "/b", {"widget": 25, "flange": 10}, 400))
+    q = "how does the widget gizmo sprocket work"
+
+    r = route(q, idx, eligible={"b"}, strict_group=False)
+    assert not r.abstain
+    assert r.selected == ["b"]
+
+
+def test_soft_penalty_reorders_but_never_overrides_a_cwd_signal(tmp_path):
+    """Measured: evidence scores sit at 0.1-1.5 while CWD_BOOST is 4.0. The
+    penalty multiplies the evidence base BEFORE the boosts, so it is
+    structurally incapable of inverting cwd -- not merely unlikely to.
+    """
+    a = tmp_path / "a"
+    a.mkdir()
+    idx = _index(a=("Alpha", str(a), {"widget": 5}, 500),
+                 b=("Beta", "/b", {"widget": 40, "gizmo": 30, "sprocket": 20}, 400))
+    q = "how does the widget gizmo sprocket work"
+
+    demoted = route(q, idx, demoted={"a"}, cwd=str(a))
+    assert demoted.ranked[0] == "a", "penalty overrode a cwd signal"
+
+
+def test_soft_penalty_does_reorder_without_a_boost():
+    # Beta is the far larger scope, so the same raw counts are much less
+    # prominent in it: Alpha leads 2.1876 to 0.7403 (Beta's 0.5903 plus the
+    # 0.15 recency tiebreak) before any penalty. That gap is deliberately wide
+    # enough on both sides to survive the default GROUP_PENALTY and to fall to
+    # a tenth of it -- see the call-time test below, which depends on it.
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30}, 500),
+                 b=("Beta", "/b", {"widget": 30, "gizmo": 22}, 50000))
+    q = "how does the widget gizmo work"
+
+    assert route(q, idx).ranked[0] == "a"
+    assert route(q, idx, demoted={"a"}, group_penalty=0.1).ranked[0] == "b"
+
+
+def test_group_penalty_is_read_at_call_time_not_bound_at_import():
+    """Same trap as MIN_MATCHED; see router.py.
+
+    The fixture is tuned so the DEFAULT penalty leaves Alpha on top (1.0938 vs
+    0.7403). A signature-bound default would therefore keep Alpha first here,
+    which is what makes the flip below evidence that the module attribute
+    reached `route`.
+    """
+    import loci.router as R
+
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30}, 500),
+                 b=("Beta", "/b", {"widget": 30, "gizmo": 22}, 50000))
+    q = "how does the widget gizmo work"
+    saved = R.GROUP_PENALTY
+    try:
+        R.GROUP_PENALTY = 0.01
+        assert route(q, idx, demoted={"a"}).ranked[0] == "b", \
+            "module-level GROUP_PENALTY did not reach route()"
+    finally:
+        R.GROUP_PENALTY = saved
+
+
+def test_abstention_always_carries_a_reason():
+    """Today `route --explain` cannot say WHY it abstained."""
+    idx = _index(a=("Alpha", "/a", {"widget": 40}, 500),
+                 b=("Beta", "/b", {"flange": 25}, 400))
+
+    assert route("how does this project start up?", idx).abstain_reason == "deictic"
+    assert route("xyzzy plugh frotz", idx).abstain_reason == "no_evidence"
+    assert route("how does the widget work", idx).abstain_reason in (None, "no_evidence")
+
+
+def test_group_penalty_stays_at_its_documented_value():
+    """Hand-set, never fitted. If this moves, the sweep has to move with it."""
+    import loci.router as R
+    assert R.GROUP_PENALTY == 0.5
+
+
 def test_semantic_symbol_seeding_stays_narrow():
     """Two nearest labels, not four.
 

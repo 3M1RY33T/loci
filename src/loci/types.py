@@ -121,11 +121,17 @@ class RouteResult:
     top_score: float
     top_matched: int
     detail: dict[str, dict] = field(default_factory=dict)
+    group: str | None = None
+    mode: str | None = None
+    abstain_reason: str | None = None   # deictic | no_evidence | out_of_group
 
     def to_json(self) -> dict:
         return {
             "question": self.question, "query_tokens": self.query_tokens,
             "ranked": self.ranked, "selected": self.selected,
             "abstain": self.abstain, "top_score": round(self.top_score, 4),
-            "top_matched": self.top_matched, "detail": self.detail,
+            "top_matched": self.top_matched,
+            "group": self.group, "mode": self.mode,
+            "abstain_reason": self.abstain_reason,
+            "detail": self.detail,
         }
