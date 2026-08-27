@@ -2352,6 +2352,10 @@ def test_group_rm_refuses_a_label_it_cannot_actually_remove(loci_home, capsys):
     """`discover` recomputes a monorepo's containment label on every scan and
     `upsert` unions it back in, so a removal here reappears at the next
     `loci scan`. Silently no-opping is the worst of the three options.
+
+    Both ends of the label are refused: `discover` writes it onto each
+    sub-project AND onto the container itself, which "is a member of its own
+    containment group".
     """
     from loci.cli import main
     from loci.scopes import load_scopes, save_scopes
@@ -2359,6 +2363,10 @@ def test_group_rm_refuses_a_label_it_cannot_actually_remove(loci_home, capsys):
     mono = loci_home / "mono"
     client = mono / "client"
     client.mkdir(parents=True)
+    # The marker is what makes `client` a sub-scope at all -- without it
+    # `discover` would never label anything here, and there would be nothing to
+    # refuse. See `test_group_rm_allows_a_label_no_scan_would_recompute`.
+    (client / "package.json").write_text("{}", encoding="utf-8")
     save_scopes([Scope(id="mono", name="Mono", root=mono, groups=["mono"]),
                  Scope(id="mono-client", name="Mono/client", root=client,
                        groups=["client:acme", "mono"])])
@@ -2367,10 +2375,54 @@ def test_group_rm_refuses_a_label_it_cannot_actually_remove(loci_home, capsys):
     assert "loci scan" in capsys.readouterr().err
     assert load_scopes()[1].group_set() == {"client:acme", "mono"}
 
+    assert main(["group", "rm", "mono", "mono"]) == 2
+    err = capsys.readouterr().err
+    assert "loci scan" in err
+    assert "Mono lives inside Mono" not in err, "a scope contains itself"
+    assert load_scopes()[0].group_set() == {"mono"}
+
     # The refusal is about CONTAINMENT, not about being a sub-scope: a label
     # the filesystem does not assert comes off the same scope normally.
     assert main(["group", "rm", "mono-client", "client:acme"]) == 0
     assert load_scopes()[1].group_set() == {"mono"}
+
+
+def test_group_rm_allows_a_label_no_scan_would_recompute(loci_home):
+    """`discover` asserts containment for depth-1 workspace markers and for
+    `.loci.json` declarations -- nothing else. Two scopes registered
+    independently that merely happen to nest carry no structural relationship,
+    so refusing the removal promises a scan that will never restore the label
+    and leaves the user unable to undo their own `group add`.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    outer = loci_home / "outer"
+    deep = outer / "x" / "y"          # depth 2, and no marker anywhere above it
+    deep.mkdir(parents=True)
+    save_scopes([Scope(id="outer", name="Outer", root=outer),
+                 Scope(id="deep", name="Deep", root=deep)])
+
+    assert main(["group", "add", "deep", "outer"]) == 0
+    assert main(["group", "rm", "deep", "outer"]) == 0
+    assert load_scopes()[1].groups == []
+
+
+def test_group_rm_allows_a_container_label_with_nothing_inside_it(loci_home, capsys):
+    """`discover` labels a repository with its own id only when it actually
+    holds sub-projects (`if subs:`). A scope carrying that label with nothing
+    inside it was told it "lives inside" itself -- a sentence about a
+    relationship that does not exist, blocking a removal no scan would undo.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    mono = loci_home / "mono"
+    mono.mkdir()
+    save_scopes([Scope(id="mono", name="Mono", root=mono, groups=["mono"])])
+
+    assert main(["group", "rm", "mono", "mono"]) == 0
+    assert load_scopes()[0].groups == []
 
 
 def test_group_set_rejects_an_unknown_mode(loci_home):
@@ -2625,3 +2677,45 @@ def test_route_survives_a_hand_edited_registry(loci_home, capsys):
     assert main(["route", "how", "does", "the", "widget", "gizmo", "sprocket",
                  "work", "--no-cwd"]) == 0
     assert "Alpha" in capsys.readouterr().out
+
+
+def test_ask_says_when_scope_overrides_group(loci_home, capsys):
+    """`--scope` outranks group policy by design -- the user has already
+    answered the question groups exist to answer. But `cmd_ask` VALIDATES
+    `--group` and then hands it to a call that discards it, and validating a
+    flag you are about to ignore is what makes the silence misleading.
+    """
+    from loci.cli import main
+
+    _two_scope_corpus(loci_home)
+    argv = ["ask", "how", "does", "the", "flange", "work", "--no-cwd",
+            "--no-structure", "--no-episodes", "--scope", "Beta"]
+
+    assert main(argv) == 0
+    assert "overrides" not in capsys.readouterr().err, "nothing to warn about"
+
+    assert main(argv + ["--group", "me"]) == 0
+    cap = capsys.readouterr()
+    assert "--scope overrides --group me" in cap.err
+    assert "ROUTED -> Beta" in cap.out, "the scope must still win"
+
+
+def test_route_names_the_group_when_nothing_is_indexed_in_it(loci_home, capsys):
+    """`eligible=set()` leaves `route` weighing the question against an empty
+    candidate set, so it reports a reason true of that set and false of the
+    question -- `out_of_group`, when the question was never the problem.
+    `ask.render` corrects that; `route` is the DIAGNOSTIC surface and had no
+    business being the less informative of the two.
+    """
+    from loci.cli import main
+    from loci.groups import Policy, save_policy
+
+    _two_scope_corpus(loci_home)
+    save_policy(Policy(groups={"ghost": "hard"}))
+
+    assert main(["route", "how", "does", "the", "flange", "grommet", "bolt",
+                 "work", "--group", "ghost", "--no-cwd"]) == 0
+    out = capsys.readouterr().out
+    assert "no indexed project is in group ghost" in out
+    assert "out_of_group" not in out
+    assert "candidates:" not in out

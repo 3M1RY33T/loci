@@ -195,6 +195,38 @@ def cmd_groups_infer(args) -> int:
     return 0
 
 
+def _containment_holder(sc, group: str, scopes):
+    """The scope whose structural containment label `group` is, or None.
+
+    `discover` assigns exactly one structural label, and only in one shape: a
+    repository holding depth-1 workspace markers (or `.loci.json` declarations)
+    labels each of those sub-projects -- and itself, being "a member of its own
+    containment group" -- with its own id. It recomputes that on every scan and
+    `upsert` unions it back, so removing one by hand does not survive.
+
+    Matched against `subscopes` rather than against "is an ancestor of". Two
+    scopes registered independently, one merely nested somewhere under the
+    other, have no structural relationship at all: refusing a removal there
+    promises a scan that will never restore the label, and leaves the user
+    unable to undo their own `group add`. `subscopes` is also what `discover`
+    itself calls, so the two cannot disagree about what a sub-project is.
+    """
+    from .scopes import subscopes
+
+    holder = next((p for p in scopes if p.id == group), None)
+    if holder is None:
+        return None
+    # `if subs:` is the same guard `discover` applies before labelling anything,
+    # so a container with nothing inside it never carried the label structurally
+    # and must not be told it lives inside itself.
+    subs = subscopes(holder.root)
+    if not subs:
+        return None
+    if holder.id == sc.id or sc.root.resolve() in subs:
+        return holder
+    return None
+
+
 def cmd_group(args) -> int:
     from .groups import MODES, save_policy
     from .scopes import load_scopes, resolve, save_scopes
@@ -227,13 +259,14 @@ def cmd_group(args) -> int:
         # A containment label is structural: `discover` recomputes it from the
         # filesystem on every scan and `upsert` unions it back in, so removing
         # one here reappears at the next `loci scan`. Refuse rather than no-op.
-        holder = next((p for p in scopes if p.id == args.group
-                       and (p.root == sc.root or p.root in sc.root.parents)), None)
+        holder = _containment_holder(sc, args.group, scopes)
         if holder is not None:
-            print(f"error: {args.group!r} is structural -- {sc.name} lives inside "
-                  f"{holder.name}, and `loci scan` recomputes that label every "
-                  f"run, so removing it here would not survive the next one.",
-                  file=sys.stderr)
+            where = ("holds sub-projects and is a member of its own containment "
+                     "group" if holder.id == sc.id
+                     else f"is a sub-project of {holder.name}")
+            print(f"error: {args.group!r} is structural -- {sc.name} {where}, and "
+                  f"`loci scan` recomputes that label every run, so removing it "
+                  f"here would not survive the next one.", file=sys.stderr)
             return 2
         sc.groups = sorted(current - {args.group})
     # Written straight to the registry, NOT through `upsert`: `upsert` unions
@@ -310,10 +343,15 @@ def cmd_route(args) -> int:
         # turns answers into abstentions, and one that does not say why is
         # indistinguishable from a bug. An empty candidate list is dropped
         # rather than printed as a dangling "candidates: ".
-        why = f", {r.abstain_reason}" if r.abstain_reason else ""
+        # `eligible` filtered every scope out, so `route` weighed the question
+        # against an empty candidate set and reported a reason true of that set
+        # and false of the question. `ask.render` makes the same correction;
+        # the diagnostic surface must not be the less informative of the two.
+        why = (f"no indexed project is in group {r.group}"
+               if r.group and not r.ranked else r.abstain_reason)
         cands = ", ".join(names[s] for s in r.ranked)
-        print(f"ABSTAIN (matched={r.top_matched}{why}) -> ask the user"
-              + (f"; candidates: {cands}" if cands else ""))
+        print(f"ABSTAIN (matched={r.top_matched}{f', {why}' if why else ''})"
+              f" -> ask the user" + (f"; candidates: {cands}" if cands else ""))
     else:
         print(f"-> {', '.join(names[s] for s in r.selected)}")
     if args.explain:
@@ -352,6 +390,12 @@ def cmd_ask(args) -> int:
     policy, registry = _policy_or_die(), _registry_or_empty()
     if _unknown_group(args.group, registry, policy):
         return 2
+    if args.scope and args.group:
+        # An explicit --scope outranks group policy: the user has already
+        # answered the question groups exist to answer. Said out loud because
+        # the line above VALIDATES a flag this call is about to discard, and
+        # validating something you then ignore is what makes silence misleading.
+        print(f"note: --scope overrides --group {args.group}", file=sys.stderr)
     store = load_episodes()
     forced = None
     if args.scope:
