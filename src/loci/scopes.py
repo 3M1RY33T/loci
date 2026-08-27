@@ -123,10 +123,19 @@ def upsert(scopes: list[Scope], new: Scope, *,
 
     `new` is never modified: the caller still holds the scope it asked for, and
     editing it under them made `loci add` print values nobody had requested.
+
+    Preservation is per field. `groups` and `aliases` carry over whole; a glob
+    list carries over only the entries the current defaults do not provide, so
+    a re-scan still delivers a newly shipped default (see the comment below).
     """
     old = next((s for s in scopes if s.id == new.id), None)
     if old is not None:
         carried: dict[str, Any] = {}
+        # Read here, not at import: a module-level table would bind the lists
+        # that existed when this module was first imported, which is the
+        # staleness the glob branch below exists to prevent.
+        defaults = {"episode_globs": DEFAULT_EPISODE_GLOBS,
+                    "code_globs": DEFAULT_CODE_GLOBS}
         for field_name in preserve:
             current = getattr(old, field_name)
             # `groups` is tri-state: None means never inferred, so only an
@@ -134,7 +143,23 @@ def upsert(scopes: list[Scope], new: Scope, *,
             if field_name == "groups":
                 if current is not None:
                     carried["groups"] = list(current)
-            elif current:
+            elif not current:
+                continue
+            elif field_name in defaults:
+                # Carry the DIFFERENCE, not the list. Preserving a stored glob
+                # list wholesale freezes the defaults at whatever they were when
+                # the scope was registered, and a re-scan is the only path by
+                # which a newly shipped glob reaches an existing install -- there
+                # is no CLI surface for code_globs at all. Comparing the stored
+                # list against the current default cannot tell the two apart
+                # either: once the defaults change, an untouched list differs
+                # from them exactly as an edited one does.
+                base = getattr(new, field_name)
+                extras = [g for g in current
+                          if g not in defaults[field_name] and g not in base]
+                if extras:
+                    carried[field_name] = list(base) + extras
+            else:
                 carried[field_name] = list(current)
         if carried:
             new = replace(new, **carried)

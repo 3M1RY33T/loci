@@ -194,6 +194,45 @@ def test_upsert_does_not_mutate_the_scope_it_is_given(tmp_path):
     assert (fresh.aliases, fresh.groups) == before, "upsert edited the caller's scope"
 
 
+def test_a_rescan_delivers_new_default_globs_and_keeps_custom_ones(tmp_path, monkeypatch):
+    """Preserving a glob list wholesale would freeze the defaults forever.
+
+    `make_scope` always fills episode_globs and code_globs, so a stored list is
+    always truthy -- carrying it forward unconditionally closes the only path by
+    which a glob added to the defaults reaches an already registered scope, and
+    there is no CLI surface for code_globs at all. Comparing the stored list
+    against the current default does not rescue it either: once the defaults
+    change, an untouched stored list differs from them too, which is
+    indistinguishable from a user edit. So what is preserved is the difference --
+    the globs the current defaults do not provide -- re-applied on top of the
+    regenerated list. This is the trap types.py:38-41 describes for the absent
+    key, reached from the other side.
+    """
+    import loci.scopes as S
+    from loci.scopes import upsert
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    registered_before = make_scope(root, name="proj")
+    customized = make_scope(
+        root, name="proj",
+        episode_globs=list(S.DEFAULT_EPISODE_GLOBS) + ["notes/**.md"])
+
+    # a glob shipped in the defaults after both scopes were registered
+    monkeypatch.setattr(S, "DEFAULT_CODE_GLOBS",
+                        list(S.DEFAULT_CODE_GLOBS) + ["*.zig"])
+
+    kept = upsert([registered_before], make_scope(root, name="proj"))[0]
+    assert "*.zig" in kept.code_globs, \
+        "a glob added to the defaults never reaches an already registered scope"
+
+    kept = upsert([customized], make_scope(root, name="proj"))[0]
+    assert "*.zig" in kept.code_globs, "a custom episode glob froze code_globs too"
+    assert "notes/**.md" in kept.episode_globs, "re-scan discarded a custom glob"
+    assert all(g in kept.episode_globs for g in S.DEFAULT_EPISODE_GLOBS), \
+        "keeping the custom glob dropped the defaults"
+
+
 def test_add_with_an_explicit_alias_beats_preservation(tmp_path, monkeypatch, capsys):
     """Preservation exists so a re-scan cannot clobber user edits, but a flag on
     `loci add` IS the user naming the value -- it has to win, or re-adding a
