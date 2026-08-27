@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "loci-mem"
+version = "0.1.0"
+description = "Scoped memory for coding agents: a router in front of a structure store and an episode store."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Yigit Yildiz" }]
+keywords = ["memory", "rag", "knowledge-graph", "mcp", "agents", "retrieval"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Libraries",
+]
+
+# The base install stays light on purpose: routing and lexical episode search
+# work with no model download and no vector database.
+dependencies = [
+  "rank-bm25>=0.2.2",
+  "scikit-learn>=1.3",
+  "numpy>=1.21",
+]
+
+[project.optional-dependencies]
+# Structure backend. graphify is a dependency, never a fork: loci reads its
+# graph.json data contract through an adapter, so a different extractor can be
+# substituted without touching anything above backends/.
+graphify = ["graphifyy>=0.9.9"]
+embeddings = ["sentence-transformers>=3.0"]
+rerank = ["sentence-transformers>=3.0"]
+mcp = ["mcp>=1.0"]
+all = ["graphifyy>=0.9.9", "sentence-transformers>=3.0", "mcp>=1.0"]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/YigittYildizz/loci"
+Issues = "https://github.com/YigittYildizz/loci/issues"
+
+# The distribution is `loci-mem` (PyPI `loci` is an abandoned 2018
+# outlier-detection package); the command, the import and the project are
+# all `loci`. Same split as python-dateutil -> dateutil.
+[project.scripts]
+loci = "loci.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/loci"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

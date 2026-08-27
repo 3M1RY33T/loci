@@ -1,0 +1,219 @@
+"""Index construction: the routing index, the episode store, the vectors.
+
+Routing must be O(query tokens). Loading every scope's graph to answer "which
+project is this about" defeats the entire design -- one real graph here is 36MB.
+So the scope index is an inverted `token -> {scope: node_df}` map, built once.
+"""
+from __future__ import annotations
+
+import json
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .backends import get_episode_backend, get_structure_backend
+from .paths import embeddings_file, ensure_home, episode_store_file, scope_index_file
+from .types import Chunk, Scope
+
+INDEX_VERSION = 1
+DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
+
+# Chunk kinds whose vocabulary feeds ROUTING by default. Docstrings are held
+# back, and it is a units problem rather than a quality one: a scope's symbol
+# vocabulary is bounded by its code, while its docstring prose is not, so mixing
+# the two makes scopes incomparable and the size prior stops correcting for it.
+# Measured -- folding docstrings in unconditionally more than doubled one
+# scope's vocabulary, made it top-ranked for questions belonging elsewhere, and
+# dropped cross-scope routing from 100% to 33%.
+ROUTING_KINDS = {"note", "doc", "session", "commit"}
+
+# Making that conditional on whether a scope has symbols was tried and measured,
+# because a cold machine has no graphs and thin scopes then route on almost
+# nothing. It is worse in BOTH regimes, so the exclusion stays unconditional:
+#
+#   warm, fallback off      cwd 100%   clean 85.7%   cross 100%   set 2.50
+#   warm, fallback on       cwd 100%   clean 71.4%   cross  67%   set 3.83
+#   cold, docstrings off    cwd 100%   clean 57.1%   cross  67%   set 3.58
+#   cold, docstrings on     cwd 100%   clean 28.6%   cross  33%   set 3.08
+#
+# Warm it fired on ONE scope (+478 tokens) and cost 14 points, which suggested
+# the damage was asymmetry -- adding vocabulary to some scopes and not others
+# distorts a comparison that is between scopes. Applying it uniformly on a cold
+# machine falsified that: it halved accuracy there too.
+#
+# The real reason is what docstrings are made of. They are high-volume generic
+# English -- "returns", "the value", "default", "configuration", "path", "error"
+# -- which is maximally non-discriminative, and at 6,000 chunks per scope it
+# drowns the signal that symbol names and commit subjects carry. Docstrings are
+# excellent RETRIEVAL material and poor ROUTING material, and having no graph
+# does not change that. The fix for a cold scope is `loci graphs`, not this.
+#
+# Set above zero only to reproduce the experiment; nothing in loci enables it.
+DOCSTRING_FALLBACK_VOCAB = 0
+
+
+def build(scopes: list[Scope], *, structure: str = "graphify",
+          episodes: bool = True, episode_vocab: bool = False,
+          verbose: bool = True) -> dict:
+    """Build and persist the scope index and (optionally) the episode store.
+
+    `episode_vocab` folds episode prose into the ROUTING vocabulary. It measured
+    a large gain, but on a question set authored from that same prose -- so it
+    is off by default and the honest number is the structure-only one.
+    """
+    sb = get_structure_backend(structure)
+    eb = get_episode_backend()
+
+    postings: dict[str, dict[str, int]] = defaultdict(dict)
+    meta: dict[str, dict] = {}
+    store: dict[str, list[dict]] = {}
+
+    for sc in scopes:
+        counts = sb.vocabulary(sc) if sb.available() else {}
+        nodes = sb.node_count(sc) if sb.available() else 0
+        srcs = sb.sources(sc) if sb.available() else []
+
+        chunks: list[Chunk] = []
+        used_docstrings = False
+        if episodes:
+            chunks = eb.collect(sc)
+            store[sc.id] = [c.to_json() for c in chunks]
+            # `episode_vocab` augments structure vocabulary and is off by
+            # default. But a scope with NO structure graph has nothing to
+            # augment, and dropping it would make a docs-only or notes-only
+            # project unroutable while its chunks sit indexed and unreachable.
+            # Prose is then the only vocabulary there is, so use it.
+            if episode_vocab or not counts:
+                routable = [c for c in chunks if c.kind in ROUTING_KINDS]
+                prose_vocab = eb.vocabulary(routable)
+                if not nodes and len(prose_vocab) < DOCSTRING_FALLBACK_VOCAB:
+                    routable += [c for c in chunks if c.kind == "docstring"]
+                    prose_vocab = eb.vocabulary(routable)
+                    used_docstrings = True
+                for t, n in prose_vocab.items():
+                    counts[t] = counts.get(t, 0) + n
+
+        if not counts:
+            if verbose:
+                print(f"  - {sc.name:<18} nothing indexable, skipped")
+            continue
+
+        for t, c in counts.items():
+            postings[t][sc.id] = c
+
+        meta[sc.id] = {
+            "name": sc.name, "root": str(sc.root), "aliases": sc.aliases,
+            # Size normalization needs a unit comparable across scopes. For a
+            # graph-backed scope that is nodes; for a prose-only scope it is
+            # chunks. Falling back to 1 would make every token maximally
+            # prominent and the scope would win every query it touched.
+            "node_count": max(nodes or sum(1 for c in chunks
+                                           if c.kind in ROUTING_KINDS) or len(chunks), 1),
+            "structure_nodes": nodes,
+            "docstring_routing": used_docstrings,
+            "token_count": len(counts),
+            "chunk_count": len(chunks), "sources": srcs,
+            "updated_at": sc.updated_at,
+        }
+        if verbose:
+            kinds = ",".join(s["kind"] for s in srcs) or "-"
+            print(f"  + {sc.name:<18} {nodes:>7} nodes  {len(counts):>6} tokens  "
+                  f"{len(chunks):>5} chunks  [{kinds}]")
+
+    index = {
+        "version": INDEX_VERSION,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "structure_backend": structure,
+        "episode_vocab": episode_vocab,
+        "scopes": meta,
+        "postings": dict(postings),
+    }
+    ensure_home()
+    scope_index_file().write_text(json.dumps(index), encoding="utf-8")
+    if episodes:
+        episode_store_file().write_text(json.dumps({
+            "version": INDEX_VERSION,
+            "built_at": index["built_at"],
+            "scopes": {sid: m["name"] for sid, m in meta.items()},
+            "chunks": store,
+        }), encoding="utf-8")
+    return index
+
+
+def load_index() -> dict:
+    f = scope_index_file()
+    if not f.is_file():
+        raise FileNotFoundError(
+            f"no scope index at {f}. Run `loci index` first.")
+    idx = json.loads(f.read_text(encoding="utf-8"))
+    if idx.get("version") != INDEX_VERSION:
+        raise ValueError(
+            f"scope index at {f} is version {idx.get('version')}, "
+            f"expected {INDEX_VERSION}. Run `loci index` to rebuild.")
+    return idx
+
+
+def load_episodes() -> dict:
+    f = episode_store_file()
+    if not f.is_file():
+        return {"version": INDEX_VERSION, "scopes": {}, "chunks": {}}
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
+def chunks_for(store: dict, scope_id: str) -> list[Chunk]:
+    return [Chunk.from_json(d) for d in (store.get("chunks", {}).get(scope_id) or [])]
+
+
+def embeddings_status() -> list[str] | None:
+    """Scopes whose vectors no longer match the store. None when absent entirely.
+
+    Reindexing without re-embedding leaves per-scope arrays the wrong length.
+    `episodes._semantic` correctly refuses to use them -- but silently, so the
+    tool quietly degrades to lexical-only and nothing says why. Surfacing it is
+    the whole point of a tool that claims coverage gaps are a feature.
+    """
+    import numpy as np
+
+    f = embeddings_file()
+    if not f.is_file():
+        return None
+    store = load_episodes()
+    try:
+        z = np.load(f, allow_pickle=False)
+    except Exception:
+        return sorted(store.get("chunks", {}))
+    names = store.get("scopes", {})
+    stale = []
+    for sid, chunks in (store.get("chunks") or {}).items():
+        if not chunks:
+            continue
+        if sid not in z.files or z[sid].shape[0] != len(chunks):
+            stale.append(names.get(sid, sid))
+    return stale
+
+
+def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
+                     verbose: bool = True) -> Path:
+    """Encode every chunk once. Local model -- content never leaves the machine."""
+    import warnings
+    warnings.filterwarnings("ignore")
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+
+    store = load_episodes()
+    model = SentenceTransformer(model_name)
+    arrays: dict[str, "np.ndarray"] = {}
+    for sid, raw in store.get("chunks", {}).items():
+        if not raw:
+            continue
+        texts = [f"{c.get('heading','')} {c['text']}" for c in raw]
+        arrays[sid] = np.asarray(
+            model.encode(texts, normalize_embeddings=True, batch_size=64,
+                         show_progress_bar=False), dtype="float32")
+        if verbose:
+            print(f"  {store['scopes'].get(sid, sid):<18} {len(texts):>5} chunks "
+                  f"-> {arrays[sid].shape}")
+    out = embeddings_file()
+    ensure_home()
+    np.savez_compressed(out, _model=np.array([model_name]), **arrays)
+    return out

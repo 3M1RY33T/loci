@@ -1,0 +1,341 @@
+{
+  "_method": "Families B-E, hand-authored. `contamination` records what the author had seen when writing each question, because that determines what the item can honestly prove. 'none' = derived from code bodies, which NEITHER store indexes (the structure graph holds labels and paths; the episode store holds prose) -- so retrieving the answer requires bridging intent to implementation. 'prose' = derived from README/notes that ARE indexed; these test ranking, not recall, and are marked so they are never counted as evidence of semantic ability. `expect_contains` lists strings a correct answer must mention. It replaced an earlier `expect_source` that named CODE files -- an unmeetable target, because neither store indexes code bodies. That mistake surfaced the sharpest finding in the set: docstrings and comments, where a great deal of 'why' actually lives, are invisible to both stores. Family F (`structure`) exists because the rest of this set cannot see the structure store at all: routing scores the index, and retrieval is measured with the scope forced and `with_structure=False`, so graphify is never invoked. These questions are phrased behaviourally and scored on whether the traversal surfaces the SYMBOL that answers them -- not on matching a word the question already contains. Some are known misses and are kept deliberately: a family where everything passes measures nothing.",
+  "questions": [
+    {
+      "id": "beh-zim-redirects",
+      "family": "behavior",
+      "question": "When entries get removed from an archive, what happens to the links that pointed at them?",
+      "gold": [
+        "zim-compress"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "src/zim_compress/strip_images.py:134 keeps a redirect only when its target survived; StripStats tracks copied_redirects/skipped_redirects. Question avoids the words 'redirect' and 'zim'.",
+      "expect_contains": [
+        "broken image link",
+        "does not currently rewrite",
+        "redirect"
+      ]
+    },
+    {
+      "id": "beh-zim-svg",
+      "family": "behavior",
+      "question": "Can I drop photographs but keep vector graphics?",
+      "gold": [
+        "zim-compress"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "keep_svg flag in strip_images.py exempts image/svg+xml from the MIME prefix rule.",
+      "expect_contains": [
+        "svg",
+        "keep-svg",
+        "vector"
+      ]
+    },
+    {
+      "id": "beh-ody-windows-clicks",
+      "family": "behavior",
+      "question": "Why would the interface load fine but stop responding to clicks on Windows?",
+      "gold": [
+        "odysseus"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "app.py register_static_mime_types(): stale Windows registry mappings serve .js/.mjs with a non-JS Content-Type, so the UI loads and then fails on interaction.",
+      "expect_contains": [
+        "mime",
+        "content-type",
+        ".mjs",
+        "javascript"
+      ]
+    },
+    {
+      "id": "beh-ody-network-drive",
+      "family": "behavior",
+      "question": "Why would the embedding model fail to load when the data directory is on a network drive?",
+      "gold": [
+        "odysseus"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "app.py forces HuggingFace to copy rather than symlink: Windows cannot follow HF symlinks on a UNC share (WinError 1463), so the ONNX model fails.",
+      "expect_contains": [
+        "symlink",
+        "unc",
+        "network",
+        "hf_hub",
+        "copy"
+      ]
+    },
+    {
+      "id": "beh-urth-cookie",
+      "family": "behavior",
+      "question": "Why would a browser silently discard a login cookie that curl accepts?",
+      "gold": [
+        "urthreads"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "SameSite=None without Secure is rejected by browsers per RFC 6265bis; curl does not enforce the storage rule. Documented in a vault note, so this item tests ranking not recall.",
+      "expect_contains": [
+        "samesite",
+        "secure",
+        "cookie"
+      ]
+    },
+    {
+      "id": "beh-g2cc-approve",
+      "family": "behavior",
+      "question": "How does someone approve a prompt without touching the keyboard?",
+      "gold": [
+        "g2-claude-companion"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "tests/permissions.integration.test.ts and voice.integration.test.ts; README describes ring tap and voice. Question avoids 'glasses', 'ring' and 'voice'.",
+      "expect_contains": [
+        "ring",
+        "voice",
+        "tap",
+        "permission"
+      ]
+    },
+    {
+      "id": "beh-del-biggest",
+      "family": "behavior",
+      "question": "What stops a single turn from consuming the entire budget before it produces anything?",
+      "gold": [
+        "delroy"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "Delroy's reserved landing step / step-budget work. Documented in memory notes, so marked contaminated.",
+      "expect_contains": [
+        "budget",
+        "landing",
+        "step"
+      ]
+    },
+    {
+      "id": "cross-zim",
+      "family": "confusable",
+      "question": "How are ZIM archive files handled?",
+      "gold": [
+        "tsrc",
+        "zim-compress"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "TSRC manages/downloads ZIM archives; zim-compress rewrites them. A correct answer widens to both rather than picking one.",
+      "expect_contains": [
+        "zim"
+      ]
+    },
+    {
+      "id": "cross-selfhosted-ai",
+      "family": "confusable",
+      "question": "Which project is a self-hosted workspace for running local AI models?",
+      "gold": [
+        "odysseus",
+        "tsrc"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "odysseus is a self-hosted AI workspace; TSRC is offline knowledge management with local AI. Genuinely overlapping.",
+      "expect_contains": [
+        "self-hosted",
+        "local model",
+        "local-first"
+      ]
+    },
+    {
+      "id": "cross-cloudflare",
+      "family": "cross",
+      "question": "Which projects deploy to Cloudflare Workers with a D1 database?",
+      "gold": [
+        "urthreads"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "urthreads only, among registered scopes.",
+      "expect_contains": [
+        "cloudflare",
+        "d1",
+        "worker"
+      ]
+    },
+    {
+      "id": "cross-macos-app",
+      "family": "cross",
+      "question": "Which projects ship a packaged macOS application?",
+      "gold": [
+        "brewery",
+        "odysseus"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "brewery ships Brewery-v0.1.0-macOS.dmg; odysseus has build-macos-app.sh and start-macos.sh.",
+      "expect_contains": [
+        "macos",
+        ".dmg",
+        "app bundle",
+        "darwin"
+      ]
+    },
+    {
+      "id": "cross-claude-code",
+      "family": "cross",
+      "question": "Which projects extend or integrate with Claude Code?",
+      "gold": [
+        "g2-claude-companion",
+        "delroy"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "g2cc mirrors a Claude Code session onto glasses; Delroy is an agent harness with Claude Code lineage.",
+      "expect_contains": [
+        "claude code",
+        "claude"
+      ]
+    },
+    {
+      "id": "neg-nonsense-1",
+      "family": "negative",
+      "question": "What is the airspeed velocity of an unladen swallow?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "no scope contains this; the router must abstain."
+    },
+    {
+      "id": "neg-nonsense-2",
+      "family": "negative",
+      "question": "Describe the mating habits of the emperor penguin.",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "no scope contains this."
+    },
+    {
+      "id": "neg-vague-1",
+      "family": "negative",
+      "question": "How do I fix this bug?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "no discriminating vocabulary; abstaining and asking is the only correct behaviour."
+    },
+    {
+      "id": "neg-vague-2",
+      "family": "negative",
+      "question": "What should I work on next?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "no discriminating vocabulary."
+    },
+    {
+      "id": "neg-plausible-absent",
+      "family": "negative",
+      "question": "How is the Kubernetes ingress controller configured for blue-green rollouts?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "technical and specific, but no registered scope does Kubernetes. Tests that plausibility alone does not produce an answer."
+    },
+    {
+      "id": "neg-plausible-absent-2",
+      "family": "negative",
+      "question": "Where is the Stripe webhook signature verified?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "no scope takes payments."
+    },
+    {
+      "id": "str-beacon-verify",
+      "family": "structure",
+      "question": "where is the API key checked before a request is served?",
+      "gold": [
+        "beacon"
+      ],
+      "cwd": "beacon",
+      "contamination": "none",
+      "expect_symbol": "verify_key",
+      "justification": "app/ auth dependency; the question names neither the symbol nor its file."
+    },
+    {
+      "id": "str-beacon-clicks",
+      "family": "structure",
+      "question": "how are click counts recorded?",
+      "gold": [
+        "beacon"
+      ],
+      "cwd": "beacon",
+      "contamination": "none",
+      "expect_symbol": "record_click",
+      "justification": "click analytics counter."
+    },
+    {
+      "id": "str-beacon-resolve",
+      "family": "structure",
+      "question": "what happens when a short code is looked up?",
+      "gold": [
+        "beacon"
+      ],
+      "cwd": "beacon",
+      "contamination": "none",
+      "expect_symbol": "resolve_link",
+      "justification": "KNOWN MISS: traversal seeds on shortcode.py helpers instead of the resolver."
+    },
+    {
+      "id": "str-urth-submit",
+      "family": "structure",
+      "question": "what runs when someone posts a new comment?",
+      "gold": [
+        "urthreads"
+      ],
+      "cwd": "urthreads",
+      "contamination": "none",
+      "expect_symbol": "submitComment",
+      "justification": "client/comments.js submit path."
+    },
+    {
+      "id": "str-urth-storage",
+      "family": "structure",
+      "question": "what removes stored data from the browser?",
+      "gold": [
+        "urthreads"
+      ],
+      "cwd": "urthreads",
+      "contamination": "none",
+      "expect_symbol": "clearStorage",
+      "justification": "KNOWN MISS: seeds on getStoredWorkerUrl() and a CORS note instead."
+    },
+    {
+      "id": "str-zim-content",
+      "family": "structure",
+      "question": "what supplies the body of an archive entry?",
+      "gold": [
+        "zim-compress"
+      ],
+      "cwd": "zim-compress",
+      "contamination": "none",
+      "expect_symbol": "get_contentprovider",
+      "justification": "ArchiveItem content provider."
+    },
+    {
+      "id": "str-zim-cli",
+      "family": "structure",
+      "question": "what parses the command line arguments?",
+      "gold": [
+        "zim-compress"
+      ],
+      "cwd": "zim-compress",
+      "contamination": "none",
+      "expect_symbol": "build_parser",
+      "justification": "KNOWN MISS: the scope's 82-token symbol vocabulary contains none of the query terms, so expansion is empty and no traversal runs."
+    }
+  ]
+}

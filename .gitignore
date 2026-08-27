@@ -1,0 +1,10 @@
+*.egg-info/
+*.py[cod]
+.loci/
+.pytest_cache/
+.venv/
+__pycache__/
+build/
+dist/
+graphify-out/
+venv/
