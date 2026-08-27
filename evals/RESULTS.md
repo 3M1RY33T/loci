@@ -520,6 +520,135 @@ nonenglish   3 repos    41MB
 
 Subsets are named so the expensive ones stay opt-in.
 
+## Phase 3: fitting the constants that were never fitted
+
+`evals/fit.py` sweeps a constant across both beds at once -- four synthetic
+shapes and the real subsets -- because Phase 1 established that neither alone
+is sufficient.
+
+### `CWD_BOOST = 4.0` is validated, and only the real bed could do it
+
+| value | synthetic beds | real repos |
+|---|---|---|
+| 0.5 | 100% | **61%** |
+| 1.0 | 100% | 96% |
+| 1.5 – 20.0 | 100% | **100%** |
+
+The constraint is a floor at about 1.5, not a peak, and above it the band is flat
+to at least 20. The shipped 4.0 sits comfortably inside it. Every synthetic shape
+scores 100% at every value, because generated scopes have vocabulary distinctive
+enough that the working directory never has to break a tie -- exactly the
+prediction Phase 1 made about what synthetic corpora cannot measure.
+
+### `MIN_MATCHED = 4` is load-bearing, and this benchmark cannot see that
+
+Removing it costs 14 points of uncontaminated top-1 and **67 points of
+cross-scope accuracy** on the held-out hand-authored set. Yet swept across every
+bed, `loci eval` reports it as completely inert.
+
+The two questions that need it are specific:
+
+```
+cross-cloudflare   matched=4  evidence 6.70  strongest single token 2.14
+cross-macos-app    matched=4  evidence 6.47  strongest single token 2.34
+                                             (evidence floor: 7.17)
+```
+
+Both are cross-scope questions made of four *ordinary* tokens, none individually
+decisive. `MIN_MATCHED`'s real job is letting breadth compensate for depth, and
+it operates only in that narrow band.
+
+Three attempts to generate that shape auto-labelled all failed:
+
+1. **A `detailed` family using four rare terms** -- overwhelming evidence, sails
+   past every gate, 100% at every value.
+2. **The same family drawn from ranks 4-8** -- now discriminates between beds
+   (42% to 100%) but still flat across `MIN_MATCHED`.
+3. **Lengthening the `contended` questions** to reach the matched-token range --
+   dropped that family to 0% on every bed, because the added ordinary words
+   pulled the top scope away from the two owning the term. Reverted.
+
+The honest conclusion is that `loci eval` cannot measure this constant, not that
+the constant is inert. That bounds what the self-service benchmark can tell a
+user, and it is worth stating plainly: **a user who tunes on `loci eval` alone
+would find no reason to keep a setting worth 67 points.**
+
+### `ALIAS_BOOST` is unmeasurable by construction
+
+Flat from 0.5 to 20.0 on every bed. The benchmark deliberately excludes scope
+names from its questions -- a question containing one would route on the alias
+boost and test nothing -- so it can never produce a case where that boost is
+marginal. Not a gap to close; a consequence of the design.
+
+### The retrieval metric
+
+`evals/retrieval.py` asks a section's own **heading** and looks for its body,
+with the heading stripped from what is indexed. A heading is written by a human
+as a compressed description of the section below it, so it overlaps its answer
+partly in wording and partly only in meaning -- the mix a real question has.
+
+The obvious alternative, building a query from a chunk's own words, rewards
+lexical overlap by construction and would drive `EMBED_WEIGHT` to zero as an
+artefact of the metric. So the bias is **measured rather than assumed**: every
+query is also scored under each ranker alone.
+
+```
+208 heading queries over bodies that never contain them
+  both rankers find it       78  (61%)
+  only lexical finds it      35  (28%)
+  only semantic finds it     14  (11%)
+```
+
+Eleven percent need the semantic ranker and nothing else, so the metric is not
+secretly lexical and weights fitted on it can be trusted. If that number were
+zero the report says so and tells the reader to treat `EMBED_WEIGHT` as unfitted.
+
+Both rankers are blinded, not just one. The shipped vectors were built over
+`heading + text`; reusing them would let the semantic side match a query against
+its own heading while the lexical side could not, which is worse than no
+blinding at all. Bodies are re-encoded without headings for this measurement.
+
+### Fusion weights, fitted
+
+Two independent corpora -- ten repositories and seven, 208 and 251 queries:
+
+| weights | corpus 1 MRR | corpus 2 MRR |
+|---|---|---|
+| bm25 only | 0.374 | 0.461 |
+| char n-grams only | 0.324 | -- |
+| embeddings only | 0.346 | 0.481 |
+| 0.40 / 0.22 / 0.38 *(previous)* | 0.395 | 0.495 |
+| **0.20 / 0.20 / 0.60** *(fitted)* | **0.406** | **0.526** |
+
+**Fusion beats every single ranker on both corpora.** That is the first direct
+evidence that the three-ranker design earns its complexity rather than being
+assumed to. Both corpora peak at the same point independently, and the band is
+flat for `EMBED_WEIGHT` between roughly 0.4 and 0.7, falling away at 0.8 -- so
+0.6 is the middle of a real region, not a sharp peak.
+
+A trap on the way: the second corpus was first swept without its vectors built,
+so every "embed weight" row silently renormalised to a lexical-only mix. The
+embeddings-only baseline scoring **0.000** is what exposed it. A sweep without a
+solo-ranker baseline would have reported those numbers as fitted.
+
+### `LENGTH_SATURATION = 260` validated
+
+| value | 80 | 160 | **260** | 400 | 800 |
+|---|---|---|---|---|---|
+| MRR | 0.354 | 0.364 | **0.384** | 0.342 | 0.267 |
+
+A clear peak with falloff on both sides. This one was hand-set and happens to be
+right, which is worth saying plainly: it was a guess, and it is now a
+measurement.
+
+### `MIN_GROUNDED` is still unfitted
+
+It reads flat across 0-3, but that is the harness rather than the constant: the
+retrieval metric disables the grounding gate so that every query produces a
+measurable rank. A constant that decides whether to return *anything* cannot be
+fitted by a metric that always demands a ranking. It needs a measurement that
+scores refusals, which does not exist yet.
+
 ## Honest limits## Phase 1: the test bed
 
 `evals/corpus.py` generates corpora with controlled shape; `evals/sweep.py` runs
@@ -705,6 +834,135 @@ nonenglish   3 repos    41MB
 ```
 
 Subsets are named so the expensive ones stay opt-in.
+
+## Phase 3: fitting the constants that were never fitted
+
+`evals/fit.py` sweeps a constant across both beds at once -- four synthetic
+shapes and the real subsets -- because Phase 1 established that neither alone
+is sufficient.
+
+### `CWD_BOOST = 4.0` is validated, and only the real bed could do it
+
+| value | synthetic beds | real repos |
+|---|---|---|
+| 0.5 | 100% | **61%** |
+| 1.0 | 100% | 96% |
+| 1.5 – 20.0 | 100% | **100%** |
+
+The constraint is a floor at about 1.5, not a peak, and above it the band is flat
+to at least 20. The shipped 4.0 sits comfortably inside it. Every synthetic shape
+scores 100% at every value, because generated scopes have vocabulary distinctive
+enough that the working directory never has to break a tie -- exactly the
+prediction Phase 1 made about what synthetic corpora cannot measure.
+
+### `MIN_MATCHED = 4` is load-bearing, and this benchmark cannot see that
+
+Removing it costs 14 points of uncontaminated top-1 and **67 points of
+cross-scope accuracy** on the held-out hand-authored set. Yet swept across every
+bed, `loci eval` reports it as completely inert.
+
+The two questions that need it are specific:
+
+```
+cross-cloudflare   matched=4  evidence 6.70  strongest single token 2.14
+cross-macos-app    matched=4  evidence 6.47  strongest single token 2.34
+                                             (evidence floor: 7.17)
+```
+
+Both are cross-scope questions made of four *ordinary* tokens, none individually
+decisive. `MIN_MATCHED`'s real job is letting breadth compensate for depth, and
+it operates only in that narrow band.
+
+Three attempts to generate that shape auto-labelled all failed:
+
+1. **A `detailed` family using four rare terms** -- overwhelming evidence, sails
+   past every gate, 100% at every value.
+2. **The same family drawn from ranks 4-8** -- now discriminates between beds
+   (42% to 100%) but still flat across `MIN_MATCHED`.
+3. **Lengthening the `contended` questions** to reach the matched-token range --
+   dropped that family to 0% on every bed, because the added ordinary words
+   pulled the top scope away from the two owning the term. Reverted.
+
+The honest conclusion is that `loci eval` cannot measure this constant, not that
+the constant is inert. That bounds what the self-service benchmark can tell a
+user, and it is worth stating plainly: **a user who tunes on `loci eval` alone
+would find no reason to keep a setting worth 67 points.**
+
+### `ALIAS_BOOST` is unmeasurable by construction
+
+Flat from 0.5 to 20.0 on every bed. The benchmark deliberately excludes scope
+names from its questions -- a question containing one would route on the alias
+boost and test nothing -- so it can never produce a case where that boost is
+marginal. Not a gap to close; a consequence of the design.
+
+### The retrieval metric
+
+`evals/retrieval.py` asks a section's own **heading** and looks for its body,
+with the heading stripped from what is indexed. A heading is written by a human
+as a compressed description of the section below it, so it overlaps its answer
+partly in wording and partly only in meaning -- the mix a real question has.
+
+The obvious alternative, building a query from a chunk's own words, rewards
+lexical overlap by construction and would drive `EMBED_WEIGHT` to zero as an
+artefact of the metric. So the bias is **measured rather than assumed**: every
+query is also scored under each ranker alone.
+
+```
+208 heading queries over bodies that never contain them
+  both rankers find it       78  (61%)
+  only lexical finds it      35  (28%)
+  only semantic finds it     14  (11%)
+```
+
+Eleven percent need the semantic ranker and nothing else, so the metric is not
+secretly lexical and weights fitted on it can be trusted. If that number were
+zero the report says so and tells the reader to treat `EMBED_WEIGHT` as unfitted.
+
+Both rankers are blinded, not just one. The shipped vectors were built over
+`heading + text`; reusing them would let the semantic side match a query against
+its own heading while the lexical side could not, which is worse than no
+blinding at all. Bodies are re-encoded without headings for this measurement.
+
+### Fusion weights, fitted
+
+Two independent corpora -- ten repositories and seven, 208 and 251 queries:
+
+| weights | corpus 1 MRR | corpus 2 MRR |
+|---|---|---|
+| bm25 only | 0.374 | 0.461 |
+| char n-grams only | 0.324 | -- |
+| embeddings only | 0.346 | 0.481 |
+| 0.40 / 0.22 / 0.38 *(previous)* | 0.395 | 0.495 |
+| **0.20 / 0.20 / 0.60** *(fitted)* | **0.406** | **0.526** |
+
+**Fusion beats every single ranker on both corpora.** That is the first direct
+evidence that the three-ranker design earns its complexity rather than being
+assumed to. Both corpora peak at the same point independently, and the band is
+flat for `EMBED_WEIGHT` between roughly 0.4 and 0.7, falling away at 0.8 -- so
+0.6 is the middle of a real region, not a sharp peak.
+
+A trap on the way: the second corpus was first swept without its vectors built,
+so every "embed weight" row silently renormalised to a lexical-only mix. The
+embeddings-only baseline scoring **0.000** is what exposed it. A sweep without a
+solo-ranker baseline would have reported those numbers as fitted.
+
+### `LENGTH_SATURATION = 260` validated
+
+| value | 80 | 160 | **260** | 400 | 800 |
+|---|---|---|---|---|---|
+| MRR | 0.354 | 0.364 | **0.384** | 0.342 | 0.267 |
+
+A clear peak with falloff on both sides. This one was hand-set and happens to be
+right, which is worth saying plainly: it was a guess, and it is now a
+measurement.
+
+### `MIN_GROUNDED` is still unfitted
+
+It reads flat across 0-3, but that is the harness rather than the constant: the
+retrieval metric disables the grounding gate so that every query produces a
+measurable rank. A constant that decides whether to return *anything* cannot be
+fitted by a metric that always demands a ranking. It needs a measurement that
+scores refusals, which does not exist yet.
 
 ## Honest limits
 

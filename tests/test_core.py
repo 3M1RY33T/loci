@@ -135,6 +135,17 @@ def test_thresholds_stay_at_their_fitted_values():
     assert (R.SIZE_PRIOR, R.WIDEN_RATIO, R.MIN_MATCHED) == (0.15, 0.85, 4)
 
 
+def test_fusion_weights_stay_at_their_fitted_values():
+    """Fitted on a retrieval metric over two real corpora. See episodes.py.
+
+    Both peaked at the same point and both beat the previous hand-set values;
+    the band is flat for EMBED_WEIGHT in roughly [0.4, 0.7].
+    """
+    from loci.backends import episodes as ep
+    assert (ep.BM25_WEIGHT, ep.CHAR_WEIGHT, ep.EMBED_WEIGHT) == (0.20, 0.20, 0.60)
+    assert abs(ep.BM25_WEIGHT + ep.CHAR_WEIGHT + ep.EMBED_WEIGHT - 1.0) < 1e-9
+
+
 def test_router_abstains_on_vague_questions():
     idx = _index(a=("Alpha", "/a", {"widget": 5, "gizmo": 3}, 100))
     r = route("what should I do next?", idx)

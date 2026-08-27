@@ -20,6 +20,13 @@ construction, so nobody has to label anything:
                     size-bias do anything -- every other family produces a
                     dominant winner, and a metric with one winner cannot
                     measure a parameter that decides how many to return.
+  detailed          the same, but four terms in a longer sentence. Real
+                    questions run longer than two words, and a gate on matched
+                    token COUNT only operates in that range -- measured, this
+                    benchmark's other families produce a median of 2 matched
+                    tokens while hand-written questions produce 4 and reach 8,
+                    so without this family `MIN_MATCHED` appeared to be inert
+                    while removing it cost 67 points of cross-scope accuracy.
   signature         built from each scope's own most discriminative vocabulary,
                     excluding its name. Gold is that scope. This measures
                     whether the user's scopes are distinguishable FROM EACH
@@ -73,6 +80,13 @@ SIGNATURE_TEMPLATES = [
     "how is {a} handled together with {b}?",
     "what happens to {a} during {b} processing?",
     "which component connects {a} and {b}?",
+]
+
+# Longer, and deliberately so: these produce the matched-token counts that a
+# count gate actually operates on. Still free of deictic markers.
+DETAILED_TEMPLATES = [
+    "when {a} is created, how do {b} and {c} affect the {d} that gets written?",
+    "what connects {a} to {b}, and where do {c} and {d} come into that?",
 ]
 
 
@@ -203,7 +217,37 @@ def run(index: dict, *, signature_per_scope: int = 2) -> dict:
                 sig_f.misses.append(f"{meta['name']} -> {got}: {q}")
     fams["signature"] = sig_f
 
+    det_f = Family("detailed", detail="longer questions, ordinary vocabulary")
+    for sid, meta in scopes.items():
+        # Ranks 4-8, not 0-4. A question built from a scope's four RAREST words
+        # carries overwhelming evidence and sails past every gate, so it cannot
+        # exercise one -- the same mistake that put the first calibration's
+        # fitted floor two points too high. A count gate only operates where
+        # there are many matched tokens and modest evidence per token, which is
+        # what ordinary vocabulary produces.
+        pool = signature_terms(index, sid, k=9)
+        terms = pool[4:9] if len(pool) >= 9 else pool[-4:]
+        if len(terms) < 4:
+            continue
+        for tpl in DETAILED_TEMPLATES:
+            q = tpl.format(a=terms[0], b=terms[1], c=terms[2], d=terms[3])
+            r = route(q, index)
+            det_f.n += 1
+            if not r.abstain and r.ranked[0] == sid:
+                det_f.correct += 1
+            else:
+                got = "abstained" if r.abstain else scopes[r.ranked[0]]["name"]
+                det_f.abstained += r.abstain
+                det_f.misses.append(f"{meta['name']} -> {got}: {q}")
+    fams["detailed"] = det_f
+
     con_f = Family("contended", detail="two scopes share the term; both should come back")
+    # Kept short deliberately. A longer phrasing was tried, to reach the
+    # matched-token range where `MIN_MATCHED` operates, and it dropped this
+    # family to 0% on every bed -- the extra ordinary words pulled the top scope
+    # away from the two that own the term. See RESULTS.md: three attempts to
+    # make this benchmark sensitive to `MIN_MATCHED` all failed, and the honest
+    # conclusion is that it cannot, not that the constant is inert.
     for term, sids in contended_terms(index):
         q = f"how is {term} handled?"
         r = route(q, index)

@@ -42,9 +42,29 @@ MAX_COMMITS = 400
 MAX_CODE_FILES = 1500      # a hard stop, so one huge repo cannot dominate
 
 # -- ranking ---------------------------------------------------------------
-BM25_WEIGHT = 0.40
-CHAR_WEIGHT = 0.22
-EMBED_WEIGHT = 0.38
+# Fitted, at last, on a retrieval metric rather than chosen because they seemed
+# reasonable. `evals/retrieval.py` asks a section's own heading and looks for its
+# body, with the heading stripped from what is indexed -- a human-written heading
+# is a compressed paraphrase of the section below it, so the query overlaps its
+# answer partly in wording and partly only in meaning.
+#
+# Measured on two independent corpora, ten repositories and seven, 208 and 251
+# queries. Both peak at the same point and both beat the previous values:
+#
+#                      corpus 1   corpus 2
+#   bm25 only            0.374      0.461
+#   char only            0.324        --
+#   embeddings only      0.346      0.481
+#   0.40 / 0.22 / 0.38   0.395      0.495     (previous)
+#   0.20 / 0.20 / 0.60   0.406      0.526     (fitted)
+#
+# Fusion beats every single ranker on both, which is the first direct evidence
+# that the three-ranker design earns its complexity. The band is flat for
+# EMBED_WEIGHT between roughly 0.4 and 0.7 and falls away at 0.8, so 0.6 is the
+# middle of a real region rather than a sharp peak.
+BM25_WEIGHT = 0.20
+CHAR_WEIGHT = 0.20
+EMBED_WEIGHT = 0.60
 RECENCY_WEIGHT = 0.05
 LENGTH_SATURATION = 260
 SCORE_FLOOR = 0.12
