@@ -76,6 +76,19 @@ NONSENSE = [
 # designed, and it dragged the signature family from 90% to 45%. A benchmark
 # that penalises correct behaviour is worse than no benchmark, so this is
 # enforced by a test rather than trusted to review.
+# `loci calibrate` fits a threshold using these same families, so scoring the
+# result on all of them would be circular -- a perfect `loci eval` immediately
+# after calibrating would partly be the fit reading itself back. The two halves
+# are disjoint and deterministic: calibration fits on `half="fit"`, evaluation
+# reports on `half="report"`, and nothing is ever in both.
+def halve(items: list, half: str) -> list:
+    if half == "fit":
+        return items[0::2]
+    if half == "report":
+        return items[1::2]
+    return items
+
+
 SIGNATURE_TEMPLATES = [
     "how is {a} handled together with {b}?",
     "what happens to {a} during {b} processing?",
@@ -156,13 +169,17 @@ def contended_terms(index: dict, limit: int = 12) -> list[tuple[str, list[str]]]
     return [(t, sids) for _, t, sids in out[:limit]]
 
 
-def run(index: dict, *, signature_per_scope: int = 2) -> dict:
+def run(index: dict, *, signature_per_scope: int = 2, half: str = "report") -> dict:
     scopes = index["scopes"]
     fams: dict[str, Family] = {}
 
+    taxonomy = halve(TAXONOMY, half)
+    nonsense = halve(NONSENSE, half)
+    sig_templates = halve(SIGNATURE_TEMPLATES, half) or SIGNATURE_TEMPLATES[:1]
+
     cwd_f = Family("deictic + cwd", detail="should route to the scope you are in")
     for sid, meta in scopes.items():
-        for q in TAXONOMY:
+        for q in taxonomy:
             r = route(q, index, cwd=meta["root"])
             cwd_f.n += 1
             if not r.abstain and r.ranked[0] == sid:
@@ -173,7 +190,7 @@ def run(index: dict, *, signature_per_scope: int = 2) -> dict:
     fams["cwd"] = cwd_f
 
     nocwd_f = Family("deictic, no cwd", detail="should abstain; nothing says which project")
-    for q in TAXONOMY:
+    for q in taxonomy:
         r = route(q, index)
         nocwd_f.n += 1
         nocwd_f.correct += r.abstain
@@ -183,7 +200,7 @@ def run(index: dict, *, signature_per_scope: int = 2) -> dict:
     fams["nocwd"] = nocwd_f
 
     neg_f = Family("unanswerable", detail="should abstain; no corpus can answer these")
-    for q in NONSENSE:
+    for q in nonsense:
         r = route(q, index)
         neg_f.n += 1
         neg_f.correct += r.abstain
@@ -204,7 +221,7 @@ def run(index: dict, *, signature_per_scope: int = 2) -> dict:
             # a routing defect.
             unmeasurable.append(meta["name"])
             continue
-        for tpl in SIGNATURE_TEMPLATES[:signature_per_scope]:
+        for tpl in sig_templates[:signature_per_scope]:
             q = tpl.format(a=terms[0], b=terms[1])
             r = route(q, index)
             sig_f.n += 1

@@ -513,6 +513,21 @@ def test_verdict_never_says_healthy_while_a_family_is_at_zero(tmp_path):
     assert "share" in out.lower()
 
 
+def test_fit_and_report_halves_never_overlap():
+    """Calibration fits on one half and evaluation reports on the other.
+
+    Without the split, a perfect `loci eval` straight after `loci calibrate` is
+    partly the fitted threshold reading its own training data back.
+    """
+    from loci.eval import NONSENSE, SIGNATURE_TEMPLATES, TAXONOMY, halve
+
+    for items in (TAXONOMY, NONSENSE, SIGNATURE_TEMPLATES):
+        fit, report = halve(items, "fit"), halve(items, "report")
+        assert not (set(fit) & set(report)), items
+        assert set(fit) | set(report) == set(items)
+        assert fit and report
+
+
 def test_eval_needs_no_hand_labels(tmp_path):
     """Every family's gold answer is known by construction."""
     from loci.eval import run
@@ -521,8 +536,9 @@ def test_eval_needs_no_hand_labels(tmp_path):
     (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
     res = run(idx)
     fams = res["families"]
-    assert fams["cwd"].n == 2 * 8            # taxonomy x scopes
-    assert fams["nonsense"].n == 6
+    from loci.eval import NONSENSE, TAXONOMY, halve
+    assert fams["cwd"].n == 2 * len(halve(TAXONOMY, "report"))
+    assert fams["nonsense"].n == len(halve(NONSENSE, "report"))
     assert fams["nocwd"].correct == fams["nocwd"].n   # all must abstain
     assert res["chance"] == 0.5
 

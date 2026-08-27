@@ -34,7 +34,7 @@ import math
 from dataclasses import dataclass
 
 from .eval import (NONSENSE, SIGNATURE_TEMPLATES, TAXONOMY, contended_terms,
-                   signature_terms)
+                   halve, signature_terms)
 from .paths import atomic_write, home
 
 CALIBRATION_VERSION = 2
@@ -91,7 +91,10 @@ def collect_samples(index: dict) -> tuple[list[float], list[float]]:
             terms = pool[start:start + 2]
             if len(terms) < 2:
                 continue
-            for tpl in SIGNATURE_TEMPLATES:
+            # The fit half only. `loci eval` reports on the other half, so a
+            # perfect score straight after calibrating is not the fit reading
+            # itself back.
+            for tpl in (halve(SIGNATURE_TEMPLATES, "fit") or SIGNATURE_TEMPLATES[:1]):
                 q = tpl.format(a=terms[0], b=terms[1])
                 r = route(q, index)
                 # Only count it when the evidence actually points at the right
@@ -111,7 +114,7 @@ def collect_samples(index: dict) -> tuple[list[float], list[float]]:
         if r.ranked and r.ranked[0] in sids:
             should_route.append(_evidence_total(r, idf_max))
 
-    for q in TAXONOMY + NONSENSE:
+    for q in halve(TAXONOMY, "fit") + halve(NONSENSE, "fit"):
         should_abstain.append(_evidence_total(route(q, index), idf_max))
 
     return should_route, should_abstain
