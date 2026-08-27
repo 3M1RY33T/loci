@@ -170,11 +170,24 @@ SIZE_PRIOR = 0.15
 #
 # An ADDITIVE penalty large enough to reorder that first row would drive most
 # scopes negative and collapse `soft` into `hard`. A multiplicative one at 0.5
-# moves urthreads to 0.7140 -- still just above Delroy -- and cannot invert a
-# cwd or alias signal at any magnitude, because those are added afterwards.
+# moves urthreads to 0.7140 -- still just above Delroy -- and cannot remove the
+# boost, because the boost is added afterwards.
 #
-# Sweep it across corpus shapes with the Phase 3 harness. What must hold is that
-# no value of it reorders a scope carrying a cwd or alias signal.
+# What that buys, exactly: a demoted scope holding cwd scores at least
+# CWD_BOOST, at ANY penalty including 0, because the penalty scales only the
+# evidence base. So no penalty can push it below a scope whose own base is under
+# 4.0 -- which, measured, is every unboosted scope on a real corpus (0.1-1.5).
+#
+# It is NOT an unconditional guarantee, and an earlier version of this comment
+# claimed it was. A scope with an unusually large base can still overtake a
+# demoted cwd scope. Measured on a small, vocabulary-dense fixture:
+#
+#   penalty 1.0   Alpha 4.5888 (cwd)   Beta 4.2083
+#   penalty 0.1   Alpha 4.0589 (cwd)   Beta 4.2083   <- inverted
+#
+# Sweep it across corpus shapes with the Phase 3 harness. What must hold is the
+# floor: a demoted scope carrying cwd or an alias never scores below that
+# scope's boost, so the signal survives every value of GROUP_PENALTY.
 
 
 def _alias_hit(q_tokens: list[str], alias: str) -> bool:
@@ -343,9 +356,20 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     enough = (top_total >= floor or top_matched >= min_matched
               or bool(concentrated_here))
 
+    # The same three gates applied to the corpus-wide winner. Without them
+    # `out_of_group` fires on a scope that matched nothing: when a question hits
+    # no vocabulary at all, every scope scores ~0 and the winner is whoever took
+    # the 0.15 recency tiebreak. Reporting "the answer was elsewhere" about a
+    # scope scoring 0.15 made `out_of_group` swallow both other reasons for
+    # every unroutable question under `hard`.
+    top_all_total = detail[top_all]["evidence_total"] if top_all else 0.0
+    top_all_matched = detail[top_all]["matched"] if top_all else 0
+    answer_elsewhere = (top_all_total >= floor or top_all_matched >= min_matched
+                        or top_all in concentrated_owners)
+
     reason: str | None = None
     if strict_group and eligible is not None and top_all is not None \
-            and top_all not in eligible:
+            and top_all not in eligible and answer_elsewhere:
         # The best answer is outside the group. Returning the in-group runner-up
         # would be a confident answer from the wrong project.
         abstain, reason = True, "out_of_group"

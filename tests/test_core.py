@@ -436,12 +436,65 @@ def test_scope_idf_is_computed_over_the_whole_corpus_not_the_eligible_set():
 
 
 def test_group_parameters_left_unset_change_nothing():
-    """The upgrade guarantee: inert until groups exist."""
+    """The upgrade guarantee: inert until groups exist.
+
+    Passing the parameters at their inert values must engage the machinery and
+    still change nothing. An earlier version compared a call against the same
+    call with explicit `None`s, which asserted nothing at all. This version
+    fails if `demoted=set()` is read by truthiness-inverted logic, if
+    `strict_group` fires without `eligible`, or if the penalty leaks into the
+    un-demoted path.
+    """
     idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30}, 500),
                  b=("Beta", "/b", {"flange": 25}, 400))
     q = "how does the widget gizmo work"
     assert route(q, idx).to_json() == route(
-        q, idx, eligible=None, demoted=None, strict_group=False).to_json()
+        q, idx, demoted=set(), group_penalty=0.01, strict_group=True).to_json()
+
+
+def test_an_unknown_group_confines_to_nothing_not_to_everything():
+    """`eligible` is tri-state: None is unconfined, set() is confined to nothing.
+
+    A truthiness check here would route an unknown --group across the corpus.
+    Reachable in production: groups.py builds
+    `Confinement(eligible=members([forced_group], scopes))`, and `members`
+    returns set() when nobody is in the named group.
+    """
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                 b=("Beta", "/b", {"flange": 25}, 400))
+    q = "how does the widget gizmo sprocket work"
+
+    r = route(q, idx, eligible=set())
+    assert r.ranked == [] and r.selected == []
+    assert r.abstain
+    assert r.abstain_reason == "no_evidence"
+
+    # The answer really is outside the (empty) group, and `a` clears the
+    # concentrated tier, so `hard` attributes it rather than falling through.
+    strict = route(q, idx, eligible=set(), strict_group=True)
+    assert strict.ranked == [] and strict.selected == []
+    assert strict.abstain
+    assert strict.abstain_reason == "out_of_group"
+
+
+def test_hard_group_does_not_blame_the_group_for_an_unroutable_question():
+    """`out_of_group` must mean "the answer is elsewhere", not "nothing matched".
+
+    `top_all` is argmax(scores) with no evidence gate of its own, so on a
+    question that matches no vocabulary every scope sits near 0 and the winner
+    is whoever took the 0.15 recency tiebreak. Attributing an abstention to the
+    group because a scope scoring 0.15 sits outside it made `out_of_group`
+    absorb both other reasons for every unroutable question under `hard`.
+    """
+    idx = _index(a=("Alpha", "/a", {"widget": 40}, 500),
+                 b=("Beta", "/b", {"flange": 25}, 400))
+    # `b` wins the recency tiebreak at 0.15 and is outside the group.
+    assert route("xyzzy plugh frotz", idx).ranked[0] == "b"
+
+    hard = dict(eligible={"a"}, strict_group=True)
+    assert route("xyzzy plugh frotz", idx, **hard).abstain_reason == "no_evidence"
+    assert route("how does this project start up?", idx,
+                 **hard).abstain_reason == "deictic"
 
 
 def test_hard_group_abstains_rather_than_returning_the_runner_up():
@@ -472,9 +525,13 @@ def test_explicit_narrowing_does_not_abstain():
 
 
 def test_soft_penalty_reorders_but_never_overrides_a_cwd_signal(tmp_path):
-    """Measured: evidence scores sit at 0.1-1.5 while CWD_BOOST is 4.0. The
-    penalty multiplies the evidence base BEFORE the boosts, so it is
-    structurally incapable of inverting cwd -- not merely unlikely to.
+    """The penalty scales the evidence base BEFORE the boosts are added, so a
+    demoted scope holding cwd never scores below CWD_BOOST -- 4.0 here, at
+    every penalty down to 0. Measured, unboosted evidence occupies 0.1-1.5, so
+    nothing on a real corpus reaches that floor.
+
+    This is a bound, not an absolute: the sweep below inverts if Beta's base
+    exceeds 4.0. See the counterexample recorded in router.py.
     """
     a = tmp_path / "a"
     a.mkdir()
@@ -482,8 +539,10 @@ def test_soft_penalty_reorders_but_never_overrides_a_cwd_signal(tmp_path):
                  b=("Beta", "/b", {"widget": 40, "gizmo": 30, "sprocket": 20}, 400))
     q = "how does the widget gizmo sprocket work"
 
-    demoted = route(q, idx, demoted={"a"}, cwd=str(a))
-    assert demoted.ranked[0] == "a", "penalty overrode a cwd signal"
+    for p in (1.0, 0.5, 0.1, 0.0):
+        r = route(q, idx, demoted={"a"}, group_penalty=p, cwd=str(a))
+        assert r.ranked[0] == "a", f"penalty {p} overrode a cwd signal"
+        assert r.detail["a"]["score"] >= 4.0, "the penalty ate the boost itself"
 
 
 def test_soft_penalty_does_reorder_without_a_boost():
