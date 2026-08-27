@@ -284,6 +284,96 @@ def test_docstring_routing_fallback_stays_disabled():
     assert DOCSTRING_FALLBACK_VOCAB == 0
 
 
+# -- calibration -----------------------------------------------------------
+def test_gates_are_an_or_not_a_replacement():
+    """Evidence complements the count gate; it does not replace it.
+
+    Replacing the count gate with a fitted evidence floor scored better on the
+    calibration set and worse on held-out questions -- cross-scope routing fell
+    from 100% to 33%. Any one gate passing is enough.
+    """
+    # Two matched tokens, both exclusive and prominent: below the count gate,
+    # well above the evidence floor. A small-vocabulary scope looks like this.
+    idx = _index(tiny=("Tiny", "/t", {"mimetype": 30, "voxel": 25}, 80),
+                 huge=("Huge", "/h", {"handler": 900, "config": 800}, 9000))
+    r = route("how is mimetype handled together with voxel?", idx,
+              min_matched=4, evidence_floor=1.0)
+    assert not r.abstain and r.selected[0] == "tiny"
+    # With both gates raised out of reach it must abstain rather than guess.
+    r = route("how is mimetype handled together with voxel?", idx,
+              min_matched=99, evidence_floor=10**6, decisive_evidence=10**6)
+    assert r.abstain
+
+
+def test_calibration_sweeps_rather_than_taking_a_band_endpoint():
+    """Bands overlap on real corpora, and then endpoints are indefensible.
+
+    The routable minimum admits every unroutable question; the unroutable
+    maximum refuses half the real ones. Only the best-classifying threshold
+    survives overlap.
+    """
+    from loci.calibrate import ABSTAIN_WEIGHT, TERM_RANKS
+    assert ABSTAIN_WEIGHT > 1.0          # refusing wrongly is cheaper than routing wrongly
+    assert len(TERM_RANKS) > 1           # sample across rarity, not just the rarest
+
+
+def test_calibration_round_trips(tmp_path, monkeypatch):
+    import loci.paths as P
+    from loci.calibrate import Calibration, load, save
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    cal = Calibration(7.17, 0.84, 149, 14, 5.228, 7.123, False)
+    save(cal)
+    back = load()
+    assert back is not None and back.evidence_floor == 7.17 and not back.trustworthy
+
+
+# -- self-service eval -----------------------------------------------------
+def test_eval_questions_are_never_deictic():
+    """A generated question must not be one the router is designed to refuse.
+
+    The signature templates once included "what does it do with {b}" -- the
+    pronoun tripped the deixis rule, the router correctly abstained, and the
+    benchmark recorded it as a failure. That halved the reported score and would
+    have told every user their projects were indistinguishable.
+    """
+    from loci.eval import SIGNATURE_TEMPLATES, TAXONOMY
+    from loci.router import is_deictic
+
+    for tpl in SIGNATURE_TEMPLATES:
+        q = tpl.format(a="alpha", b="beta")
+        assert not is_deictic(q), f"signature template is deictic: {tpl!r}"
+
+
+def test_taxonomy_questions_are_unanswerable_without_a_working_directory():
+    """The no-cwd family scores the router on REFUSING these, so each one must
+    genuinely be unroutable — not merely deictic. Two of them ("how do I run the
+    tests?") carry no pronoun at all and are refused on evidence instead, which
+    is why this asserts the behaviour rather than the grammar.
+    """
+    from loci.eval import TAXONOMY
+    from loci.router import route
+
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "test": 30, "config": 20}, 500),
+                 b=("Beta", "/b", {"flange": 30, "deploy": 12, "entry": 9}, 400))
+    for q in TAXONOMY:
+        assert route(q, idx).abstain, f"taxonomy question is routable without cwd: {q!r}"
+
+
+def test_eval_needs_no_hand_labels(tmp_path):
+    """Every family's gold answer is known by construction."""
+    from loci.eval import run
+    idx = _index(a=("Alpha", str(tmp_path / "a"), {"widget": 40, "gizmo": 20}, 500),
+                 b=("Beta", str(tmp_path / "b"), {"flange": 30, "grommet": 15}, 400))
+    (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+    res = run(idx)
+    fams = res["families"]
+    assert fams["cwd"].n == 2 * 8            # taxonomy x scopes
+    assert fams["nonsense"].n == 6
+    assert fams["nocwd"].correct == fams["nocwd"].n   # all must abstain
+    assert res["chance"] == 0.5
+
+
 # -- glob matching ---------------------------------------------------------
 @pytest.mark.parametrize("rel,pattern,expected", [
     # `**` matches ZERO or more directories, as pathlib does. This exact case

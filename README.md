@@ -125,6 +125,73 @@ plaintext file and a vector index. Verified end to end against a repository with
 planted secrets across a README, a docstring and a commit body — all four were
 removed, and `.env` was never read.
 
+## Measure it on your own corpus
+
+Every accuracy figure below was fitted and measured against one person's ten
+repositories. That is a claim you would otherwise have to take on trust:
+
+```bash
+loci eval            # a few seconds, no labelling, no setup
+loci eval --misses   # and what it got wrong
+```
+
+It only asks questions whose correct answer is known by construction, so nothing
+needs hand-labelling:
+
+| family | how gold is known |
+|---|---|
+| deictic + cwd | asked from inside a scope, so the answer is that scope |
+| deictic, no cwd | nothing says which project — abstaining is the only correct answer |
+| unanswerable | nonsense questions no software corpus can answer |
+| signature | built from each scope's own most distinctive vocabulary |
+
+```
+10 scopes | random guessing would score 10.0%
+
+family                  n  correct  scopes  what it measures
+deictic + cwd          80  100.0%       -   should route to the scope you are in
+deictic, no cwd         8  100.0%       -   should abstain; nothing says which project
+unanswerable            6  100.0%       -   should abstain; no corpus can answer these
+signature              20   90.0%     1.9   are your scopes distinguishable from each other?
+```
+
+The signature family is the one that actually varies between corpora, and it is
+an **upper bound** — it asks each scope about its own rarest words, so a real
+question phrased in shared vocabulary does worse. A low score there is a fact
+about your projects (they look alike to a lexical router), not necessarily a bug
+to tune away; the remedy is `cwd` or an explicit `--scope`.
+
+## Fit it to your own corpus
+
+```bash
+loci calibrate          # a few seconds, no labelling
+loci calibrate --show
+```
+
+Routing gates on three independent signals, and any one of them passing is
+enough: one exceptionally discriminative token, enough summed token evidence, or
+enough matched tokens. They fail on different question shapes — a short question
+about a rare symbol has high evidence and a low count, a long question about a
+familiar subsystem has the reverse — so requiring all three abstains on both.
+
+The evidence floor is the one that depends on your corpus, because it depends on
+how much vocabulary your projects share. `loci calibrate` fits it using
+`loci eval`'s auto-labelled questions, so nothing needs hand-labelling, and
+reports whether the two bands separate at all:
+
+```
+evidence floor      7.17
+fitted from         149 routable + 14 unroutable questions, none hand-labelled
+classifies          84.0% of its own samples correctly
+
+! The bands OVERLAP -- some questions that should route score no higher than
+  questions that should not, so no threshold separates them cleanly.
+```
+
+An overlap warning is information about your projects, not a defect: it means
+they share enough vocabulary that evidence alone cannot always tell them apart,
+and cwd or `--scope` should carry more of the weight.
+
 ## Durability
 
 Writes go through a temp file and `os.replace`, so a reader never sees a

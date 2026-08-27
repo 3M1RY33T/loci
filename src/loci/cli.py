@@ -226,6 +226,44 @@ def cmd_doctor(args) -> int:
     return 0 if all(h.ok for h in healths) else 1
 
 
+def cmd_eval(args) -> int:
+    from .eval import render, run
+    index = _load_index_or_die()
+    if not index["scopes"]:
+        print("no scopes indexed. Try: loci scan ~/code && loci index", file=sys.stderr)
+        return 1
+    result = run(index)
+    if args.json:
+        print(json.dumps({
+            "n_scopes": result["n_scopes"], "chance": result["chance"],
+            "families": {k: {"name": f.name, "n": f.n, "correct": f.correct,
+                             "rate": f.rate, "abstained": f.abstained,
+                             "misses": f.misses}
+                         for k, f in result["families"].items()}}, indent=2))
+        return 0
+    print(render(result, show_misses=args.misses))
+    fams = result["families"]
+    return 0 if fams["cwd"].rate >= 0.95 else 1
+
+
+def cmd_calibrate(args) -> int:
+    from .calibrate import fit, load, render, save
+    index = _load_index_or_die()
+    if args.show:
+        cal = load()
+        print(render(cal) if cal else "not calibrated yet. Run: loci calibrate")
+        return 0 if cal else 1
+    if len(index["scopes"]) < 2:
+        print("error: calibration needs at least 2 scopes to compare", file=sys.stderr)
+        return 1
+    cal = fit(index)
+    if not args.dry_run:
+        save(cal)
+    print(render(cal))
+    print(f"\n{'saved to ' + str(__import__('loci.calibrate', fromlist=['x']).calibration_file()) if not args.dry_run else '(dry run, not saved)'}")
+    return 0 if cal.trustworthy else 1
+
+
 def cmd_mcp(args) -> int:
     try:
         from .mcp_server import main as mcp_main
@@ -307,6 +345,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("doctor", help="report coverage gaps per scope")
     s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("calibrate", help="fit routing thresholds to YOUR corpus")
+    s.add_argument("--show", action="store_true", help="print the current calibration")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(func=cmd_calibrate)
+
+    s = sub.add_parser("eval", help="measure routing on YOUR corpus (no labels needed)")
+    s.add_argument("--misses", action="store_true", help="list what it got wrong")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_eval)
 
     s = sub.add_parser("mcp", help="run the MCP server on stdio")
     s.set_defaults(func=cmd_mcp)

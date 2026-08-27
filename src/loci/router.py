@@ -28,8 +28,25 @@ CWD_BOOST = 4.0        # cwd is inside the project tree
 RECENCY_BOOST = 0.15   # tiebreak only; must never outrank real evidence
 WIDEN_RATIO = 0.85     # keep scopes scoring >= WIDEN_RATIO * top
 MAX_SCOPES = 3
-MIN_MATCHED = 4
+MIN_MATCHED = 4           # legacy count gate; see EVIDENCE_FLOOR
+EVIDENCE_FLOOR = 7.6      # summed token evidence required to route at all
 DECISIVE_EVIDENCE = 4.5   # ...or one token this discriminative, whichever fires
+
+# EVIDENCE_FLOOR replaced MIN_MATCHED as the primary gate because a matched-token
+# COUNT does not separate routable questions from unroutable ones. Measured
+# against auto-labelled questions on a real corpus:
+#
+#   matched count    NOT separable, inverted: routable median 2, unroutable
+#                    median 2 and maximum 4
+#   max evidence     separable, 4.31 vs 3.75
+#   TOTAL evidence   separable, widest margin, 8.59 vs 7.12
+#   mean evidence    NOT separable, 3.07 vs 3.45
+#
+# The count gate worked on the corpus it was fitted to, and did so by accident.
+# The floor here is the default for an uncalibrated install; `loci calibrate`
+# fits it to the corpus actually present, which is the point -- the right value
+# depends on how much vocabulary a user's projects share, and no shipped
+# constant can know that.
 
 # Fitted against two corpora of the same ten projects -- one indexed with code
 # symbols, one prose-only with no graphs at all -- so these are not tuned to a
@@ -122,10 +139,21 @@ def _recency_rank(scopes: dict) -> dict[str, float]:
     return {sid: i / (n - 1) for i, sid in enumerate(order)}
 
 
+def _calibrated_floor() -> float:
+    """The fitted floor for this corpus, or the shipped default."""
+    try:
+        from .calibrate import load
+        cal = load()
+    except Exception:
+        cal = None
+    return cal.evidence_floor if cal else EVIDENCE_FLOOR
+
+
 def route(question: str, index: dict, *, cwd: str | Path | None = None,
           widen_ratio: float = WIDEN_RATIO, max_scopes: int = MAX_SCOPES,
           min_matched: int = MIN_MATCHED,
           decisive_evidence: float = DECISIVE_EVIDENCE,
+          evidence_floor: float | None = None,
           size_prior: float = SIZE_PRIOR) -> RouteResult:
     scopes = index["scopes"]
     postings = index["postings"]
@@ -155,6 +183,7 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
 
         idf_max = math.log(1 + S) or 1.0
         best_evidence = max((c for _, c in matched), default=0.0) / idf_max
+        total_evidence = sum(c for _, c in matched) / idf_max
 
         base = total / max(1, len(q))
         if size_prior:
@@ -178,6 +207,7 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
             "name": meta["name"], "score": round(base, 4),
             "matched": len(matched),
             "evidence": round(best_evidence, 3),
+            "evidence_total": round(total_evidence, 3),
             "coverage": round(len(matched) / max(1, len(q)), 3),
             "top_tokens": matched[:6], "signals": signals,
         }
@@ -186,6 +216,8 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     top = ranked[0] if ranked else None
     top_score = scores.get(top, 0.0) if top else 0.0
     top_matched = detail[top]["matched"] if top else 0
+    top_total = detail[top]["evidence_total"] if top else 0.0
+    floor = _calibrated_floor() if evidence_floor is None else evidence_floor
 
     # An alias or cwd signal is direct evidence, never overruled by abstention.
     # `forced` means cwd or an explicit alias resolved the subject; deixis is
@@ -193,9 +225,14 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     forced = bool(top and detail[top]["signals"])
     decisive = bool(top) and detail[top]["evidence"] >= decisive_evidence
     deictic = is_deictic(question)
-    abstain = not forced and (
-        deictic or (not decisive and top_matched < min_matched)
-    )
+    # Three independent ways to have enough evidence, any one of which routes:
+    # one exceptionally discriminative token, enough summed evidence, or enough
+    # matched tokens. They fail on different question shapes -- a short question
+    # about a rare symbol has high evidence and a low count, a long question
+    # about a familiar subsystem has the reverse -- so requiring all three
+    # abstains on both.
+    enough = decisive or top_total >= floor or top_matched >= min_matched
+    abstain = not forced and (deictic or not enough)
 
     if abstain:
         selected = ranked            # caller should ask, not pick
