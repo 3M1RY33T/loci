@@ -53,13 +53,17 @@ ROUTING_KINDS = {"note", "doc", "session", "commit"}
 DOCSTRING_FALLBACK_VOCAB = 0
 
 
-def fingerprint(scope: Scope, sb) -> str:
+def fingerprint(scope: Scope, sb, *, exclude=()) -> str:
     """Cheap content signature: which files exist and when they last changed.
 
     Stat-ing every candidate file is fast; parsing them is not. Reindexing an
     unchanged scope re-parses thousands of files to produce byte-identical
     chunks, so the signature is what makes `loci index` idempotent in practice
     rather than only in result.
+
+    `exclude` must match what `collect` was given: a signature covering files a
+    sub-scope owns would move whenever that sub-scope did, and the parent would
+    re-parse its whole tree to rebuild identical chunks.
     """
     import hashlib
 
@@ -67,7 +71,7 @@ def fingerprint(scope: Scope, sb) -> str:
 
     h = hashlib.sha256()
     globs = list(scope.episode_globs or []) + list(scope.code_globs or [])
-    for f in iter_files(scope.root, globs):
+    for f in iter_files(scope.root, globs, exclude=exclude):
         try:
             h.update(str(f).encode("utf-8", "replace"))
             h.update(str(int(f.stat().st_mtime)).encode())
@@ -119,12 +123,20 @@ def build(scopes: list[Scope], *, structure: str = "graphify",
     reused = 0
     redacted: dict[str, dict[str, int]] = {}
 
+    from .scopes import nested_roots
+    # Exclusion is a property of the registry, so it is computed here and passed
+    # down rather than stored on any scope. Without it a monorepo parent
+    # collects the very files its sub-scopes own: two vocabularies inflated with
+    # identical tokens, and a size prior corrupted for both.
+    excludes = {sc.id: nested_roots(sc, scopes) for sc in scopes}
+
     for sc in scopes:
-        counts = sb.vocabulary(sc) if sb.available() else {}
-        nodes = sb.node_count(sc) if sb.available() else 0
+        ex = excludes[sc.id]
+        counts = sb.vocabulary(sc, exclude=ex) if sb.available() else {}
+        nodes = sb.node_count(sc, exclude=ex) if sb.available() else 0
         srcs = sb.sources(sc) if sb.available() else []
 
-        fp = fingerprint(sc, sb)
+        fp = fingerprint(sc, sb, exclude=ex)
         prev = prev_index.get("scopes", {}).get(sc.id, {})
         unchanged = bool(prev) and prev.get("fingerprint") == fp \
             and sc.id in prev_store.get("chunks", {})
@@ -136,7 +148,7 @@ def build(scopes: list[Scope], *, structure: str = "graphify",
                 chunks = [Chunk.from_json(c) for c in prev_store["chunks"][sc.id]]
                 reused += 1
             else:
-                chunks = eb.collect(sc)
+                chunks = eb.collect(sc, exclude=ex)
                 red = eb.redactions() if hasattr(eb, "redactions") else {}
                 if red:
                     redacted[sc.id] = red
@@ -312,14 +324,18 @@ def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
     arrays: dict[str, "np.ndarray"] = {}
 
     from .backends import get_structure_backend
-    from .scopes import load_scopes
+    from .scopes import load_scopes, nested_roots
     sb = get_structure_backend()
-    by_id = {s.id: s for s in load_scopes()}
+    registry = load_scopes()
+    by_id = {s.id: s for s in registry}
     for sid in store.get("chunks", {}):
         scope = by_id.get(sid)
         if scope is None or not hasattr(sb, "labels"):
             continue
-        labels = sb.labels(scope)[:MAX_SYMBOLS]
+        # Same exclusion as indexing: otherwise a parent seeds its semantic
+        # symbol search from labels that belong to its sub-scopes, and a
+        # question about the sub-project matches in both.
+        labels = sb.labels(scope, exclude=nested_roots(scope, registry))[:MAX_SYMBOLS]
         if not labels:
             continue
         arrays[f"{SYMBOL_PREFIX}{sid}"] = np.asarray(

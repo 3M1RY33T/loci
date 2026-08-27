@@ -317,3 +317,13 @@ def scope_for_cwd(scopes: list[Scope], cwd: str | Path) -> Scope | None:
             if best is None or len(str(s.root)) > len(str(best.root)):
                 best = s
     return best
+
+
+def nested_roots(scope: Scope, all_scopes: list[Scope]) -> list[Path]:
+    """Roots of other registered scopes lying inside this one.
+
+    Computed, never stored: exclusion is a property of the registry as a whole,
+    and a stored copy is wrong the moment a sibling is added or removed.
+    """
+    return [s.root for s in all_scopes
+            if s.id != scope.id and scope.root in s.root.parents]

@@ -217,7 +217,7 @@ def _mtime(p: Path) -> str:
         return ""
 
 
-def collect_code(scope: Scope) -> list[Chunk]:
+def collect_code(scope: Scope, *, exclude=()) -> list[Chunk]:
     """Mine docstrings and comment blocks from the scope's source files."""
     from .docstrings import extract
 
@@ -225,7 +225,7 @@ def collect_code(scope: Scope) -> list[Chunk]:
 
     out: list[Chunk] = []
     files = 0
-    for f in iter_files(scope.root, scope.code_globs or []):
+    for f in iter_files(scope.root, scope.code_globs or [], exclude=exclude):
         if files >= MAX_CODE_FILES:
             return out
         if is_sensitive_file(f):
@@ -273,15 +273,15 @@ def collect_git(root: Path) -> list[Chunk]:
 class BuiltinEpisodeBackend:
     name = "builtin"
 
-    def collect(self, scope: Scope) -> list[Chunk]:
+    def collect(self, scope: Scope, *, exclude=()) -> list[Chunk]:
         _REDACTIONS.clear()
         chunks: list[Chunk] = []
         seen: set[Path] = set()
-        chunks += collect_code(scope)
+        chunks += collect_code(scope, exclude=exclude)
         from ..walk import iter_files
         # An absolute glob lets a scope pull in prose that lives outside the
         # repo -- an external vault, a notes directory, a host app's store.
-        for f in iter_files(scope.root, scope.episode_globs or []):
+        for f in iter_files(scope.root, scope.episode_globs or [], exclude=exclude):
             if f in seen or is_sensitive_file(f):
                 continue
             seen.add(f)

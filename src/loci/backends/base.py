@@ -19,8 +19,13 @@ class StructureBackend(Protocol):
     def sources(self, scope: Scope) -> list[dict]:
         """Indexes this backend can query for `scope`; empty if unindexed."""
 
-    def vocabulary(self, scope: Scope) -> Counter:
-        """token -> number of nodes containing it. Feeds the router."""
+    def vocabulary(self, scope: Scope, *, exclude=()) -> Counter:
+        """token -> number of nodes containing it. Feeds the router.
+
+        `exclude` names the roots of sub-scopes registered inside this one,
+        whose nodes belong to them and not here. Keyword-only with a default so
+        an adapter written before scopes could nest still satisfies this.
+        """
 
     def query(self, scope: Scope, query: str, *, budget: int = 2000,
               dfs: bool = False) -> list[StructureHit]:
@@ -33,11 +38,19 @@ class EpisodeBackend(Protocol):
 
     name: str
 
-    def collect(self, scope: Scope) -> list[Chunk]:
-        """Read the scope's prose and chunk it. Verbatim -- never summarized."""
+    def collect(self, scope: Scope, *, exclude=()) -> list[Chunk]:
+        """Read the scope's prose and chunk it. Verbatim -- never summarized.
+
+        `exclude` names the roots of sub-scopes registered inside this one, so a
+        monorepo parent does not collect a file its sub-scope already owns.
+        """
 
     def vocabulary(self, chunks: list[Chunk]) -> Counter:
-        """token -> number of chunks containing it."""
+        """token -> number of chunks containing it.
+
+        Takes chunks, not a scope: the exclusion happened in `collect`, and
+        there is nothing here left to exclude.
+        """
 
     def save_rankers(self, scope_id: str, chunks: list[Chunk]) -> None:
         """Persist whatever `search` would otherwise rebuild per process.

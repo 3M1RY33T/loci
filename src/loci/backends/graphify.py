@@ -64,38 +64,57 @@ class GraphifyBackend:
         return srcs
 
     # -- routing input -----------------------------------------------------
-    def vocabulary(self, scope: Scope) -> Counter:
+    def vocabulary(self, scope: Scope, *, exclude=()) -> Counter:
         """Token -> node document-frequency across every graph in this scope.
 
         Counted once per node, not per occurrence, so a token repeated inside a
         single label cannot inflate the scope's routing score.
         """
         counts: Counter = Counter()
+        excluded = _resolved(exclude)
         for p in self.graph_paths(scope):
             try:
                 raw = json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 continue
             for n in raw.get("nodes") or []:
-                toks = token_set(n.get("label") or "")
                 sf = n.get("source_file") or ""
+                if _under(sf, scope.root, excluded):
+                    continue
+                toks = token_set(n.get("label") or "")
                 if sf:
                     toks |= token_set(sf)
                 counts.update(toks)
         return counts
 
-    def node_count(self, scope: Scope) -> int:
-        return sum(s["nodes"] for s in self.sources(scope))
-
-    def labels(self, scope: Scope) -> list[str]:
-        """Every symbol label in this scope's graphs, for semantic seeding."""
-        out: list[str] = []
+    def node_count(self, scope: Scope, *, exclude=()) -> int:
+        excluded = _resolved(exclude)
+        if not excluded:
+            return sum(s["nodes"] for s in self.sources(scope))
+        total = 0
         for p in self.graph_paths(scope):
             try:
                 raw = json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            out.extend(n.get("label") or "" for n in raw.get("nodes") or [])
+            total += sum(1 for n in (raw.get("nodes") or [])
+                         if not _under(n.get("source_file") or "", scope.root,
+                                       excluded))
+        return total
+
+    def labels(self, scope: Scope, *, exclude=()) -> list[str]:
+        """Every symbol label in this scope's graphs, for semantic seeding."""
+        out: list[str] = []
+        excluded = _resolved(exclude)
+        for p in self.graph_paths(scope):
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for n in raw.get("nodes") or []:
+                if _under(n.get("source_file") or "", scope.root, excluded):
+                    continue
+                out.append(n.get("label") or "")
         return [x for x in out if x]
 
     # -- build -------------------------------------------------------------
@@ -148,6 +167,35 @@ class GraphifyBackend:
         if p.returncode != 0:
             return False, (p.stderr or p.stdout).strip()[:400]
         return True, p.stdout.strip()
+
+
+def _resolved(exclude) -> list[Path]:
+    """Normalize an `exclude` argument once per read, not once per node."""
+    out: list[Path] = []
+    for e in exclude or ():
+        try:
+            out.append(Path(e).resolve())
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _under(source_file: str, root: Path, excluded: list[Path]) -> bool:
+    """True when a graph node's file belongs to a sub-scope, not to this scope.
+
+    The parent's graph already covers the whole tree and its nodes carry
+    `source_file`, so filtering at read time is enough -- no re-extraction.
+    """
+    if not source_file or not excluded:
+        return False
+    p = Path(source_file)
+    if not p.is_absolute():
+        p = root / p
+    try:
+        p = p.resolve()
+    except (OSError, ValueError):
+        return False
+    return any(p == e or e in p.parents for e in excluded)
 
 
 def _kind_for(path: Path, scope: Scope) -> str:

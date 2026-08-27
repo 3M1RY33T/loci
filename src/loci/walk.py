@@ -56,12 +56,25 @@ def _matches(rel: str, pattern: str) -> bool:
     return _compile(pattern).match(rel.replace("\\", "/")) is not None
 
 
-def iter_files(root: Path, patterns: list[str]) -> list[Path]:
+def iter_files(root: Path, patterns: list[str], *,
+               exclude: "list[Path] | tuple[Path, ...]" = ()) -> list[Path]:
     """Files under `root` matching any glob, skipping vendored subtrees.
 
     Absolute patterns are honoured as-is so a scope can pull in prose that
     lives outside its own tree.
+
+    `exclude` names subtrees owned by other scopes. They are PRUNED rather than
+    filtered afterwards, for the same reason SKIP_DIRS is: descending a
+    sub-scope's node_modules to discard the result is the cost this module
+    exists to avoid.
     """
+    excluded = set()
+    for e in exclude or ():
+        try:
+            excluded.add(Path(e).resolve())
+        except (OSError, ValueError):
+            continue
+
     out: list[Path] = []
     seen: set[Path] = set()
     rel_patterns = []
@@ -82,8 +95,14 @@ def iter_files(root: Path, patterns: list[str]) -> list[Path]:
         return out
 
     for dirpath, dirnames, filenames in os.walk(root, topdown=True):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         d = Path(dirpath)
+        dirnames[:] = [
+            x for x in dirnames
+            if x not in SKIP_DIRS and not x.startswith(".")
+            # `resolve` is a syscall per directory, so it is asked only when
+            # there is something for it to be compared against.
+            and not (excluded and (d / x).resolve() in excluded)
+        ]
         for name in filenames:
             f = d / name
             if f in seen:

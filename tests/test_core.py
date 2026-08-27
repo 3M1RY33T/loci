@@ -426,6 +426,154 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
         "a re-scan dropped a label the user's edit never mentioned"
 
 
+# -- scopes: exclusion -----------------------------------------------------
+def test_nested_roots_finds_subscopes_of_one_scope(tmp_path):
+    from loci.scopes import nested_roots
+
+    parent = Scope(id="mono", name="mono", root=tmp_path / "mono")
+    child = Scope(id="mono-a", name="mono/a", root=tmp_path / "mono" / "a")
+    sibling = Scope(id="other", name="other", root=tmp_path / "other")
+
+    assert nested_roots(parent, [parent, child, sibling]) == [tmp_path / "mono" / "a"]
+    assert nested_roots(child, [parent, child, sibling]) == []
+
+
+def test_iter_files_does_not_descend_into_an_excluded_root(tmp_path, monkeypatch):
+    """Pruned, not filtered. Asserting only on the returned list cannot tell the
+    two apart, and the difference is the entire reason this module exists:
+    descending a sub-scope's node_modules to discard the result afterwards is
+    the 32.9s it was written to avoid. So the walk itself is watched.
+    """
+    import os
+
+    import loci.walk as walk_mod
+    from loci.walk import iter_files
+
+    root = tmp_path / "mono"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "a.md").write_text("a", encoding="utf-8")
+    (root / "glasses" / "docs").mkdir(parents=True)
+    (root / "glasses" / "docs" / "b.md").write_text("b", encoding="utf-8")
+
+    everything = iter_files(root, ["**/*.md"])
+    assert len(everything) == 2
+
+    visited: list[Path] = []
+    real_walk = os.walk
+
+    def spy(top, **kw):
+        # The yielded `dirnames` list is passed on as the same object, so the
+        # pruning `iter_files` performs still reaches the real walk.
+        for dirpath, dirnames, filenames in real_walk(top, **kw):
+            visited.append(Path(dirpath))
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(walk_mod.os, "walk", spy)
+    pruned = iter_files(root, ["**/*.md"], exclude=[root / "glasses"])
+
+    assert [p.name for p in pruned] == ["a.md"]
+    # Without this the assertion below passes vacuously whenever the spy fails
+    # to take effect, which is the one way it could stop testing anything.
+    assert root in visited, "the spy never observed the walk"
+    excluded = root / "glasses"
+    assert not [p for p in visited if p == excluded or excluded in p.parents], \
+        f"descended into an excluded subtree: {visited}"
+
+
+def test_a_parent_and_its_subscope_share_no_chunk(tmp_path):
+    """The same file collected twice inflates two vocabularies with identical
+    tokens and breaks the size prior for both.
+
+    Code, not prose. The default episode globs are root-relative (`README*`,
+    `*.md`), so a sub-scope's markdown never reaches its parent's walk at all
+    and asserting on it would pass with no exclusion whatsoever. `**/*.py` is
+    what actually crosses the boundary, and docstrings are the duplication this
+    exists to stop -- hence the control assertion at the end.
+    """
+    from loci.backends.episodes import BuiltinEpisodeBackend
+
+    root = tmp_path / "mono"
+    (root / "glasses").mkdir(parents=True)
+    (root / "app.py").write_text(
+        '"""Parent prose, long enough to clear the twelve word minimum that the '
+        'docstring collector applies to every candidate."""\n', encoding="utf-8")
+    (root / "glasses" / "lens.py").write_text(
+        '"""Child prose, long enough to clear the twelve word minimum that the '
+        'docstring collector applies to every candidate."""\n', encoding="utf-8")
+
+    eb = BuiltinEpisodeBackend()
+    parent = make_scope(root, name="mono")
+    child = make_scope(root / "glasses", name="mono/glasses")
+
+    parent_chunks = eb.collect(parent, exclude=[root / "glasses"])
+    child_chunks = eb.collect(child)
+
+    assert any("Parent prose" in c.text for c in parent_chunks)
+    assert not any("Child prose" in c.text for c in parent_chunks)
+    assert any("Child prose" in c.text for c in child_chunks)
+    assert any("Child prose" in c.text for c in eb.collect(parent)), \
+        "control: unexcluded, the parent must reach the sub-scope's code"
+
+
+def test_parent_fingerprint_is_stable_when_only_a_subscope_changes(tmp_path):
+    """Otherwise the parent re-parses thousands of files every time a sub-scope
+    is touched, and `loci index` stops being idempotent in practice.
+    """
+    import time
+
+    from loci.backends import get_structure_backend
+    from loci.index import fingerprint
+
+    root = tmp_path / "mono"
+    (root / "glasses").mkdir(parents=True)
+    (root / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "glasses" / "lens.py").write_text("y = 1\n", encoding="utf-8")
+
+    sb = get_structure_backend()
+    parent = make_scope(root, name="mono")
+    excl = [root / "glasses"]
+
+    before = fingerprint(parent, sb, exclude=excl)
+    unfiltered_before = fingerprint(parent, sb)
+    time.sleep(1.1)                      # mtime has one-second resolution
+    (root / "glasses" / "lens.py").write_text("y = 2\n", encoding="utf-8")
+
+    assert fingerprint(parent, sb, exclude=excl) == before
+    assert fingerprint(parent, sb) != unfiltered_before, \
+        "control: unexcluded, the sub-scope's file must move the fingerprint"
+
+
+def test_a_parent_graph_does_not_lend_its_subscope_symbols(tmp_path):
+    """Where the routing corruption actually lands: a monorepo's graph covers
+    the whole tree, so without a read-time filter the parent's vocabulary, node
+    count and symbol labels all carry its sub-scopes' code -- and the size prior
+    that is meant to make scopes comparable is computed from the inflated count.
+
+    Filtered at read time, not re-extracted: the nodes already carry
+    `source_file`, and it may be relative to the root or absolute.
+    """
+    from loci.backends.graphify import GraphifyBackend
+
+    root = tmp_path / "mono"
+    (root / "graphify-out").mkdir(parents=True)
+    (root / "graphify-out" / "graph.json").write_text(json.dumps({"nodes": [
+        {"label": "parentWidget", "source_file": "src/app.py"},
+        {"label": "childLens", "source_file": "glasses/src/lens.ts"},
+        {"label": "childAbsolute", "source_file": str(root / "glasses" / "b.ts")},
+    ]}), encoding="utf-8")
+
+    sb = GraphifyBackend()
+    scope = make_scope(root, name="mono")
+    excl = [root / "glasses"]
+
+    assert sb.labels(scope) == ["parentWidget", "childLens", "childAbsolute"]
+    assert sb.labels(scope, exclude=excl) == ["parentWidget"]
+    assert sb.node_count(scope) == 3
+    assert sb.node_count(scope, exclude=excl) == 1
+    assert "lens" in sb.vocabulary(scope), "control: unexcluded, the token is there"
+    assert "lens" not in sb.vocabulary(scope, exclude=excl)
+
+
 # -- router ----------------------------------------------------------------
 def _index(**scopes) -> dict:
     postings: dict[str, dict[str, int]] = {}
