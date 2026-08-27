@@ -204,6 +204,20 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
     return Answer(question=question, routing=rt, scopes=answers)
 
 
+def _advice(rt: RouteResult) -> str:
+    """What to do about this abstention -- which depends on what caused it.
+
+    "or from inside the project directory" is the standing advice, and under a
+    group it is actively wrong: for `out_of_group` the cwd is what SELECTED the
+    confining group, so following it guarantees the same abstention again.
+    """
+    if rt.group and not rt.ranked:
+        return "run `loci groups` to see the groups that exist."
+    if rt.abstain_reason == "out_of_group":
+        return "re-run with --scope <name>: an explicit scope overrides the group."
+    return "re-run with --scope <name>, or from inside the project directory."
+
+
 def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
     out: list[str] = []
     rt = answer.routing
@@ -231,8 +245,13 @@ def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
                 "no_evidence": "not enough of the question exists in any project",
             }.get(rt.abstain_reason or "", "not specific enough to route")
         out.append(f"ABSTAINED - {reason}.")
-        out.append(f"  candidates: {', '.join(names.get(s, s) for s in rt.ranked)}")
-        out.append("  re-run with --scope <name>, or from inside the project directory.")
+        if rt.ranked:
+            # Dropped, not emptied. An empty list rendered as "  candidates: "
+            # with nothing after it, which reads as a truncated line rather
+            # than as "none" -- and the unknown-group case above always has
+            # nothing to list.
+            out.append(f"  candidates: {', '.join(names.get(s, s) for s in rt.ranked)}")
+        out.append(f"  {_advice(rt)}")
         return "\n".join(out)
 
     how = "forced" if not rt.ranked or rt.top_matched == 0 else f"score={rt.top_score:.3f}"

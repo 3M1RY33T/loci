@@ -2246,3 +2246,382 @@ def test_a_malformed_registry_degrades_to_unconfined(tmp_path, monkeypatch, body
 
     assert answer.routing.selected == ["a"]
     assert answer.routing.group is None
+
+
+# -- cli: groups -----------------------------------------------------------
+@pytest.fixture
+def loci_home(tmp_path, monkeypatch):
+    """$LOCI_HOME is the only thing between a CLI test and the developer's own
+    ~/.loci: every test below writes a real registry and reads it back.
+    """
+    import loci.paths as P
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    return tmp_path
+
+
+def _install_index(index) -> None:
+    """Put an `_index()` dict where `loci route` and `loci ask` will find it."""
+    import loci.paths as P
+    P.ensure_home()
+    P.scope_index_file().write_text(json.dumps(index), encoding="utf-8")
+
+
+def _two_scope_corpus(home):
+    """Alpha in group `me`, Beta in `client:acme`, and an index that answers
+    only about Beta. A `--group me` question about Beta's vocabulary is the
+    shape every group-abstention test below needs.
+    """
+    from loci.scopes import save_scopes
+
+    a, b = home / "a", home / "b"
+    a.mkdir()
+    b.mkdir()
+    save_scopes([Scope(id="a", name="Alpha", root=a, groups=["me"]),
+                 Scope(id="b", name="Beta", root=b, groups=["client:acme"])])
+    _install_index(_index(
+        a=("Alpha", str(a), {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+        b=("Beta", str(b), {"flange": 25, "grommet": 10, "bolt": 5}, 400)))
+    return a, b
+
+
+def test_groups_infer_reaches_its_own_handler():
+    """`groups` carries a default handler AND a nested sub-parser with another.
+    Which one argparse leaves on the namespace is not obvious, and getting it
+    wrong makes `loci groups infer` silently print the listing instead.
+    """
+    from loci.cli import build_parser, cmd_groups, cmd_groups_infer
+
+    p = build_parser()
+    assert p.parse_args(["groups"]).func is cmd_groups
+    assert p.parse_args(["groups", "infer"]).func is cmd_groups_infer
+
+
+def test_groups_listing_names_where_each_mode_came_from(loci_home, capsys):
+    """The one objection to per-group-with-fallback is "two places to look".
+    One line of output is the answer.
+
+    Asserted per ROW, not over the whole text: "default" also appears in the
+    `default mode:` trailer, so a substring check passes with every row wrong.
+    """
+    from loci.cli import main
+    from loci.groups import Policy, save_policy
+    from loci.scopes import save_scopes
+
+    a, b, c = loci_home / "a", loci_home / "b", loci_home / "c"
+    for d in (a, b, c):
+        d.mkdir()
+    save_scopes([Scope(id="a", name="Alpha", root=a, groups=["me", "client:acme"]),
+                 Scope(id="b", name="Beta", root=b, groups=["me"]),
+                 Scope(id="c", name="Gamma", root=c, groups=[])])
+    save_policy(Policy(default_mode="soft", groups={"client:acme": "hard"}))
+
+    assert main(["groups"]) == 0
+    out = capsys.readouterr().out
+    rows = {ln.split()[0]: ln.split() for ln in out.splitlines() if ln.startswith("  ")}
+    assert rows["client:acme"][1:4] == ["hard", "declared", "1"]
+    assert rows["me"][1:4] == ["soft", "default", "2"]
+    assert "1 scope(s) in no group: Gamma" in out
+    assert "default mode: soft" in out
+
+
+def test_group_add_and_rm_round_trip(loci_home):
+    """`upsert` UNIONS `groups` so a re-scan cannot erase a structural label,
+    which means a membership edit routed through it can never remove anything.
+    These commands write the registry directly for exactly that reason.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    a = loci_home / "a"
+    a.mkdir()
+    save_scopes([Scope(id="a", name="Alpha", root=a)])
+
+    assert main(["group", "add", "a", "client:acme"]) == 0
+    assert main(["group", "add", "a", "me"]) == 0
+    assert load_scopes()[0].group_set() == {"client:acme", "me"}
+
+    assert main(["group", "rm", "a", "client:acme"]) == 0
+    assert load_scopes()[0].groups == ["me"]
+
+    assert main(["group", "rm", "a", "me"]) == 0
+    assert load_scopes()[0].groups == [], \
+        "removing the last group must be a deliberate [], not None"
+
+
+def test_group_rm_refuses_a_label_it_cannot_actually_remove(loci_home, capsys):
+    """`discover` recomputes a monorepo's containment label on every scan and
+    `upsert` unions it back in, so a removal here reappears at the next
+    `loci scan`. Silently no-opping is the worst of the three options.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    mono = loci_home / "mono"
+    client = mono / "client"
+    client.mkdir(parents=True)
+    save_scopes([Scope(id="mono", name="Mono", root=mono, groups=["mono"]),
+                 Scope(id="mono-client", name="Mono/client", root=client,
+                       groups=["client:acme", "mono"])])
+
+    assert main(["group", "rm", "mono-client", "mono"]) == 2
+    assert "loci scan" in capsys.readouterr().err
+    assert load_scopes()[1].group_set() == {"client:acme", "mono"}
+
+    # The refusal is about CONTAINMENT, not about being a sub-scope: a label
+    # the filesystem does not assert comes off the same scope normally.
+    assert main(["group", "rm", "mono-client", "client:acme"]) == 0
+    assert load_scopes()[1].group_set() == {"mono"}
+
+
+def test_group_set_rejects_an_unknown_mode(loci_home):
+    """MODES is derived from STRICTNESS precisely so the mode names are written
+    once; a parser spelling them out again is another copy to drift from it.
+    A rejected mode must also leave no half-written policy behind.
+    """
+    import loci.paths as P
+    from loci.cli import main
+    from loci.groups import MODES, load_policy
+
+    with pytest.raises(SystemExit):
+        main(["group", "set", "client:acme", "--mode", "nonsense"])
+    assert not P.groups_file().exists(), "a rejected mode still wrote the policy"
+
+    assert main(["group", "set", "client:acme"]) == 2, "`set` needs a mode"
+    assert not P.groups_file().exists()
+
+    for mode in MODES:
+        assert main(["group", "set", "client:acme", "--mode", mode]) == 0
+        assert load_policy().mode_for("client:acme") == (mode, "declared")
+
+
+def test_group_add_without_a_group_name_is_an_error_not_a_traceback(loci_home):
+    """`group` is nargs="?" because `set` does not take one. Left as None it
+    reaches `sorted(current | {None})`, which raises TypeError as soon as the
+    scope has any group at all.
+    """
+    from loci.cli import main
+    from loci.scopes import save_scopes
+
+    a = loci_home / "a"
+    a.mkdir()
+    save_scopes([Scope(id="a", name="Alpha", root=a, groups=["me"])])
+
+    assert main(["group", "add", "a"]) == 2
+    assert main(["group", "rm", "a"]) == 2
+
+
+@pytest.mark.parametrize("argv", [
+    ["scopes"],
+    ["route", "how", "does", "the", "flange", "work"],
+    ["ask", "how", "does", "the", "flange", "work"],
+])
+def test_an_unknown_group_is_rejected_before_it_confines_to_nothing(
+        loci_home, capsys, argv):
+    """An unknown group resolves to `eligible=set()` -- confined to nothing --
+    and the abstention that follows is honest but reads like a bug for what is
+    almost always a typo. All three surfaces reject it where the user sees it.
+
+    `ask` must reject BEFORE it queries: reaching `ask()` here would need the
+    episode and structure backends, which is the point -- the check is early.
+    """
+    from loci.cli import main
+
+    _two_scope_corpus(loci_home)
+    assert main(argv + ["--group", "typo"]) == 2
+    err = capsys.readouterr().err
+    assert "typo" in err and "client:acme" in err and "me" in err
+
+
+def test_a_group_named_only_in_the_policy_is_still_known(loci_home, capsys):
+    """`loci group set` declares a mode before anyone joins the group, so the
+    known set is the union of the registry's and the policy's -- not the
+    registry alone. Known-but-empty (1) must not read as unknown (2).
+    """
+    from loci.cli import main
+    from loci.groups import Policy, save_policy
+    from loci.scopes import save_scopes
+
+    a = loci_home / "a"
+    a.mkdir()
+    save_scopes([Scope(id="a", name="Alpha", root=a, groups=["me"])])
+    save_policy(Policy(groups={"client:acme": "hard"}))
+
+    assert main(["scopes", "--group", "client:acme"]) == 1
+    assert "no scopes in group client:acme" in capsys.readouterr().out
+
+
+def test_scopes_filters_to_one_group(loci_home, capsys):
+    from loci.cli import main
+
+    _two_scope_corpus(loci_home)
+    assert main(["scopes", "--group", "me"]) == 0
+    out = capsys.readouterr().out
+    assert "Alpha" in out and "Beta" not in out
+    assert "1 scope(s)" in out
+
+
+def test_route_explain_names_the_effective_mode_and_where_it_came_from(
+        loci_home, capsys):
+    """"Two places to look for a mode" is the standing objection to
+    per-group-with-fallback, so `--explain` has to answer it. Re-deriving the
+    source at the print site -- `"group" if r.mode else "default"` -- reports
+    "declared" for every group that has a mode at all, which is all of them.
+    """
+    from loci.cli import main
+    from loci.groups import Policy, save_policy
+
+    _two_scope_corpus(loci_home)
+    argv = ["route", "how", "does", "the", "flange", "work",
+            "--group", "me", "--explain", "--no-cwd"]
+
+    save_policy(Policy(default_mode="soft"))
+    assert main(argv) == 0
+    assert "group:  me  mode=soft (default)" in capsys.readouterr().out
+
+    save_policy(Policy(default_mode="soft", groups={"me": "hard"}))
+    assert main(argv) == 0
+    assert "group:  me  mode=hard (declared)" in capsys.readouterr().out
+
+
+def test_route_says_why_it_abstained_without_being_asked_to_explain(
+        loci_home, capsys):
+    """A hard group turns an answer into an abstention -- the change most
+    likely to read as a regression. Behind `--explain` is not where a user
+    meets it.
+    """
+    from loci.cli import main
+    from loci.groups import Policy, save_policy
+
+    _two_scope_corpus(loci_home)
+    save_policy(Policy(groups={"me": "hard"}))
+
+    assert main(["route", "how", "does", "the", "flange", "grommet", "bolt",
+                 "work", "--group", "me", "--no-cwd"]) == 0
+    out = capsys.readouterr().out
+    assert "ABSTAIN" in out and "out_of_group" in out
+
+
+def test_route_explain_names_the_scope_the_group_excluded(loci_home, capsys):
+    """`ranked` is filtered to the eligible set, so the scope that CAUSED an
+    out_of_group abstention is missing from the one output meant to explain it.
+    `detail` still carries every scope; `--explain` has to show them.
+    """
+    from loci.cli import main
+    from loci.groups import Policy, save_policy
+
+    _two_scope_corpus(loci_home)
+    save_policy(Policy(groups={"me": "hard"}))
+
+    assert main(["route", "how", "does", "the", "flange", "grommet", "bolt",
+                 "work", "--group", "me", "--explain", "--no-cwd"]) == 0
+    out = capsys.readouterr().out
+    assert "Beta" in out, "the scope holding the answer is never named"
+    assert "excluded by group me" in out
+
+
+def test_an_abstention_gives_advice_that_can_actually_work():
+    """Two defects in one trailer. "or from inside the project directory" is
+    what CAUSES an out_of_group confinement, so it is advice guaranteeing the
+    abstention it is offered against; and an empty `ranked` renders as a
+    dangling "candidates: " with nothing after it, which reads as a truncated
+    line rather than as "none".
+    """
+    from loci.ask import Answer, render
+    from loci.types import RouteResult
+
+    index = _index(a=("Alpha", "/a", {"widget": 40}, 500))
+
+    def body(reason, group=None, ranked=("a",)):
+        rt = RouteResult(question="q", query_tokens=[], ranked=list(ranked),
+                         selected=[], abstain=True, top_score=0.0, top_matched=0,
+                         group=group, abstain_reason=reason)
+        return render(Answer(question="q", routing=rt), index=index)
+
+    confined = body("out_of_group", "client:acme")
+    assert "--scope" in confined
+    assert "inside the project directory" not in confined
+    assert "inside the project directory" in body("no_evidence"), \
+        "the ordinary abstention still wants the cwd hint"
+
+    unknown = body("no_evidence", "typo", ranked=())
+    assert "candidates:" not in unknown
+    assert "loci groups" in unknown
+    assert all(ln.strip() for ln in unknown.splitlines()), "a blank rendered line"
+
+
+def test_a_policy_that_cannot_be_constructed_is_an_error_not_a_traceback(
+        loci_home, capsys, monkeypatch):
+    """`Policy.__post_init__` refuses an unknown `default_mode`. `load_policy`
+    normalizes every field it reads, so no shipped path reaches that raise --
+    but the loader dropping one normalization is a one-line change away, and a
+    CLI is not allowed to answer a user's text with a stack trace.
+    """
+    import loci.groups as G
+    from loci.cli import main
+
+    def boom():
+        raise ValueError("unknown mode 'nonsense'; expected one of explicit, soft, hard")
+
+    monkeypatch.setattr(G, "load_policy", boom)
+    with pytest.raises(SystemExit) as exc:
+        main(["groups"])
+    assert exc.value.code == 2
+    assert "unknown mode" in capsys.readouterr().err
+
+
+def test_groups_infer_adds_a_label_without_erasing_what_the_user_asserted(
+        loci_home, hermetic_git, capsys):
+    """`client:*` is never inferrable -- a client relationship is not visible in
+    git -- so inference has to ADD. Replacing `groups` would delete exactly the
+    labels only the user can supply.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    repo = _repo(loci_home, "mine", origin="git@github.com:me/mine.git")
+    save_scopes([Scope(id="mine", name="Mine", root=repo, groups=["client:acme"])])
+
+    assert main(["groups", "infer"]) == 0
+    assert load_scopes()[0].group_set() == {"client:acme", "me"}
+    assert "+ Mine" in capsys.readouterr().out
+
+    assert main(["groups", "infer"]) == 0
+    assert "0 scope(s) labelled" in capsys.readouterr().out, "not idempotent"
+
+
+def test_ask_passes_its_group_through_to_confinement(loci_home, capsys):
+    """Nothing else proves the flag is WIRED: `--group` parsed and then dropped
+    answers from the whole corpus, and every rejection test above still passes
+    -- those exercise the validator, not the pass-through.
+    """
+    from loci.cli import main
+    from loci.groups import Policy, save_policy
+
+    _two_scope_corpus(loci_home)
+    argv = ["ask", "how", "does", "the", "flange", "grommet", "bolt", "work",
+            "--no-cwd", "--no-structure", "--no-episodes"]
+
+    assert main(argv) == 0
+    assert "ROUTED -> Beta" in capsys.readouterr().out, "fixture lost its point"
+
+    save_policy(Policy(groups={"me": "hard"}))
+    assert main(argv + ["--group", "me"]) == 0
+    assert "ABSTAINED - best match was outside group me." in capsys.readouterr().out
+
+
+def test_route_survives_a_hand_edited_registry(loci_home, capsys):
+    """`ask` degrades to unconfined rather than raising on a malformed
+    scopes.json. `route` reports on that same decision and now reads the same
+    file, so it must not differ -- a diagnostic that crashes where the thing it
+    diagnoses answers is worse than no groups at all.
+    """
+    import loci.paths as P
+    from loci.cli import main
+
+    _install_index(_index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30,
+                                             "sprocket": 20}, 500)))
+    P.registry_file().write_text('{"scopes": [{"name": "Alpha"}]}', encoding="utf-8")
+
+    assert main(["route", "how", "does", "the", "widget", "gizmo", "sprocket",
+                 "work", "--no-cwd"]) == 0
+    assert "Alpha" in capsys.readouterr().out

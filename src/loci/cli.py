@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .paths import BuildLock, home
+from .paths import BuildLock, groups_file, home
 
 
 def _load_index_or_die():
@@ -18,6 +18,61 @@ def _load_index_or_die():
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2)
+
+
+def _policy_or_die():
+    """The group policy, or a clean error.
+
+    `Policy.__post_init__` refuses an unknown `default_mode`, and `load_policy`
+    normalizes every field it reads -- so this catch guards the constructor's
+    contract rather than a shape the shipped loader can produce today. It is
+    here because `groups.json` is the one file a user is invited to author by
+    hand, and no path from a user's own text to a Python traceback is one this
+    CLI should have.
+    """
+    from .groups import load_policy
+    try:
+        return load_policy()
+    except ValueError as exc:
+        print(f"error: {groups_file()}: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _registry_or_empty():
+    """The scope registry, degrading to [] rather than raising.
+
+    `ask` already does exactly this on a hand-edited `scopes.json`, on the
+    ground that a traceback is a worse answer than "no groups configured". The
+    commands that report on the same routing decision must not differ, or
+    `loci route` crashes where `loci ask` answers.
+    """
+    from .scopes import load_scopes
+    try:
+        return load_scopes()
+    except Exception:
+        return []
+
+
+def _unknown_group(group: str | None, scopes, policy) -> bool:
+    """True -- having said so on stderr -- when `group` names nothing.
+
+    An unknown group resolves to `eligible=set()`, which the router correctly
+    reads as "confined to nothing", and the abstention that follows is honest.
+    But it is also what a typo produces, and an abstention is a poor way to
+    report one. This is the same information one layer up, where the user can
+    still see the word they typed.
+
+    A group is known if any scope asserts it OR the policy gives it a mode:
+    `loci group set` declares a mode before anyone has joined.
+    """
+    if not group:
+        return False
+    known = {g for s in scopes for g in s.group_set()} | set(policy.groups)
+    if group in known:
+        return False
+    print(f"error: unknown group {group!r}; have "
+          f"{', '.join(sorted(known)) or '(none)'}", file=sys.stderr)
+    return True
 
 
 # ==========================================================================
@@ -71,9 +126,121 @@ def cmd_scopes(args) -> int:
     if not scopes:
         print("no scopes registered. Try: loci scan ~/code")
         return 1
+    if args.group:
+        if _unknown_group(args.group, scopes, _policy_or_die()):
+            return 2
+        scopes = [s for s in scopes if args.group in s.group_set()]
+        if not scopes:
+            # Known but empty -- a policy may name a group before any scope
+            # joins it. Distinct from the unknown-group error above.
+            print(f"no scopes in group {args.group}")
+            return 1
     for s in scopes:
         print(f"  {s.id:<22} {s.name:<20} {s.root}")
     print(f"\n{len(scopes)} scope(s)")
+    return 0
+
+
+def cmd_groups(args) -> int:
+    from .groups import members
+    from .scopes import load_scopes
+
+    # `load_scopes`, not the degrading reader: this reports the registry rather
+    # than a routing decision, and an unreadable one degraded to [] prints
+    # "no groups yet" -- a confident false statement about the user's setup.
+    scopes = load_scopes()
+    policy = _policy_or_die()
+    names = sorted({g for s in scopes for g in s.group_set()} | set(policy.groups))
+    if not names:
+        print("no groups yet. Try: loci groups infer")
+        return 1
+    print(f"  {'group':<30} {'mode':<10} {'from':<10} members")
+    for g in names:
+        # The RESOLVED mode and where it came from, per group. Membership lives
+        # in the registry and mode lives in the policy, and this line is the
+        # whole answer to "two places to look".
+        mode, source = policy.mode_for(g)
+        print(f"  {g:<30} {mode:<10} {source:<10} {len(members([g], scopes))}")
+    ungrouped = [s.name for s in scopes if not s.group_set()]
+    if ungrouped:
+        shown = ", ".join(ungrouped[:6])
+        more = f" +{len(ungrouped) - 6} more" if len(ungrouped) > 6 else ""
+        print(f"\n{len(ungrouped)} scope(s) in no group: {shown}{more}")
+    print(f"\ndefault mode: {policy.default_mode}")
+    return 0
+
+
+def cmd_groups_infer(args) -> int:
+    from .provenance import classify, infer_identity
+    from .scopes import load_scopes, save_scopes
+
+    scopes = load_scopes()
+    if not scopes:
+        print("no scopes registered. Try: loci scan ~/code", file=sys.stderr)
+        return 1
+    identity = infer_identity([s.root for s in scopes])
+    print(f"  {identity.describe()}")
+    changed = 0
+    for s in scopes:
+        g = classify(s.root, identity)
+        current = s.group_set()
+        if g not in current:
+            # Inference ADDS a provenance label; it never removes what the user
+            # asserted, including the `client:*` groups it cannot see.
+            s.groups = sorted(current | {g})
+            changed += 1
+            print(f"  + {s.name:<24} {g}")
+    save_scopes(scopes)
+    print(f"\n{changed} scope(s) labelled -> {home() / 'scopes.json'}")
+    return 0
+
+
+def cmd_group(args) -> int:
+    from .groups import MODES, save_policy
+    from .scopes import load_scopes, resolve, save_scopes
+
+    if args.action == "set":
+        if args.mode not in MODES:
+            print(f"error: `group set` needs --mode ({'|'.join(MODES)})",
+                  file=sys.stderr)
+            return 2
+        policy = _policy_or_die()
+        policy.groups[args.name] = args.mode
+        save_policy(policy)
+        print(f"{args.name} -> {args.mode}")
+        return 0
+
+    if not args.group:
+        print(f"error: `group {args.action}` needs a group: "
+              f"loci group {args.action} <scope> <group>", file=sys.stderr)
+        return 2
+
+    scopes = load_scopes()
+    sc = resolve(scopes, args.name)
+    if sc is None:
+        print(f"error: unknown scope {args.name!r}", file=sys.stderr)
+        return 2
+    current = sc.group_set()
+    if args.action == "add":
+        sc.groups = sorted(current | {args.group})
+    else:
+        # A containment label is structural: `discover` recomputes it from the
+        # filesystem on every scan and `upsert` unions it back in, so removing
+        # one here reappears at the next `loci scan`. Refuse rather than no-op.
+        holder = next((p for p in scopes if p.id == args.group
+                       and (p.root == sc.root or p.root in sc.root.parents)), None)
+        if holder is not None:
+            print(f"error: {args.group!r} is structural -- {sc.name} lives inside "
+                  f"{holder.name}, and `loci scan` recomputes that label every "
+                  f"run, so removing it here would not survive the next one.",
+                  file=sys.stderr)
+            return 2
+        sc.groups = sorted(current - {args.group})
+    # Written straight to the registry, NOT through `upsert`: `upsert` unions
+    # `groups` so a re-scan cannot erase a structural label, which also means a
+    # removal routed through it removes nothing at all.
+    save_scopes(scopes)
+    print(f"{sc.name}: {', '.join(sc.groups) or '(no groups)'}")
     return 0
 
 
@@ -121,21 +288,42 @@ def cmd_embed(args) -> int:
 
 
 def cmd_route(args) -> int:
+    from .groups import confinement
     from .router import route
     index = _load_index_or_die()
+    policy, registry = _policy_or_die(), _registry_or_empty()
+    if _unknown_group(args.group, registry, policy):
+        return 2
     cwd = None if args.no_cwd else (args.cwd or os.getcwd())
-    r = route(" ".join(args.question), index, cwd=cwd)
+    # Resolved exactly as `ask` resolves it, from the REGISTRY: the index holds
+    # no `groups`, so a `Scope` rebuilt from it can never carry membership.
+    conf = confinement(policy, registry, cwd=cwd, forced_group=args.group)
+    r = route(" ".join(args.question), index, cwd=cwd,
+              eligible=conf.eligible, demoted=conf.demoted,
+              strict_group=conf.strict, group=conf.group, mode=conf.mode)
     names = {s: m["name"] for s, m in index["scopes"].items()}
     if args.json:
         print(json.dumps(r.to_json(), indent=2))
         return 0
     if r.abstain:
-        print(f"ABSTAIN (matched={r.top_matched}) -> ask the user; "
-              f"candidates: {', '.join(names[s] for s in r.ranked)}")
+        # The reason goes on the PLAIN line, not behind --explain: a hard group
+        # turns answers into abstentions, and one that does not say why is
+        # indistinguishable from a bug. An empty candidate list is dropped
+        # rather than printed as a dangling "candidates: ".
+        why = f", {r.abstain_reason}" if r.abstain_reason else ""
+        cands = ", ".join(names[s] for s in r.ranked)
+        print(f"ABSTAIN (matched={r.top_matched}{why}) -> ask the user"
+              + (f"; candidates: {cands}" if cands else ""))
     else:
         print(f"-> {', '.join(names[s] for s in r.selected)}")
     if args.explain:
-        print(f"\ntokens: {r.query_tokens}")
+        print()
+        if r.group:
+            # `conf.source` rather than a re-derivation from `r.mode`: every
+            # confined question has a mode, so "does it have one" cannot tell a
+            # declared mode from the default it fell back to.
+            print(f"group:  {r.group}  mode={r.mode} ({conf.source})")
+        print(f"tokens: {r.query_tokens}")
         for sid in r.ranked:
             d = r.detail[sid]
             mark = "*" if sid in r.selected else " "
@@ -143,6 +331,17 @@ def cmd_route(args) -> int:
                   f"matched={d['matched']:<3} signals={d['signals'] or '-'}")
             if d["top_tokens"]:
                 print(f"      {d['top_tokens']}")
+        # `ranked` is filtered to the eligible set, so under a group the scope
+        # that CAUSED an out_of_group abstention is absent from the very output
+        # meant to explain it. `detail` still holds every scope it scored.
+        outside = sorted((s for s in r.detail if s not in r.ranked),
+                         key=lambda s: -r.detail[s]["score"])
+        if outside:
+            print(f"  -- excluded by group {r.group} --")
+            for sid in outside:
+                d = r.detail[sid]
+                print(f" x {d['name']:<20} score={d['score']:<9} "
+                      f"matched={d['matched']:<3} signals={d['signals'] or '-'}")
     return 0
 
 
@@ -150,6 +349,9 @@ def cmd_ask(args) -> int:
     from .ask import ask, render
     from .index import load_episodes
     index = _load_index_or_die()
+    policy, registry = _policy_or_die(), _registry_or_empty()
+    if _unknown_group(args.group, registry, policy):
+        return 2
     store = load_episodes()
     forced = None
     if args.scope:
@@ -173,7 +375,8 @@ def cmd_ask(args) -> int:
                  episodes_k=args.k, dfs=args.dfs, rerank=args.rerank,
                  with_structure=not args.no_structure,
                  with_episodes=not args.no_episodes,
-                 force_scopes=forced, index=index, store=store)
+                 force_scopes=forced, group=args.group,
+                 policy=policy, registry=registry, index=index, store=store)
     print(json.dumps(answer.to_json(), indent=2) if args.json
           else render(answer, index=index, chars=args.chars))
     return 0
@@ -294,6 +497,8 @@ def cmd_mcp(args) -> int:
 
 # ==========================================================================
 def build_parser() -> argparse.ArgumentParser:
+    from .groups import MODES
+
     p = argparse.ArgumentParser(
         prog="loci",
         description="Scoped memory for coding agents: a router in front of a "
@@ -333,7 +538,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_add)
 
     s = sub.add_parser("scopes", help="list registered scopes")
+    s.add_argument("--group", help="restrict to one group of projects")
     s.set_defaults(func=cmd_scopes)
+
+    s = sub.add_parser("groups", help="list groups, their mode, and members")
+    gsub = s.add_subparsers(dest="groups_cmd")
+    gi = gsub.add_parser("infer", help="label scopes by git provenance")
+    gi.set_defaults(func=cmd_groups_infer)
+    s.set_defaults(func=cmd_groups)
+
+    s = sub.add_parser("group", help="edit group membership or policy")
+    s.add_argument("action", choices=["set", "add", "rm"])
+    s.add_argument("name", help="group name for `set`, scope name for `add`/`rm`")
+    s.add_argument("group", nargs="?", help="group to add or remove")
+    # `choices=MODES`, not a fourth copy of the names. groups.py derives MODES
+    # from STRICTNESS for exactly this reason: a mode listed in one place and
+    # not the other resolves to a KeyError deep inside `confining_groups`.
+    s.add_argument("--mode", choices=MODES,
+                   help="for `set`: what this group does at query time")
+    s.set_defaults(func=cmd_group)
 
     s = sub.add_parser("index", help="build the routing index and episode store")
     s.add_argument("-q", "--quiet", action="store_true")
@@ -355,6 +578,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--cwd")
     s.add_argument("--no-cwd", action="store_true",
                    help="ignore the working directory (routing gets much worse)")
+    s.add_argument("--group", help="restrict to one group of projects")
     s.set_defaults(func=cmd_route)
 
     s = sub.add_parser("ask", help="route, then query both stores in scope")
@@ -372,6 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.add_argument("--cwd")
     s.add_argument("--no-cwd", action="store_true")
+    s.add_argument("--group", help="restrict to one group of projects")
     s.set_defaults(func=cmd_ask)
 
     s = sub.add_parser("graphs", help="build missing structure graphs via graphify")
