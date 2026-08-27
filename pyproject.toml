@@ -14,9 +14,15 @@ keywords = ["memory", "rag", "knowledge-graph", "mcp", "agents", "retrieval"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Libraries",
+  "Topic :: Text Processing :: Indexing",
+  "Environment :: Console",
+  "Operating System :: OS Independent",
 ]
 
 # The base install stays light on purpose: routing and lexical episode search

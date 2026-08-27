@@ -1,0 +1,138 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # loci has never been executed on Linux or Windows. Two platform bugs were
+    # already found by reading the code -- os.kill(pid, 0) terminating rather
+    # than probing on Windows, and backslash paths defeating glob matching --
+    # which is evidence that reading finds bugs, not that it finds all of them.
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install from a built wheel, not the source tree
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          python -m pip install dist/*.whl pytest
+      - name: Test
+        run: python -m pytest tests -q
+      - name: Smoke the CLI end to end
+        shell: bash
+        run: |
+          set -e
+          # Two scopes with genuinely different vocabulary. A smoke test whose
+          # fixtures are near-identical passes without proving anything: an
+          # earlier version used alpha/beta clones and `loci ask` returned "no
+          # evidence" while still exiting 0.
+          mkdir -p /tmp/smoke/ledger/src /tmp/smoke/imaging/src
+          cat > /tmp/smoke/ledger/README.md <<'EOF'
+          # ledger
+
+          ## Settlement
+
+          Reconciles invoices against bank statements nightly and files any
+          discrepancy as a dunning notice for manual review.
+          EOF
+          cat > /tmp/smoke/ledger/src/core.py <<'EOF'
+          """Settlement engine for the ledger service.
+
+          Reconciles each invoice against the matching bank statement and raises
+          a dunning notice when the two disagree beyond the rounding tolerance.
+          """
+
+
+          def reconcile_invoice(statement):
+              """Match one invoice to a statement and return the residual."""
+              return statement
+          EOF
+          cat > /tmp/smoke/imaging/README.md <<'EOF'
+          # imaging
+
+          ## Windowing
+
+          Applies radiograph windowing to DICOM voxel data before handing it to
+          the viewer, so contrast is stable across studies.
+          EOF
+          cat > /tmp/smoke/imaging/src/core.py <<'EOF'
+          """Voxel windowing for the imaging service.
+
+          Applies a radiograph window to DICOM pixel data so that contrast stays
+          stable between studies acquired on different scanners.
+          """
+
+
+          def apply_window(voxels):
+              """Window one DICOM volume and return the display buffer."""
+              return voxels
+          EOF
+          for n in ledger imaging; do
+            git -C /tmp/smoke/$n init -q
+            git -C /tmp/smoke/$n add -A
+            git -C /tmp/smoke/$n -c user.email=t@t -c user.name=t \
+              commit -q -m "initial $n service"
+          done
+          export LOCI_HOME=/tmp/smoke/home
+          loci scan /tmp/smoke
+          loci index
+          loci doctor || true
+          loci eval
+
+          # Assert, do not merely run. Each check below has failed at some point
+          # during development.
+          loci route "how are dunning notices raised for an invoice?" --no-cwd \
+            | tee /tmp/r1 && grep -q ledger /tmp/r1
+          loci route "how is DICOM voxel windowing applied?" --no-cwd \
+            | tee /tmp/r2 && grep -q imaging /tmp/r2
+          loci route "what is the best recipe for sourdough starter?" --no-cwd \
+            | tee /tmp/r3 && grep -q ABSTAIN /tmp/r3
+          # Assert on RETRIEVED CONTENT, not on the scope banner. Grepping for
+          # "ledger" passed while the body read "no evidence in this scope",
+          # because the scope name appears in the header either way.
+          cd /tmp/smoke/ledger
+          loci ask "how is a dunning notice raised?" --fast --no-structure \
+            | tee /tmp/r4
+          grep -q "Reconciles invoices" /tmp/r4
+          ! grep -q "no evidence" /tmp/r4
+
+  build:
+    name: wheel metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build twine
+      - run: python -m build
+      - name: The distribution is loci-mem; the import is loci
+        run: |
+          python -m twine check dist/*
+          python - <<'PY'
+          import zipfile, glob, re
+          whl = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(whl).namelist()
+          meta = zipfile.ZipFile(whl).read(
+              [n for n in names if n.endswith("METADATA")][0]).decode()
+          assert re.search(r"^Name: loci-mem$", meta, re.M), "distribution name drifted"
+          assert any(n.startswith("loci/") for n in names), "import package missing"
+          eps = zipfile.ZipFile(whl).read(
+              [n for n in names if n.endswith("entry_points.txt")][0]).decode()
+          assert "loci = loci.cli:main" in eps, "console script drifted"
+          print("ok:", whl.split("/")[-1])
+          PY

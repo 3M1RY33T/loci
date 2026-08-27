@@ -104,7 +104,7 @@ def _symbol_at(ranges: list[tuple[int, int, str]], line: int) -> str:
 
 
 def extract_python(text: str, rel: str) -> list[tuple[str, str]]:
-    """Return (heading, body) pairs for one Python file.
+    r"""Return (heading, body) pairs for one Python file.
 
     Warnings are suppressed because this parses code the user did not write:
     a repository containing `"\*"` in a docstring makes CPython emit a
