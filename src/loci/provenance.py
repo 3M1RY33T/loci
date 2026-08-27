@@ -25,7 +25,12 @@ GIT_TIMEOUT = 15
 # every classification at once, labelling the user's own work as a vendor's.
 PLURALITY = 0.40
 
-_SSH = re.compile(r"^(?:ssh://)?git@[^:/]+[:/]([^/]+)/")
+# The two ssh spellings need separate patterns because `:` means different
+# things in them. In the scp-like shorthand it separates host from path, so the
+# org follows it; in a real ssh:// URL it introduces a port, and reading that as
+# the org turns a self-hosted GitLab or Gitea remote into `vendor:2222`.
+_SSH_URL = re.compile(r"^ssh://(?:[^@/]+@)?[^:/]+(?::\d+)?/([^/]+)/")
+_SSH_SCP = re.compile(r"^git@[^:/]+:([^/]+)/")
 _HTTPS = re.compile(r"^https?://(?:[^@/]+@)?[^/]+/([^/]+)/")
 
 
@@ -57,7 +62,7 @@ def remote_org(root: Path) -> str | None:
     url = _git(root, "remote", "get-url", "origin")
     if not url:
         return None
-    for pattern in (_SSH, _HTTPS):
+    for pattern in (_SSH_URL, _SSH_SCP, _HTTPS):
         m = pattern.match(url)
         if m:
             return m.group(1).lower()
@@ -108,10 +113,16 @@ def classify(root: Path, identity: Identity) -> str:
     """
     root = Path(root)
 
+    # Every branch below is an accusation, and an unconfident identity is not
+    # evidence for one. The guard belongs here rather than inside the remote
+    # branch: `infer_identity` still reports an ambient `email` when it refuses
+    # to name an org, so the author-email path would otherwise go on labelling
+    # from an identity the module has already disowned.
+    if not identity.confident:
+        return "me"
+
     org = remote_org(root)
     if org:
-        if not identity.confident:
-            return "me"
         return "me" if org == identity.org else f"vendor:{org}"
 
     if not (root / ".git").is_dir():

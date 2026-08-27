@@ -980,8 +980,42 @@ def test_setup_reads_a_project_path_containing_spaces(monkeypatch):
 
 
 # -- provenance ------------------------------------------------------------
+@pytest.fixture
+def hermetic_git(tmp_path, monkeypatch):
+    """Neutralize the ambient git environment for the provenance tests.
+
+    These are the first tests in the suite to run `git` for real, and two
+    processes do it: the `_repo` helper here, and `loci.provenance` itself.
+    Both inherit this environment, so both hazards close in one place.
+
+    Ambient config would break the helper: `commit.gpgsign = true` with no
+    usable key, a global `core.hooksPath`, or an `init.templateDir` carrying
+    hooks all fail the `--allow-empty` commit, which errors every test in this
+    section rather than one.
+
+    The ceiling is for the module. git walks upward looking for `.git`, so a
+    TMPDIR inside a checkout makes the not-a-repo case adopt an enclosing
+    repository's origin -- measured, before this fixture existed:
+    `remote_org(<plain dir under a checkout>) == 'enclosing-org'`, and
+    `classify` then returned `vendor:enclosing-org` for a directory that is
+    not a repository at all. That walk is done by the git `provenance` spawns,
+    which is why these have to be on the process environment and not merely on
+    the helper's subprocess.
+
+    Needs git >= 2.32; older git ignores the variables and we are no worse off.
+    """
+    import os
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+
+
 def _repo(base, name, *, origin=None, email="me@example.com"):
-    """A real git repository with one commit, for provenance tests."""
+    """A real git repository with one commit, for provenance tests.
+
+    Callers take the `hermetic_git` fixture: the commit below depends on it.
+    """
     import subprocess
 
     r = base / name
@@ -1000,19 +1034,26 @@ def _repo(base, name, *, origin=None, email="me@example.com"):
     return r
 
 
-def test_remote_org_parses_both_url_forms(tmp_path):
+def test_remote_org_parses_every_url_form(tmp_path, hermetic_git):
+    """Including `ssh://` with a port, which a self-hosted GitLab or Gitea
+    remote carries. Reading the port as the org produced a `vendor:2222`
+    group -- a wrong answer, not a missing one.
+    """
     from loci.provenance import remote_org
 
     ssh = _repo(tmp_path, "a", origin="git@github.com:3M1RY33T/Delroy.git")
     https = _repo(tmp_path, "b", origin="https://github.com/3M1RY33T/brewery.git")
     bare = _repo(tmp_path, "c")
+    port = _repo(tmp_path, "d",
+                 origin="ssh://git@git.example.com:2222/acme/thing.git")
 
     assert remote_org(ssh) == "3m1ry33t"
     assert remote_org(https) == "3m1ry33t"
     assert remote_org(bare) is None
+    assert remote_org(port) == "acme"
 
 
-def test_identity_is_the_modal_remote_org(tmp_path):
+def test_identity_is_the_modal_remote_org(tmp_path, hermetic_git):
     """No configuration: the org that owns most of your disk is you.
 
     Measured on the development corpus, `3M1RY33T` wins 7-to-1.
@@ -1029,7 +1070,7 @@ def test_identity_is_the_modal_remote_org(tmp_path):
     assert identity.org == "acme"
 
 
-def test_identity_refuses_to_guess_without_a_plurality(tmp_path):
+def test_identity_refuses_to_guess_without_a_plurality(tmp_path, hermetic_git):
     """A wrong identity inverts every classification, so this failure is loud."""
     from loci.provenance import infer_identity
 
@@ -1042,7 +1083,7 @@ def test_identity_refuses_to_guess_without_a_plurality(tmp_path):
     assert identity.org is None
 
 
-def test_classification_covers_every_rule(tmp_path):
+def test_classification_covers_every_rule(tmp_path, hermetic_git):
     """The five rules in the spec, including the two no-remote cases that
     decide `beacon` (foreign author) and `hlep_davay` (your author) correctly.
     """
@@ -1064,12 +1105,25 @@ def test_classification_covers_every_rule(tmp_path):
     assert classify(not_a_repo, identity) == "me"
 
 
-def test_classification_never_accuses_without_a_confident_identity(tmp_path):
+def test_classification_never_accuses_without_a_confident_identity(tmp_path,
+                                                                   hermetic_git):
     """With no identity, everything is `me`. Labelling a user's own work as a
     vendor's is worse than labelling nothing.
+
+    Both branches have to obey the guard, and the author-email one did not.
+    `infer_identity` fills `email` from the ambient git config even when it
+    refuses to name an org, so `Identity(org=None, email=<ambient>,
+    confident=False)` is the state the production path actually returns -- and
+    the second case below labelled it `vendor:unknown`. A bare
+    `Identity(confident=False)` hides that, because `email` defaults to None
+    and the branch fell out on the wrong condition.
     """
     from loci.provenance import Identity, classify
 
     unknown = Identity(confident=False)
     theirs = _repo(tmp_path, "theirs", origin="https://github.com/stranger/x.git")
     assert classify(theirs, unknown) == "me"
+
+    no_org = Identity(org=None, email="me@example.com", confident=False)
+    foreign = _repo(tmp_path, "foreign", email="demo@beacon.dev")
+    assert classify(foreign, no_org) == "me"
