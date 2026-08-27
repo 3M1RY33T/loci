@@ -16,8 +16,11 @@ from pathlib import Path
 from .paths import atomic_write, ensure_home, groups_file
 from .types import Scope
 
-MODES = ("explicit", "soft", "hard")
+# Ordered loosest to strictest. MODES is derived rather than written out again:
+# the two listed the same three names twice, and a mode added to one but not the
+# other resolves to a KeyError deep inside `confining_groups`.
 STRICTNESS = {"explicit": 0, "soft": 1, "hard": 2}
+MODES = tuple(STRICTNESS)
 DEFAULT_MODE = "soft"
 
 
@@ -25,6 +28,16 @@ DEFAULT_MODE = "soft"
 class Policy:
     default_mode: str = DEFAULT_MODE
     groups: dict[str, str | None] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # An unknown mode fails two ways from one value: KeyError via cwd, and
+        # nothing at all via --group, which returns a Confinement carrying a
+        # mode no branch below implements. `load_policy` normalizes, so this
+        # only ever fires on a Policy built in code -- i.e. from user text.
+        if self.default_mode not in MODES:
+            raise ValueError(
+                f"unknown mode {self.default_mode!r}; expected one of "
+                f"{', '.join(MODES)}")
 
     def mode_for(self, group: str) -> tuple[str, str]:
         """(mode, source). `source` is "declared" or "default"."""
@@ -42,9 +55,12 @@ class Policy:
 class Confinement:
     """What a group does to one question."""
 
+    # Tri-state, and the two falsy states are opposites: None is unconfined,
+    # set() is confined to nothing (`--group` naming a group nobody is in).
     eligible: set[str] | None = None   # hard, or an explicit --group
     demoted: set[str] | None = None    # soft
-    group: str | None = None
+    names: tuple[str, ...] = ()        # the confining groups themselves
+    group: str | None = None           # display label only; see `names`
     mode: str | None = None
     source: str | None = None
     strict: bool = False               # abstain when the top scope is outside
@@ -118,23 +134,27 @@ def confinement(policy: Policy, scopes: list[Scope], *,
     if forced_group:
         mode, source = policy.mode_for(forced_group)
         return Confinement(eligible=members([forced_group], scopes),
-                           group=forced_group, mode=mode, source=source,
-                           strict=(mode == "hard"))
+                           names=(forced_group,), group=forced_group,
+                           mode=mode, source=source, strict=(mode == "hard"))
 
     anchor = scope_for_cwd(scopes, cwd) if cwd is not None else None
     if anchor is None:
         return Confinement()
 
-    names, mode, source = confining_groups(policy, anchor.group_set())
-    if not names or mode is None:
+    winners, mode, source = confining_groups(policy, anchor.group_set())
+    if not winners or mode is None:
         return Confinement()
 
+    # `group` is for printing. Two groups tied at the strictest mode join into
+    # one string that is not the name of any group, so anything that needs to
+    # look a group up again reads `names`.
+    names = tuple(winners)
     label = ", ".join(names)
     if mode == "hard":
-        return Confinement(eligible=members(names, scopes), group=label,
-                           mode=mode, source=source, strict=True)
+        return Confinement(eligible=members(names, scopes), names=names,
+                           group=label, mode=mode, source=source, strict=True)
     if mode == "soft":
         inside = members(names, scopes)
-        return Confinement(demoted={s.id for s in scopes} - inside,
+        return Confinement(demoted={s.id for s in scopes} - inside, names=names,
                            group=label, mode=mode, source=source)
-    return Confinement(group=label, mode=mode, source=source)
+    return Confinement(names=names, group=label, mode=mode, source=source)

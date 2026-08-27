@@ -1262,3 +1262,59 @@ def test_a_hand_edited_policy_file_degrades_instead_of_crashing(tmp_path,
 
     p = G.load_policy()
     assert p.default_mode == G.DEFAULT_MODE and p.groups == {}
+
+
+def test_confinement_names_the_groups_it_confined_to(tmp_path):
+    """`group` is display text -- ", ".join(winners) -- so a caller feeding it
+    back to `members` is right in every single-group case and silently gets
+    `set()` the first time two groups tie, which is the union case groups exist
+    to support. `names` is the accessor that survives it, on every branch.
+    """
+    from loci.groups import Policy, confinement, members
+
+    for n in ("anchor", "x", "y"):
+        (tmp_path / n).mkdir()
+    scopes = [_scope("anchor", tmp_path / "anchor", ["one", "two"]),
+              _scope("x", tmp_path / "x", ["one"]),
+              _scope("y", tmp_path / "y", ["two"])]
+    anchor = tmp_path / "anchor"
+
+    hard = confinement(Policy(default_mode="soft",
+                              groups={"one": "hard", "two": "hard"}), scopes,
+                       cwd=anchor)
+    assert hard.names == ("one", "two")
+    assert members(hard.names, scopes) == hard.eligible
+    assert members([hard.group], scopes) == set(), "the label is not an identifier"
+
+    assert confinement(Policy(default_mode="soft"), scopes, cwd=anchor).names \
+        == ("one", "two")
+    assert confinement(Policy(default_mode="explicit"), scopes, cwd=anchor).names \
+        == ("one", "two")
+    assert confinement(Policy(), scopes, forced_group="one").names == ("one",)
+    assert confinement(Policy(), [_scope("bare", anchor)], cwd=anchor).names == ()
+
+
+def test_policy_refuses_a_mode_that_does_not_exist():
+    """One bad value failed two different ways, and the quiet one is worse: via
+    cwd it raised `KeyError: 'strict'` from inside `confining_groups`, but via
+    `--group` it raised nothing and returned a fully-formed Confinement carrying
+    a mode no branch below implements. The CLI builds a Policy out of user text,
+    so the check belongs at construction.
+    """
+    from loci.groups import Policy
+
+    with pytest.raises(ValueError):
+        Policy(default_mode="strict")
+
+
+def test_an_unknown_forced_group_confines_to_nothing(tmp_path):
+    """`eligible` is tri-state and the two falsy states mean opposite things:
+    `None` is unconfined, `set()` is confined to nothing. A router writing
+    `if conf.eligible:` would answer `--group typo` from every scope on disk.
+    """
+    from loci.groups import Policy, confinement
+
+    (tmp_path / "a").mkdir()
+    scopes = [_scope("a", tmp_path / "a", ["me"])]
+
+    assert confinement(Policy(), scopes, forced_group="typo").eligible == set()
