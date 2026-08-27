@@ -8,3 +8,7 @@ build/
 dist/
 graphify-out/
 venv/
+
+# Internal planning docs -- kept locally, not published
+ROADMAP.md
+docs/superpowers/
