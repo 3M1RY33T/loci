@@ -51,6 +51,9 @@ def build_server():
                                 "known: it is the strongest routing signal."},
                         "scope": {"type": "string", "description":
                                   "Force a project by name, bypassing routing."},
+                        "group": {"type": "string", "description":
+                                  "Restrict to one group of projects, e.g. "
+                                  "'me' or 'client:delroy'."},
                         "k": {"type": "integer", "default": 3,
                               "description": "Episode hits per scope."},
                         "rerank": {"type": "boolean", "default": False,
@@ -114,7 +117,8 @@ def build_server():
                 forced = [sid]
             answer = ask(question, cwd=args.get("cwd"), episodes_k=int(args.get("k", 3)),
                          rerank=bool(args.get("rerank", False)),
-                         force_scopes=forced, index=index, store=load_episodes())
+                         force_scopes=forced, group=args.get("group"),
+                         index=index, store=load_episodes())
             return _text(render(answer, index=index))
 
         return _text(f"unknown tool: {name}")

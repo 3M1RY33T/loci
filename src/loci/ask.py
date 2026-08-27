@@ -16,8 +16,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .backends import get_episode_backend, get_structure_backend
+from .groups import Policy, confinement, load_policy
 from .index import chunks_for, load_episodes, load_index
 from .router import route
+from .scopes import load_scopes
 from .text import unique_tokens
 from .types import EpisodeHit, RouteResult, Scope, StructureHit
 
@@ -116,11 +118,15 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
         episodes_k: int = 3, dfs: bool = False, rerank: bool = False,
         with_structure: bool = True, with_episodes: bool = True,
         force_scopes: list[str] | None = None,
+        group: str | None = None,
+        policy: Policy | None = None, registry: list[Scope] | None = None,
         index: dict | None = None, store: dict | None = None) -> Answer:
     index = index if index is not None else load_index()
     store = store if store is not None else (load_episodes() if with_episodes else {})
 
     if force_scopes:
+        # An explicit --scope outranks any group policy: the user has already
+        # answered the question groups exist to answer.
         selected = force_scopes
         rt = RouteResult(question=question, query_tokens=unique_tokens(question),
                          ranked=selected, selected=selected, abstain=False,
@@ -128,7 +134,19 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
                          detail={s: {"name": index["scopes"][s]["name"],
                                      "signals": {"forced": "cli"}} for s in selected})
     else:
-        rt = route(question, index, cwd=cwd)
+        # Confinement is resolved from the REGISTRY, never from the index: the
+        # index stores only id/name/root/aliases per scope, so the `Scope` that
+        # `work` rebuilds from it below can never carry `groups`.
+        #
+        # `policy` and `registry` are injectable for the same reason `index` and
+        # `store` are -- a caller already holding them should not re-read
+        # $LOCI_HOME, and a test should not need one at all.
+        policy = load_policy() if policy is None else policy
+        registry = load_scopes() if registry is None else registry
+        conf = confinement(policy, registry, cwd=cwd, forced_group=group)
+        rt = route(question, index, cwd=cwd,
+                   eligible=conf.eligible, demoted=conf.demoted,
+                   strict_group=conf.strict, group=conf.group, mode=conf.mode)
         selected = [] if rt.abstain else rt.selected
 
     sb = get_structure_backend(index.get("structure_backend", "graphify"))
@@ -173,7 +191,19 @@ def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
     names = {sid: m["name"] for sid, m in index["scopes"].items()}
 
     if rt.abstain:
-        out.append("ABSTAINED - not specific enough to route.")
+        # An abstention that does not name its cause is indistinguishable from a
+        # bug, and a hard group turns answers into abstentions -- so this line is
+        # the whole mitigation for hard mode reading as a regression.
+        #
+        # The cause REPLACES the old headline rather than trailing it: "not
+        # specific enough to route" is false for `out_of_group`, where the
+        # question was specific and merely aimed outside the group.
+        reason = {
+            "out_of_group": f"best match was outside group {rt.group}",
+            "deictic": "the question points at its subject without naming it",
+            "no_evidence": "not enough of the question exists in any project",
+        }.get(rt.abstain_reason or "", "not specific enough to route")
+        out.append(f"ABSTAINED - {reason}.")
         out.append(f"  candidates: {', '.join(names.get(s, s) for s in rt.ranked)}")
         out.append("  re-run with --scope <name>, or from inside the project directory.")
         return "\n".join(out)

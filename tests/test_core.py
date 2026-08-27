@@ -1974,3 +1974,222 @@ def test_an_unknown_forced_group_confines_to_nothing(tmp_path):
     scopes = [_scope("a", tmp_path / "a", ["me"])]
 
     assert confinement(Policy(), scopes, forced_group="typo").eligible == set()
+
+
+# -- ask: confinement, end to end ------------------------------------------
+def test_ask_confines_to_a_hard_group(tmp_path):
+    """End-to-end: a hard group turns a would-be answer into an abstention that
+    names the group, rather than into the in-group runner-up.
+
+    Alpha's node count is deliberately 100 rather than the 500 the other router
+    fixtures use. The cwd that anchors the group also hands Beta CWD_BOOST
+    (4.0), and at 500 Alpha scores 3.54 -- so BETA wins the corpus, Beta is
+    inside the group, and there is nothing out-of-group left to refuse. The
+    fixture only tests what it claims while the out-of-group scope actually
+    wins: 4.66 to 4.15.
+    """
+    from loci.ask import ask
+    from loci.groups import Policy
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+
+    index = _index(a=("Alpha", str(a), {"widget": 40, "gizmo": 30, "sprocket": 20}, 100),
+                   b=("Beta", str(b), {"flange": 25}, 400))
+    registry = [Scope(id="a", name="Alpha", root=a, groups=["me"]),
+                Scope(id="b", name="Beta", root=b, groups=["client:acme"])]
+    policy = Policy(default_mode="soft", groups={"client:acme": "hard"})
+
+    answer = ask("how does the widget gizmo sprocket work", cwd=str(b),
+                 index=index, store={}, policy=policy, registry=registry,
+                 with_structure=False)
+
+    assert answer.routing.abstain
+    assert answer.routing.abstain_reason == "out_of_group"
+    assert answer.routing.group == "client:acme"
+    assert answer.routing.mode == "hard"
+    assert answer.scopes == [], "an abstention must not answer from the runner-up"
+
+
+def test_ask_without_a_group_routes_exactly_as_before(tmp_path):
+    """The upgrade guarantee, end to end.
+
+    A policy with no groups and a registry with no memberships must produce the
+    pre-change RouteResult EXACTLY, not merely a non-abstaining one: comparing
+    `selected` alone would miss a group label, a mode, or a penalty leaking into
+    the ungrouped path. cwd is passed so the anchor really is found and the
+    inertness comes from the empty membership, not from never looking.
+    """
+    from loci.ask import ask
+    from loci.groups import Policy
+
+    a = tmp_path / "a"
+    a.mkdir()
+    index = _index(a=("Alpha", str(a), {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                   b=("Beta", "/b", {"flange": 25}, 400))
+    q = "how does the widget gizmo sprocket work"
+
+    answer = ask(q, cwd=str(a), index=index, store={},
+                 policy=Policy(), registry=[Scope(id="a", name="Alpha", root=a)],
+                 with_structure=False)
+
+    assert not answer.routing.abstain
+    assert answer.routing.selected == ["a"]
+    assert answer.routing.group is None
+    assert answer.routing.to_json() == route(q, index, cwd=str(a)).to_json()
+
+
+def test_forcing_a_scope_still_bypasses_groups(tmp_path):
+    """--scope is an explicit override and must outrank any group policy.
+
+    cwd sits inside Beta, whose group is `hard`. Without the bypass the
+    confinement is eligible={"b"} and routing returns Beta on its cwd boost, so
+    Alpha here is reachable only through the bypass. Asked without a cwd there
+    is nothing to confine, and both assertions hold with the bypass deleted --
+    which is no test at all.
+    """
+    from loci.ask import ask
+    from loci.groups import Policy
+
+    b = tmp_path / "b"
+    b.mkdir()
+    index = _index(a=("Alpha", "/a", {"widget": 40}, 500),
+                   b=("Beta", str(b), {"flange": 25}, 400))
+    registry = [Scope(id="a", name="Alpha", root=Path("/a"), groups=["me"]),
+                Scope(id="b", name="Beta", root=b, groups=["client:acme"])]
+
+    answer = ask("how does the widget work", cwd=str(b), force_scopes=["a"],
+                 index=index, store={},
+                 policy=Policy(groups={"client:acme": "hard"}), registry=registry,
+                 with_structure=False)
+
+    assert answer.routing.selected == ["a"]
+    assert not answer.routing.abstain
+
+
+def test_a_hard_group_abstention_reaches_ask_with_its_own_reason(tmp_path):
+    """The two abstentions hard mode must NOT claim as its own, end to end.
+
+    `route` pins all four outcomes, but only against hand-built arguments;
+    until now nothing wired a real Policy to them. `--group` carries the other
+    half of the coverage: it is the only path that confines WITHOUT a cwd, and a
+    cwd signal on the leading in-group scope suppresses the deictic branch, so a
+    cwd-anchored group is the wrong place to look for that outcome.
+    """
+    from loci.ask import ask
+    from loci.groups import Policy
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    index = _index(a=("Alpha", str(a), {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                   b=("Beta", str(b), {"flange": 25}, 400))
+    registry = [Scope(id="a", name="Alpha", root=a, groups=["me"]),
+                Scope(id="b", name="Beta", root=b, groups=["client:acme"])]
+    confined = dict(group="client:acme", index=index, store={},
+                    policy=Policy(default_mode="soft",
+                                  groups={"client:acme": "hard"}),
+                    registry=registry, with_structure=False)
+
+    deictic = ask("how does this project start up?", **confined)
+    nothing = ask("xyzzy plugh frotz", **confined)
+
+    assert deictic.routing.abstain_reason == "deictic"
+    assert nothing.routing.abstain_reason == "no_evidence"
+    # Both really were confined -- `group=` reached `confinement`, not just the
+    # reporting fields -- so neither reason is the unconfined router's default.
+    assert deictic.routing.group == nothing.routing.group == "client:acme"
+    assert deictic.routing.mode == nothing.routing.mode == "hard"
+
+
+def test_a_rendered_abstention_says_what_caused_it():
+    """Hard mode converts answers into abstentions, and one that does not name
+    its cause is indistinguishable from a bug.
+
+    `out_of_group` is specifically NOT "not specific enough to route": the
+    question was specific, it was aimed outside the group. Naming the cause has
+    to REPLACE that headline rather than trail it, or the line asserts a false
+    cause and then contradicts itself.
+    """
+    from loci.ask import Answer, render
+    from loci.types import RouteResult
+
+    index = _index(a=("Alpha", "/a", {"widget": 40}, 500))
+
+    def headline(reason, group=None):
+        rt = RouteResult(question="q", query_tokens=[], ranked=["a"], selected=[],
+                         abstain=True, top_score=0.0, top_matched=0,
+                         group=group, abstain_reason=reason)
+        return render(Answer(question="q", routing=rt), index=index).splitlines()[0]
+
+    assert "client:acme" in headline("out_of_group", "client:acme")
+    assert "not specific enough" not in headline("out_of_group", "client:acme")
+    assert "points at its subject" in headline("deictic")
+    assert "not enough of the question" in headline("no_evidence")
+    assert headline(None) == "ABSTAINED - not specific enough to route."
+
+
+def test_an_unknown_group_asked_through_ask_answers_from_nothing(tmp_path):
+    """`eligible` is tri-state, and `ask` is where its two falsy states meet.
+
+    `confinement` returns `set()` for a group nobody is in and `None` for no
+    confinement at all. `eligible=conf.eligible or None` collapses them and
+    answers `--group typo` from the whole corpus -- and every other test in this
+    section passes with that mutation in place, because a group somebody IS in
+    is truthy.
+    """
+    from loci.ask import ask
+    from loci.groups import Policy
+
+    a = tmp_path / "a"
+    a.mkdir()
+    index = _index(a=("Alpha", str(a), {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                   b=("Beta", "/b", {"flange": 25}, 400))
+    registry = [Scope(id="a", name="Alpha", root=a, groups=["me"])]
+
+    answer = ask("how does the widget gizmo sprocket work", group="typo",
+                 index=index, store={}, policy=Policy(), registry=registry,
+                 with_structure=False)
+
+    assert answer.routing.abstain
+    assert answer.routing.ranked == []
+    assert answer.scopes == [], "an unknown group answered from the whole corpus"
+
+
+def test_a_soft_group_demotes_through_ask_but_still_includes(tmp_path):
+    """Soft is the DEFAULT mode, and `demoted=None` -- soft doing nothing at all
+    -- passed every other test in this file.
+
+    Alpha leads this corpus unpenalised (4.66 to Beta's 4.15, which is Beta's
+    cwd boost). Anchoring in Beta's group demotes Alpha's evidence base to
+    2.33 and Beta takes the lead. Alpha must still come back in the answer:
+    demoting is what separates soft from hard, and `eligible` wired where
+    `demoted` belongs would drop it entirely.
+    """
+    from loci.ask import ask
+    from loci.groups import Policy
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    index = _index(a=("Alpha", str(a), {"widget": 40, "gizmo": 30, "sprocket": 20}, 100),
+                   b=("Beta", str(b), {"flange": 25}, 400))
+    q = "how does the widget gizmo sprocket work"
+
+    def routing(groups):
+        return ask(q, cwd=str(b), index=index, store={}, policy=Policy(),
+                   registry=[Scope(id="a", name="Alpha", root=a),
+                             Scope(id="b", name="Beta", root=b, groups=groups)],
+                   with_structure=False).routing
+
+    plain = routing(None)
+    soft = routing(["me"])
+
+    assert plain.ranked[0] == "a", "fixture lost its point: Alpha must lead unpenalised"
+    assert soft.ranked[0] == "b", "the soft group did not demote Alpha"
+    assert "a" in soft.selected, "soft demotes; only hard excludes"
+    assert (soft.group, soft.mode) == ("me", "soft")
