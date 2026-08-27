@@ -40,12 +40,25 @@ def cmd_scan(args) -> int:
 
 
 def cmd_add(args) -> int:
-    from .scopes import load_scopes, make_scope, save_scopes, upsert
+    from .scopes import (PRESERVED_FIELDS, load_scopes, make_scope, save_scopes,
+                         upsert)
     from .scopes import DEFAULT_EPISODE_GLOBS
     globs = list(DEFAULT_EPISODE_GLOBS) + list(args.glob or [])
     sc = make_scope(Path(args.path), name=args.name,
                     aliases=args.alias or None, episode_globs=globs)
-    save_scopes(upsert(load_scopes(), sc))
+    # `upsert` keeps a re-scan from clobbering user edits, but a flag here IS
+    # the user naming the value, so an explicitly named field must beat the
+    # preserved one -- otherwise `loci add --alias` on an already registered
+    # path silently does nothing.
+    preserve = tuple(f for f in PRESERVED_FIELDS
+                     if not (f == "aliases" and args.alias)
+                     and not (f == "episode_globs" and args.glob))
+    registry = upsert(load_scopes(), sc, preserve=preserve)
+    save_scopes(registry)
+    # Report the registered scope, not the requested one: the fields the user
+    # did not name were carried over, and printing what was asked for would
+    # misreport them.
+    sc = next(s for s in registry if s.id == sc.id)
     print(f"registered {sc.name} ({sc.id}) -> {sc.root}")
     print(f"  aliases: {', '.join(sc.aliases)}")
     print(f"  episodes: {', '.join(sc.episode_globs)}")

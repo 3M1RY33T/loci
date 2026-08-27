@@ -170,6 +170,63 @@ def test_upsert_preserves_a_deliberate_ungrouping(tmp_path):
     assert registry[0].groups == []
 
 
+def test_upsert_does_not_mutate_the_scope_it_is_given(tmp_path):
+    """Preservation must produce a new scope, not edit the caller's.
+
+    `loci add` prints the scope it built, so rewriting that object in place
+    reported values the user had never asked for.
+    """
+    from loci.scopes import upsert
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    old = make_scope(root, name="proj")
+    old.aliases = ["kept"]
+    old.groups = ["me"]
+
+    fresh = make_scope(root, name="proj")
+    before = (list(fresh.aliases), fresh.groups)
+
+    registry = upsert([old], fresh)
+
+    assert registry[0].aliases == ["kept"]
+    assert registry[0].groups == ["me"]
+    assert (fresh.aliases, fresh.groups) == before, "upsert edited the caller's scope"
+
+
+def test_add_with_an_explicit_alias_beats_preservation(tmp_path, monkeypatch, capsys):
+    """Preservation exists so a re-scan cannot clobber user edits, but a flag on
+    `loci add` IS the user naming the value -- it has to win, or re-adding a
+    registered path silently keeps the old aliases and prints the new ones.
+    """
+    from argparse import Namespace
+
+    import loci.paths as P
+    from loci.cli import cmd_add, cmd_scan
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".git").mkdir(parents=True)     # so `scan` discovers it
+
+    cmd_add(Namespace(path=str(root), name="proj", alias=["first"], glob=None))
+    assert load_scopes()[0].aliases == ["first"]
+
+    cmd_add(Namespace(path=str(root), name="proj", alias=["second"], glob=None))
+    assert load_scopes()[0].aliases == ["second"], "explicit --alias was discarded"
+
+    # No flag: now preservation applies, and the report must name what was
+    # actually registered rather than the defaults `make_scope` regenerated.
+    capsys.readouterr()
+    cmd_add(Namespace(path=str(root), name="proj", alias=None, glob=None))
+    out = capsys.readouterr().out
+    assert load_scopes()[0].aliases == ["second"]
+    assert "aliases: second" in out, f"reported an alias it did not register: {out!r}"
+
+    cmd_scan(Namespace(roots=[str(root)], depth=1))
+    assert load_scopes()[0].aliases == ["second"], "re-scan discarded a custom alias"
+
+
 # -- router ----------------------------------------------------------------
 def _index(**scopes) -> dict:
     postings: dict[str, dict[str, int]] = {}

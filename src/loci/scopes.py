@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .defaults import DEFAULT_CODE_GLOBS, DEFAULT_EPISODE_GLOBS, SKIP_DIRS
 from .paths import atomic_write, ensure_home, registry_file
@@ -117,18 +119,25 @@ PRESERVED_FIELDS = ("groups", "aliases", "episode_globs", "code_globs")
 
 def upsert(scopes: list[Scope], new: Scope, *,
            preserve: tuple[str, ...] = PRESERVED_FIELDS) -> list[Scope]:
-    """Add or replace by id, keeping user-edited fields from the existing entry."""
+    """Add or replace by id, keeping user-edited fields from the existing entry.
+
+    `new` is never modified: the caller still holds the scope it asked for, and
+    editing it under them made `loci add` print values nobody had requested.
+    """
     old = next((s for s in scopes if s.id == new.id), None)
     if old is not None:
+        carried: dict[str, Any] = {}
         for field_name in preserve:
             current = getattr(old, field_name)
             # `groups` is tri-state: None means never inferred, so only an
             # inferred value (including a deliberate []) is worth preserving.
             if field_name == "groups":
                 if current is not None:
-                    new.groups = list(current)
+                    carried["groups"] = list(current)
             elif current:
-                setattr(new, field_name, list(current))
+                carried[field_name] = list(current)
+        if carried:
+            new = replace(new, **carried)
     out = [s for s in scopes if s.id != new.id]
     out.append(new)
     return sorted(out, key=lambda s: s.name.lower())
