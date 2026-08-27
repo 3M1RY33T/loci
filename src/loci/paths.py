@@ -41,6 +41,15 @@ def registry_file() -> Path:
     return home() / "scopes.json"
 
 
+def groups_file() -> Path:
+    """Group policy: which mode each group runs in.
+
+    Separate from the registry because `scopes.json` is machine-managed and
+    rewritten by every scan, while this is user-authored and must survive one.
+    """
+    return home() / "groups.json"
+
+
 def scope_index_file() -> Path:
     return home() / "scope_index.json"
 

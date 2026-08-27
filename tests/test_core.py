@@ -1127,3 +1127,138 @@ def test_classification_never_accuses_without_a_confident_identity(tmp_path,
     no_org = Identity(org=None, email="me@example.com", confident=False)
     foreign = _repo(tmp_path, "foreign", email="demo@beacon.dev")
     assert classify(foreign, no_org) == "me"
+
+
+# -- groups ----------------------------------------------------------------
+def _scope(sid, root, groups=None):
+    return Scope(id=sid, name=sid, root=Path(root), groups=groups)
+
+
+def test_mode_falls_back_to_the_default_and_says_so():
+    """The one objection to per-group-with-fallback is "two places to look".
+    The answer is that resolution reports its own source.
+    """
+    from loci.groups import Policy
+
+    p = Policy(default_mode="soft", groups={"client:delroy": "hard", "me": None})
+    assert p.mode_for("client:delroy") == ("hard", "declared")
+    assert p.mode_for("me") == ("soft", "default")
+    assert p.mode_for("never-declared") == ("soft", "default")
+
+
+def test_hard_confines_and_marks_itself_strict(tmp_path):
+    from loci.groups import Policy, confinement
+
+    scopes = [_scope("glasses", tmp_path / "mono" / "glasses",
+                     ["me", "client:delroy", "delroy"]),
+              _scope("loci", tmp_path / "loci", ["me"])]
+    (tmp_path / "mono" / "glasses").mkdir(parents=True)
+    (tmp_path / "loci").mkdir(parents=True)
+
+    conf = confinement(Policy(default_mode="soft", groups={"client:delroy": "hard"}),
+                       scopes, cwd=tmp_path / "mono" / "glasses")
+
+    assert conf.mode == "hard"
+    assert conf.strict is True
+    assert conf.eligible == {"glasses"}
+    assert conf.demoted is None
+
+
+def test_soft_demotes_and_is_never_strict(tmp_path):
+    from loci.groups import Policy, confinement
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    scopes = [_scope("a", tmp_path / "a", ["me"]),
+              _scope("b", tmp_path / "b", ["vendor:stranger"])]
+
+    conf = confinement(Policy(default_mode="soft"), scopes, cwd=tmp_path / "a")
+
+    assert conf.mode == "soft"
+    assert conf.strict is False
+    assert conf.eligible is None
+    assert conf.demoted == {"b"}
+
+
+def test_strictest_group_wins_and_ties_take_the_union(tmp_path):
+    from loci.groups import Policy, confinement
+
+    for n in ("anchor", "x", "y", "z"):
+        (tmp_path / n).mkdir()
+    scopes = [_scope("anchor", tmp_path / "anchor", ["one", "two", "loose"]),
+              _scope("x", tmp_path / "x", ["one"]),
+              _scope("y", tmp_path / "y", ["two"]),
+              _scope("z", tmp_path / "z", ["loose"])]
+
+    policy = Policy(default_mode="soft",
+                    groups={"one": "hard", "two": "hard", "loose": "explicit"})
+    conf = confinement(policy, scopes, cwd=tmp_path / "anchor")
+
+    assert conf.mode == "hard"
+    assert conf.eligible == {"anchor", "x", "y"}, "tied strictest groups must union"
+
+
+def test_no_groups_anywhere_is_completely_inert(tmp_path):
+    """The upgrade path: an install with no policy and no memberships must take
+    the pre-change code path exactly.
+    """
+    from loci.groups import Policy, confinement
+
+    (tmp_path / "a").mkdir()
+    conf = confinement(Policy(), [_scope("a", tmp_path / "a")], cwd=tmp_path / "a")
+    assert conf.eligible is None and conf.demoted is None and conf.mode is None
+
+
+def test_forced_group_narrows_even_under_explicit(tmp_path):
+    """--group is the whole point of `explicit`: nothing happens until asked."""
+    from loci.groups import Policy, confinement
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    scopes = [_scope("a", tmp_path / "a", ["me"]),
+              _scope("b", tmp_path / "b", ["vendor:x"])]
+
+    policy = Policy(default_mode="explicit")
+    assert confinement(policy, scopes, cwd=tmp_path / "a").eligible is None
+
+    conf = confinement(policy, scopes, forced_group="me")
+    assert conf.eligible == {"a"}
+    assert conf.strict is False, "explicit narrows, but does not abstain"
+
+
+def test_policy_round_trips(tmp_path, monkeypatch):
+    from loci import groups as G
+
+    monkeypatch.setenv("LOCI_HOME", str(tmp_path))
+    G.save_policy(G.Policy(default_mode="hard", groups={"client:delroy": "hard"}))
+    back = G.load_policy()
+    assert back.default_mode == "hard"
+    assert back.groups == {"client:delroy": "hard"}
+
+
+def test_missing_policy_file_is_the_shipped_default(tmp_path, monkeypatch):
+    from loci import groups as G
+
+    monkeypatch.setenv("LOCI_HOME", str(tmp_path / "empty"))
+    p = G.load_policy()
+    assert p.default_mode == G.DEFAULT_MODE and p.groups == {}
+
+
+@pytest.mark.parametrize("body", ['{"groups": ', '[]', '{"groups": ["me"]}'])
+def test_a_hand_edited_policy_file_degrades_instead_of_crashing(tmp_path,
+                                                                monkeypatch, body):
+    """groups.json is the one file a user is invited to author by hand, so every
+    shape it can arrive in has to land on the default rather than a traceback.
+
+    Truncated JSON already fell back; valid JSON of the wrong shape did not --
+    a top-level list, or `groups` written as the plain list of names the key
+    invites, both reached `.get`/`.items()` on a list and raised AttributeError
+    out of every command that loads the policy.
+    """
+    from loci import groups as G
+
+    monkeypatch.setenv("LOCI_HOME", str(tmp_path))
+    G.groups_file().write_text(body, encoding="utf-8")
+
+    p = G.load_policy()
+    assert p.default_mode == G.DEFAULT_MODE and p.groups == {}
