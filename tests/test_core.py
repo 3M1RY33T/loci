@@ -266,6 +266,116 @@ def test_add_with_an_explicit_alias_beats_preservation(tmp_path, monkeypatch, ca
     assert load_scopes()[0].aliases == ["second"], "re-scan discarded a custom alias"
 
 
+# -- scopes: monorepo split ------------------------------------------------
+def test_subscopes_finds_depth_one_markers_only(tmp_path):
+    """Depth-1 is what keeps client/static/package.json from minting a scope
+    called `static`, and benchmarks/*/pyproject.toml from minting two harnesses.
+    """
+    from loci.scopes import subscopes
+
+    repo = tmp_path / "mono"
+    (repo / ".git").mkdir(parents=True)
+    for name in ("glasses", "extension"):
+        (repo / name).mkdir()
+        (repo / name / "package.json").write_text("{}", encoding="utf-8")
+
+    deep = repo / "client" / "static"
+    deep.mkdir(parents=True)
+    (deep / "package.json").write_text("{}", encoding="utf-8")
+
+    (repo / "node_modules").mkdir()
+    (repo / "node_modules" / "package.json").write_text("{}", encoding="utf-8")
+
+    assert {p.name for p in subscopes(repo)} == {"glasses", "extension"}
+
+
+def test_declaration_file_adds_what_markers_cannot_see(tmp_path):
+    """`client/` is a flat Python package with no marker, and it is the biggest
+    contributor in the real monorepo. Markers alone miss exactly that.
+    """
+    from loci.scopes import subscopes
+
+    repo = tmp_path / "mono"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "client").mkdir()
+    (repo / ".loci.json").write_text(
+        json.dumps({"scopes": [{"path": "client"}]}), encoding="utf-8")
+
+    assert {p.name for p in subscopes(repo)} == {"client"}
+
+
+def test_declaration_cannot_escape_the_repository(tmp_path):
+    from loci.scopes import subscopes
+
+    repo = tmp_path / "mono"
+    (repo / ".git").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (repo / ".loci.json").write_text(
+        json.dumps({"scopes": [{"path": "../elsewhere"}]}), encoding="utf-8")
+
+    assert subscopes(repo) == []
+
+
+def test_malformed_declaration_is_ignored_not_fatal(tmp_path):
+    """A scan that aborts on a stray comma is worse than one that misses a
+    declaration -- and "malformed" is not only unparseable text. Valid JSON of
+    the wrong shape reaches `.get` on a list or a string, which raises
+    AttributeError, not the ValueError that json.loads raises.
+    """
+    from loci.scopes import subscopes
+
+    repo = tmp_path / "mono"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "glasses").mkdir()
+    (repo / "glasses" / "package.json").write_text("{}", encoding="utf-8")
+
+    for payload in ("{not json at all",          # unparseable
+                    '["client"]',                # parses, but is not an object
+                    '{"scopes": "client"}',      # `scopes` is not a list
+                    '{"scopes": [["client"]]}',  # an entry is not an object
+                    '{"scopes": [null]}'):       # an entry is nothing at all
+        (repo / ".loci.json").write_text(payload, encoding="utf-8")
+        assert {p.name for p in subscopes(repo)} == {"glasses"}, \
+            f"the marker-found sub-scope was lost to {payload!r}"
+
+
+def test_discover_registers_the_parent_and_its_subscopes(tmp_path):
+    from loci.scopes import discover
+
+    repo = tmp_path / "Delroy"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "glasses").mkdir()
+    (repo / "glasses" / "package.json").write_text("{}", encoding="utf-8")
+
+    found = {s.id: s for s in discover([tmp_path], max_depth=2)}
+    assert "delroy" in found
+    assert "delroy-glasses" in found
+    assert found["delroy-glasses"].root == (repo / "glasses").resolve()
+    assert "delroy" in found["delroy-glasses"].group_set(), \
+        "a sub-scope must carry its parent as a containment label"
+
+
+def test_subscope_ids_never_collide(tmp_path):
+    """Two repos can each hold a `client/`, and a top-level repo can be named
+    the same as a sub-scope's generated id.
+    """
+    from loci.scopes import discover
+
+    for parent in ("One", "Two"):
+        p = tmp_path / parent
+        (p / ".git").mkdir(parents=True)
+        (p / "client").mkdir()
+        (p / "client" / "package.json").write_text("{}", encoding="utf-8")
+    # The head-on collision: a repo whose own id is what `One/client` generates.
+    # Without it the two sub-scopes are `one-client` and `two-client` and every
+    # assertion below passes with no uniquing at all.
+    (tmp_path / "one-client" / ".git").mkdir(parents=True)
+
+    ids = [s.id for s in discover([tmp_path], max_depth=2)]
+    assert len(ids) == len(set(ids)), f"duplicate scope ids: {ids}"
+    assert {"one-client", "two-client"} <= set(ids)
+
+
 # -- router ----------------------------------------------------------------
 def _index(**scopes) -> dict:
     postings: dict[str, dict[str, int]] = {}
