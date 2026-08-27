@@ -513,6 +513,36 @@ def test_hard_group_abstains_rather_than_returning_the_runner_up():
     assert confined.abstain_reason == "out_of_group"
 
 
+def test_hard_group_abstains_when_the_answer_is_named_outside_it(tmp_path):
+    """An alias or cwd hit on an out-of-group scope IS the answer being
+    elsewhere, even though it contributes nothing to evidence_total or matched.
+
+    Gating the out-of-group branch on lexical evidence alone read a scope
+    winning purely on ALIAS_BOOST or CWD_BOOST as zero evidence, skipped the
+    branch, and let the in-group runner-up's own evidence carry `enough` --
+    returning a confident answer from the wrong project, which is the single
+    failure hard mode exists to prevent. Reachable as `loci ask --group backend`
+    asked from a frontend checkout, or any question naming a project outside
+    the group.
+    """
+    a = tmp_path / "a"
+    a.mkdir()
+    # Alpha has NO vocabulary in common with the question; only the signal.
+    idx = _index(a=("Alpha", str(a), {"unrelated": 5}, 500),
+                 b=("Beta", "/b", {"widget": 40, "gizmo": 30, "sprocket": 20}, 400))
+    q = "how does the widget gizmo sprocket work"
+    hard = dict(eligible={"b"}, strict_group=True)
+
+    by_alias = route("alpha " + q, idx, **hard)
+    assert by_alias.detail["a"]["evidence_total"] == 0.0, "fixture lost its point"
+    assert by_alias.abstain
+    assert by_alias.abstain_reason == "out_of_group"
+
+    by_cwd = route(q, idx, cwd=str(a), **hard)
+    assert by_cwd.abstain
+    assert by_cwd.abstain_reason == "out_of_group"
+
+
 def test_explicit_narrowing_does_not_abstain():
     """--group narrows because you asked. Only `hard` refuses."""
     idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
@@ -530,8 +560,11 @@ def test_soft_penalty_reorders_but_never_overrides_a_cwd_signal(tmp_path):
     every penalty down to 0. Measured, unboosted evidence occupies 0.1-1.5, so
     nothing on a real corpus reaches that floor.
 
-    This is a bound, not an absolute: the sweep below inverts if Beta's base
-    exceeds 4.0. See the counterexample recorded in router.py.
+    This is a bound, not an absolute: recency is added to both sides after the
+    penalty, so the sweep below inverts once Beta's base reaches
+    CWD_BOOST + RECENCY_BOOST * (recency(a) - recency(b)) -- 3.85 here, since
+    Beta holds the freshest rank and Alpha the stalest. See the counterexample
+    recorded in router.py.
     """
     a = tmp_path / "a"
     a.mkdir()

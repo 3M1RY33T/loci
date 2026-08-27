@@ -175,8 +175,14 @@ SIZE_PRIOR = 0.15
 #
 # What that buys, exactly: a demoted scope holding cwd scores at least
 # CWD_BOOST, at ANY penalty including 0, because the penalty scales only the
-# evidence base. So no penalty can push it below a scope whose own base is under
-# 4.0 -- which, measured, is every unboosted scope on a real corpus (0.1-1.5).
+# evidence base. Recency is added to both sides afterwards, so the competitor a
+# penalty cannot reach is one whose base stays under
+#
+#   CWD_BOOST + RECENCY_BOOST * (recency(demoted) - recency(other))
+#
+# i.e. under 3.85 in the worst case, where the demoted scope is the stalest in
+# the corpus and its rival the freshest. Measured, unboosted bases occupy
+# 0.1-1.5, so every real competitor is far below even that worst case.
 #
 # It is NOT an unconditional guarantee, and an earlier version of this comment
 # claimed it was. A scope with an unusually large base can still overtake a
@@ -356,15 +362,25 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     enough = (top_total >= floor or top_matched >= min_matched
               or bool(concentrated_here))
 
-    # The same three gates applied to the corpus-wide winner. Without them
-    # `out_of_group` fires on a scope that matched nothing: when a question hits
-    # no vocabulary at all, every scope scores ~0 and the winner is whoever took
-    # the 0.15 recency tiebreak. Reporting "the answer was elsewhere" about a
-    # scope scoring 0.15 made `out_of_group` swallow both other reasons for
-    # every unroutable question under `hard`.
+    # `forced or enough` applied to the corpus-wide winner instead of the
+    # in-group one. Without a gate here at all, `out_of_group` fired on a scope
+    # that matched nothing: when a question hits no vocabulary, every scope
+    # scores ~0 and the winner is whoever took the 0.15 recency tiebreak, so
+    # `out_of_group` swallowed both other reasons for every unroutable question
+    # under `hard`.
+    #
+    # The `signals` disjunct is not optional and mirrors `forced` above: an
+    # alias or cwd hit contributes nothing to evidence_total or matched, so a
+    # scope winning purely on ALIAS_BOOST or CWD_BOOST reads as zero evidence.
+    # Dropping it let the in-group runner-up's own evidence satisfy `enough`
+    # below, turning a hard-group abstention into a confident answer from the
+    # wrong project -- naming a project outside the group, or asking from inside
+    # its tree, produced exactly the failure hard mode exists to prevent.
     top_all_total = detail[top_all]["evidence_total"] if top_all else 0.0
     top_all_matched = detail[top_all]["matched"] if top_all else 0
-    answer_elsewhere = (top_all_total >= floor or top_all_matched >= min_matched
+    top_all_signals = detail[top_all]["signals"] if top_all else {}
+    answer_elsewhere = (bool(top_all_signals) or top_all_total >= floor
+                        or top_all_matched >= min_matched
                         or top_all in concentrated_owners)
 
     reason: str | None = None
