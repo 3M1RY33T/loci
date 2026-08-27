@@ -2363,9 +2363,10 @@ def test_group_rm_refuses_a_label_it_cannot_actually_remove(loci_home, capsys):
     mono = loci_home / "mono"
     client = mono / "client"
     client.mkdir(parents=True)
-    # The marker is what makes `client` a sub-scope at all -- without it
-    # `discover` would never label anything here, and there would be nothing to
-    # refuse. See `test_group_rm_allows_a_label_no_scan_would_recompute`.
+    # Two things make this structural, and each has its own allow-test below:
+    # `.git` (only a repository is ever a `parent` in `discover`) and the
+    # depth-1 marker (only `subscopes` output is ever labelled).
+    (mono / ".git").mkdir()
     (client / "package.json").write_text("{}", encoding="utf-8")
     save_scopes([Scope(id="mono", name="Mono", root=mono, groups=["mono"]),
                  Scope(id="mono-client", name="Mono/client", root=client,
@@ -2400,6 +2401,9 @@ def test_group_rm_allows_a_label_no_scan_would_recompute(loci_home):
     outer = loci_home / "outer"
     deep = outer / "x" / "y"          # depth 2, and no marker anywhere above it
     deep.mkdir(parents=True)
+    # A real repository, so this test isolates the depth/marker reason rather
+    # than passing for want of a `.git`.
+    (outer / ".git").mkdir()
     save_scopes([Scope(id="outer", name="Outer", root=outer),
                  Scope(id="deep", name="Deep", root=deep)])
 
@@ -2419,10 +2423,94 @@ def test_group_rm_allows_a_container_label_with_nothing_inside_it(loci_home, cap
 
     mono = loci_home / "mono"
     mono.mkdir()
+    (mono / ".git").mkdir()      # a repository, but one holding no sub-projects
     save_scopes([Scope(id="mono", name="Mono", root=mono, groups=["mono"])])
 
     assert main(["group", "rm", "mono", "mono"]) == 0
     assert load_scopes()[0].groups == []
+
+
+def test_group_rm_allows_a_label_from_a_directory_scan_never_visits(loci_home):
+    """`discover` collects only git repositories (`(d / ".git").exists()`), so a
+    plain directory never becomes a `parent` and never hands out its id --
+    `loci scan` answers "no git repositories found" for the very tree the
+    refusal cites. Blocking the removal there promises a scan that cannot
+    produce the label, and there is no `--force`.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    nogit = loci_home / "nogit"
+    pkg = nogit / "pkg"
+    pkg.mkdir(parents=True)
+    # A genuine depth-1 marker: `subscopes(nogit)` really does return `pkg`, so
+    # only the repository check can refuse this removal.
+    (pkg / "package.json").write_text("{}", encoding="utf-8")
+    save_scopes([Scope(id="nogit", name="Nogit", root=nogit),
+                 Scope(id="pkg", name="Pkg", root=pkg, groups=["nogit"])])
+
+    assert main(["group", "rm", "pkg", "nogit"]) == 0
+    assert load_scopes()[1].groups == []
+
+
+def test_group_rm_refuses_a_label_held_by_a_worktree_or_submodule(loci_home):
+    """`discover` collects on `(d / ".git").exists()`, and a git worktree or a
+    submodule carries `.git` as a FILE, not a directory.
+
+    Checking `.is_dir()` in the guard instead would make exactly those
+    containers' labels look removable -- and they would silently reappear at the
+    next scan, which is the whole failure the refusal exists to prevent.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    mono, client = loci_home / "mono", loci_home / "mono" / "client"
+    client.mkdir(parents=True)
+    (mono / ".git").write_text("gitdir: /elsewhere/.git/worktrees/mono\n",
+                               encoding="utf-8")
+    (client / "package.json").write_text("{}", encoding="utf-8")
+    save_scopes([Scope(id="mono", name="Mono", root=mono, groups=["mono"]),
+                 Scope(id="mono-client", name="Mono/client", root=client,
+                       groups=["mono"])])
+
+    assert main(["group", "rm", "mono-client", "mono"]) == 2
+    assert load_scopes()[1].group_set() == {"mono"}
+
+
+def test_group_rm_allows_a_container_id_borrowed_as_a_plain_label(loci_home):
+    """Pins the predicate as a WHOLE, which the other allow-tests cannot.
+
+    In both of those the holder has empty `subs`, so `if not subs` alone carries
+    them -- and an unconditional `return holder`, a predicate strictly broader
+    than the one this guard replaced, passes every one of them. Here the holder
+    genuinely holds a sub-project, so it survives every earlier guard and only
+    "is this scope the container, or one of its sub-projects?" can still say no.
+
+    A scope is free to join a group whose name happens to be some container's
+    id without being anything of that container's.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    mono, solo = loci_home / "mono", loci_home / "solo"
+    client = mono / "client"
+    client.mkdir(parents=True)
+    (mono / ".git").mkdir()
+    (client / "package.json").write_text("{}", encoding="utf-8")
+    solo.mkdir()
+    save_scopes([Scope(id="mono", name="Mono", root=mono, groups=["mono"]),
+                 Scope(id="mono-client", name="Mono/client", root=client,
+                       groups=["mono"]),
+                 Scope(id="solo", name="Solo", root=solo, groups=["mono"])])
+
+    assert main(["group", "rm", "solo", "mono"]) == 0
+    assert load_scopes()[2].groups == []
+
+    # The fixture is discriminating: the same label on the container and on its
+    # real sub-project is still refused, so the allowance above is about THIS
+    # scope's relationship and not about the holder having become harmless.
+    assert main(["group", "rm", "mono", "mono"]) == 2
+    assert main(["group", "rm", "mono-client", "mono"]) == 2
 
 
 def test_group_set_rejects_an_unknown_mode(loci_home):

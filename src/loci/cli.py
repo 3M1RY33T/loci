@@ -199,10 +199,11 @@ def _containment_holder(sc, group: str, scopes):
     """The scope whose structural containment label `group` is, or None.
 
     `discover` assigns exactly one structural label, and only in one shape: a
-    repository holding depth-1 workspace markers (or `.loci.json` declarations)
-    labels each of those sub-projects -- and itself, being "a member of its own
-    containment group" -- with its own id. It recomputes that on every scan and
-    `upsert` unions it back, so removing one by hand does not survive.
+    git REPOSITORY holding depth-1 workspace markers (or `.loci.json`
+    declarations) labels each of those sub-projects -- and itself, being "a
+    member of its own containment group" -- with its own id. It recomputes that
+    on every scan and `upsert` unions it back, so removing one by hand does not
+    survive.
 
     Matched against `subscopes` rather than against "is an ancestor of". Two
     scopes registered independently, one merely nested somewhere under the
@@ -215,6 +216,13 @@ def _containment_holder(sc, group: str, scopes):
 
     holder = next((p for p in scopes if p.id == group), None)
     if holder is None:
+        return None
+    # Only a repository is ever a `parent` in `discover` -- it collects on
+    # `(d / ".git").exists()` and reports "no git repositories found" for a tree
+    # without one, so a plain directory never hands out its id no matter what it
+    # holds. `.exists()` not `.is_dir()`, matching `discover`: a worktree or
+    # submodule carries `.git` as a FILE and scan takes it.
+    if not (holder.root / ".git").exists():
         return None
     # `if subs:` is the same guard `discover` applies before labelling anything,
     # so a container with nothing inside it never carried the label structurally
