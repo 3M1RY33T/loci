@@ -977,3 +977,99 @@ def test_setup_reads_a_project_path_containing_spaces(monkeypatch):
     monkeypatch.setattr(builtins, "input", lambda *a: '"/tmp/My Projects" /tmp/code')
     got = _prompt_paths("where?", [Path("/tmp/fallback")], interactive=True)
     assert got == [Path("/tmp/My Projects"), Path("/tmp/code")]
+
+
+# -- provenance ------------------------------------------------------------
+def _repo(base, name, *, origin=None, email="me@example.com"):
+    """A real git repository with one commit, for provenance tests."""
+    import subprocess
+
+    r = base / name
+    r.mkdir(parents=True)
+
+    def run(*args):
+        subprocess.run(["git", "-C", str(r), *args],
+                       capture_output=True, check=True)
+
+    run("init", "-q")
+    run("config", "user.email", email)
+    run("config", "user.name", "Test User")
+    run("commit", "--allow-empty", "-qm", "init")
+    if origin:
+        run("remote", "add", "origin", origin)
+    return r
+
+
+def test_remote_org_parses_both_url_forms(tmp_path):
+    from loci.provenance import remote_org
+
+    ssh = _repo(tmp_path, "a", origin="git@github.com:3M1RY33T/Delroy.git")
+    https = _repo(tmp_path, "b", origin="https://github.com/3M1RY33T/brewery.git")
+    bare = _repo(tmp_path, "c")
+
+    assert remote_org(ssh) == "3m1ry33t"
+    assert remote_org(https) == "3m1ry33t"
+    assert remote_org(bare) is None
+
+
+def test_identity_is_the_modal_remote_org(tmp_path):
+    """No configuration: the org that owns most of your disk is you.
+
+    Measured on the development corpus, `3M1RY33T` wins 7-to-1.
+    """
+    from loci.provenance import infer_identity
+
+    roots = [_repo(tmp_path, f"mine{i}", origin=f"git@github.com:ACME/mine{i}.git")
+             for i in range(4)]
+    roots.append(_repo(tmp_path, "theirs",
+                       origin="https://github.com/stranger/theirs.git"))
+
+    identity = infer_identity(roots)
+    assert identity.confident
+    assert identity.org == "acme"
+
+
+def test_identity_refuses_to_guess_without_a_plurality(tmp_path):
+    """A wrong identity inverts every classification, so this failure is loud."""
+    from loci.provenance import infer_identity
+
+    roots = [_repo(tmp_path, "a", origin="git@github.com:one/a.git"),
+             _repo(tmp_path, "b", origin="git@github.com:two/b.git"),
+             _repo(tmp_path, "c", origin="git@github.com:three/c.git")]
+
+    identity = infer_identity(roots)
+    assert not identity.confident
+    assert identity.org is None
+
+
+def test_classification_covers_every_rule(tmp_path):
+    """The five rules in the spec, including the two no-remote cases that
+    decide `beacon` (foreign author) and `hlep_davay` (your author) correctly.
+    """
+    from loci.provenance import Identity, classify
+
+    identity = Identity(org="acme", email="me@example.com", confident=True)
+
+    mine = _repo(tmp_path, "mine", origin="git@github.com:ACME/mine.git")
+    theirs = _repo(tmp_path, "theirs", origin="https://github.com/stranger/x.git")
+    no_remote_mine = _repo(tmp_path, "nrm", email="me@example.com")
+    no_remote_theirs = _repo(tmp_path, "nrt", email="demo@beacon.dev")
+    not_a_repo = tmp_path / "plain"
+    not_a_repo.mkdir()
+
+    assert classify(mine, identity) == "me"
+    assert classify(theirs, identity) == "vendor:stranger"
+    assert classify(no_remote_mine, identity) == "me"
+    assert classify(no_remote_theirs, identity) == "vendor:unknown"
+    assert classify(not_a_repo, identity) == "me"
+
+
+def test_classification_never_accuses_without_a_confident_identity(tmp_path):
+    """With no identity, everything is `me`. Labelling a user's own work as a
+    vendor's is worse than labelling nothing.
+    """
+    from loci.provenance import Identity, classify
+
+    unknown = Identity(confident=False)
+    theirs = _repo(tmp_path, "theirs", origin="https://github.com/stranger/x.git")
+    assert classify(theirs, unknown) == "me"
