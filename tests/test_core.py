@@ -747,3 +747,83 @@ def test_episode_search_finds_grounded_content():
 def test_collect_is_empty_for_an_empty_scope(tmp_path):
     s = make_scope(tmp_path)
     assert BuiltinEpisodeBackend().collect(s) == []
+
+
+# -- setup -----------------------------------------------------------------
+def _fake_repo(root: Path, name: str, prose: str) -> Path:
+    d = root / name
+    (d / ".git").mkdir(parents=True)
+    (d / "README.md").write_text(f"# {name}\n\n{prose}\n", encoding="utf-8")
+    return d
+
+
+def test_setup_never_prompts_when_it_cannot_be_answered(tmp_path, monkeypatch, capsys):
+    """A wizard that blocks on input is a wizard that hangs CI and agents.
+
+    `loci setup` is the command an agent or a container image is most likely to
+    run unattended, and a prompt there does not fail -- it waits forever, which
+    is the worst available failure. Every question must take its default
+    instead, so `input` is made to raise: reaching it at all is the bug.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.setup import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("setup prompted with no terminal"))
+    corpus = tmp_path / "corpus"
+    # Long enough to clear MIN_CONTENT_WORDS: a shorter README is discarded as
+    # a stub and the scope then has nothing indexable at all.
+    _fake_repo(corpus, "alpha", "Signs the admin session cookie with a rotating "
+                                "HMAC key and refuses SameSite None on localhost.")
+    _fake_repo(corpus, "beta", "Compresses ZIM archives with zstd and streams "
+                               "them to object storage from a manifest table.")
+
+    rc = run([corpus], assume_yes=True, graphs=False, embed=False, calibrate=False)
+
+    assert rc == 0
+    from loci.index import load_index
+    assert set(load_index()["scopes"]) == {"alpha", "beta"}
+
+
+def test_setup_names_every_step_it_did_not_run(tmp_path, monkeypatch, capsys):
+    """Silence about a skipped step reads as "done".
+
+    Someone who never saw the embeddings question will believe semantic search
+    is on. Each skip has to name itself and the command that fixes it later.
+    """
+    import loci.paths as P
+    from loci.setup import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus = tmp_path / "corpus"
+    # Long enough to clear MIN_CONTENT_WORDS: a shorter README is discarded as
+    # a stub and the scope then has nothing indexable at all.
+    _fake_repo(corpus, "alpha", "Signs the admin session cookie with a rotating "
+                                "HMAC key and refuses SameSite None on localhost.")
+    _fake_repo(corpus, "beta", "Compresses ZIM archives with zstd and streams "
+                               "them to object storage from a manifest table.")
+
+    run([corpus], assume_yes=True, graphs=False, embed=False, calibrate=False)
+    out = capsys.readouterr().out
+
+    assert "skipped:" in out
+    for cmd in ("loci embed", "loci calibrate", "loci graphs"):
+        assert cmd in out, f"{cmd!r} missing from the skip report"
+
+
+def test_setup_reads_a_project_path_containing_spaces(monkeypatch):
+    """`~/My Projects` is ordinary on macOS and Windows.
+
+    Splitting the answer on whitespace turns one real directory into two that
+    do not exist, and the only symptom is "0 git repositories found".
+    """
+    import builtins
+
+    from loci.setup import _prompt_paths
+
+    monkeypatch.setattr(builtins, "input", lambda *a: '"/tmp/My Projects" /tmp/code')
+    got = _prompt_paths("where?", [Path("/tmp/fallback")], interactive=True)
+    assert got == [Path("/tmp/My Projects"), Path("/tmp/code")]

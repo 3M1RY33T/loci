@@ -2,8 +2,9 @@
 
 An adapter, not a fork. graphify's value is an extraction pipeline over ~18
 tree-sitter grammars; none of that needs changing to make it scope-aware. loci
-reads its `graph.json` data contract and shells out to `graphify query --graph`,
-so upstream stays upstream.
+reads its `graph.json` data contract and shells out to two CLI verbs --
+`graphify update` to build a scope's graph and `graphify query --graph` to
+traverse it -- so upstream stays upstream.
 
 The scoping gap that motivated loci lives here in miniature: graphify tags
 merged-graph nodes with a `repo` attribute but exposes no way to filter on it,
@@ -96,6 +97,26 @@ class GraphifyBackend:
                 continue
             out.extend(n.get("label") or "" for n in raw.get("nodes") or [])
         return [x for x in out if x]
+
+    # -- build -------------------------------------------------------------
+    def build(self, scope: Scope, *, timeout: int = 600) -> tuple[bool, str]:
+        """Run graphify's extractor over a scope. Returns (ok, detail).
+
+        Every graphify subprocess loci runs lives in this class, so "the whole
+        integration is one adapter" stays literally true and a change to
+        graphify's CLI has exactly one place to land.
+        """
+        try:
+            p = subprocess.run(["graphify", "update", str(scope.root)],
+                               capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, f"timed out after {timeout}s"
+        except FileNotFoundError:
+            return False, "graphify CLI not on PATH"
+        if p.returncode != 0:
+            lines = (p.stderr or p.stdout).strip().splitlines()
+            return False, (f"failed: {lines[-1][:160]}" if lines else "failed")
+        return True, ""
 
     # -- query -------------------------------------------------------------
     def query(self, scope: Scope, query: str, *, budget: int = 2000,

@@ -63,6 +63,26 @@ torch, no vector database, no model download unless you ask for one.
 ## Quickstart
 
 ```bash
+pipx install 'loci-mem[all]'
+loci setup             # scan, graph, index, embed, calibrate -- one pass
+loci ask "why was the session cookie dropped on localhost?"
+```
+
+`setup` asks only what it cannot decide for you: which directories hold your
+projects, and whether to spend a one-time model download on semantic search. It
+ends by running `doctor`, so whatever it could not cover is the last thing you
+read rather than something you discover from a bad answer a week later.
+
+Every prompt takes its default when stdin is not a terminal, so it is safe to
+run unattended in a container or under an agent. `-y` does the same from a
+terminal, and `--no-graphs` / `--no-embed` / `--no-calibrate` decide individual
+steps up front.
+
+The same thing by hand. The order is a dependency chain, not a preference:
+graphs are what the index is built from, the index writes the chunks `embed`
+encodes, and `calibrate` fits its semantic floor from those vectors.
+
+```bash
 loci scan ~/code       # register every git repo it finds
 loci graphs            # optional: add code symbols (free, no model calls)
 loci index             # build the routing index + episode store
@@ -70,7 +90,6 @@ loci embed             # optional: local vectors for semantic recall
 loci calibrate         # optional: fit routing thresholds to your corpus
 loci doctor            # what is missing, and the command that fixes it
 
-loci ask "why was the session cookie dropped on localhost?"
 loci ask "which projects use wrangler and D1?"
 loci eval              # measure routing accuracy on YOUR corpus
 ```
@@ -109,6 +128,7 @@ the biggest*. Both layers can refuse.
 
 | command | purpose |
 |---|---|
+| `loci setup [dirs…]` | scan, graph, index, embed and calibrate in one pass (`-y`, `--no-embed`) |
 | `loci scan <dirs>` | discover git repos and register them as scopes |
 | `loci add <path>` | register one scope explicitly (`--alias`, `--glob`) |
 | `loci scopes` | list what is registered |

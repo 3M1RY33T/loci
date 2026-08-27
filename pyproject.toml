@@ -47,8 +47,8 @@ all = ["graphifyy>=0.9.9", "sentence-transformers>=3.0", "mcp>=1.0"]
 dev = ["pytest>=8.0"]
 
 [project.urls]
-Homepage = "https://github.com/YigittYildizz/loci"
-Issues = "https://github.com/YigittYildizz/loci/issues"
+Homepage = "https://github.com/3M1RY33T/loci"
+Issues = "https://github.com/3M1RY33T/loci/issues"
 
 # The distribution is `loci-mem` (PyPI `loci` is an abandoned 2018
 # outlier-detection package); the command, the import and the project are

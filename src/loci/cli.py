@@ -168,7 +168,6 @@ def cmd_ask(args) -> int:
 
 def cmd_graphs(args) -> int:
     import shutil
-    import subprocess
     from .backends import get_structure_backend
     from .scopes import load_scopes
 
@@ -198,22 +197,28 @@ def cmd_graphs(args) -> int:
 
     print(f"building structure graphs for {len(todo)} scope(s) "
           f"(AST-only, no model calls, no API cost)")
-    failed = []
-    for sc in todo:
-        print(f"  {sc.name} ... ", end="", flush=True)
-        try:
-            p = subprocess.run(["graphify", "update", str(sc.root)],
-                               capture_output=True, text=True, timeout=args.timeout)
-        except subprocess.TimeoutExpired:
-            print(f"timed out after {args.timeout}s"); failed.append(sc.name); continue
-        if p.returncode != 0:
-            print("failed"); failed.append(sc.name); continue
-        nodes = sb.node_count(sc)
-        print(f"{nodes} symbols" if nodes else "no symbols found")
+    from .setup import build_graphs
+    failed = build_graphs(sb, todo, timeout=args.timeout)
     if failed:
         print(f"\n{len(failed)} failed: {', '.join(failed)}")
     print("\nnext: loci index")
     return 1 if failed else 0
+
+
+def cmd_setup(args) -> int:
+    from .setup import run
+    try:
+        return run(args.roots, assume_yes=args.yes, graphs=args.graphs,
+                   embed=args.embed, calibrate=args.calibrate, depth=args.depth,
+                   model=args.model, force=args.force, timeout=args.timeout)
+    except KeyboardInterrupt:
+        # Every step persists as it finishes, and `loci index` reuses scopes
+        # whose fingerprint is unchanged, so a re-run resumes rather than
+        # repeating. Say so: the alternative is a user who assumes the half-run
+        # left something broken.
+        print("\naborted. Finished steps are already on disk; re-run "
+              "`loci setup` to pick up from there.")
+        return 130
 
 
 def cmd_doctor(args) -> int:
@@ -282,6 +287,24 @@ def build_parser() -> argparse.ArgumentParser:
                     "structure store and an episode store.")
     p.add_argument("--version", action="version", version=f"loci {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("setup", help="one-shot: scan, graph, index, embed, calibrate")
+    s.add_argument("roots", nargs="*", type=Path,
+                   help="where to look for git repos (prompts if omitted)")
+    s.add_argument("-y", "--yes", action="store_true",
+                   help="take every default without prompting")
+    s.add_argument("--graphs", action=argparse.BooleanOptionalAction, default=None,
+                   help="build structure graphs (default: ask)")
+    s.add_argument("--embed", action=argparse.BooleanOptionalAction, default=None,
+                   help="build local embeddings (default: ask)")
+    s.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=None,
+                   help="fit routing thresholds (default: ask)")
+    s.add_argument("--depth", type=int, default=2, help="how deep to scan for repos")
+    s.add_argument("--model", help="embedding model (default: bge-small)")
+    s.add_argument("--force", action="store_true",
+                   help="rebuild everything, even where nothing changed")
+    s.add_argument("--timeout", type=int, default=600, help="per-scope graph timeout")
+    s.set_defaults(func=cmd_setup)
 
     s = sub.add_parser("scan", help="discover git repos under roots and register them")
     s.add_argument("roots", nargs="*", type=Path)
