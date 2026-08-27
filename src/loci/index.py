@@ -286,9 +286,22 @@ def embeddings_status() -> list[str] | None:
     return stale
 
 
+SYMBOL_PREFIX = "sym::"
+MAX_SYMBOLS = 30000
+
+
 def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
                      verbose: bool = True) -> Path:
-    """Encode every chunk once. Local model -- content never leaves the machine."""
+    """Encode every chunk once, and every symbol label too.
+
+    Symbol labels are encoded so a question can be matched to code
+    SEMANTICALLY before being handed to the structure store. graphify seeds a
+    traversal by lexical similarity to a node label, which cannot connect "what
+    removes stored data from the browser?" to `clearStorage()` -- measured, it
+    seeded on `getStoredWorkerUrl()` instead -- nor "what parses the command
+    line arguments?" to `build_parser()`, where the expansion came out empty and
+    no traversal ran at all. Nearest-label search finds both.
+    """
     import warnings
     warnings.filterwarnings("ignore")
     import numpy as np
@@ -297,6 +310,26 @@ def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
     store = load_episodes()
     model = SentenceTransformer(model_name)
     arrays: dict[str, "np.ndarray"] = {}
+
+    from .backends import get_structure_backend
+    from .scopes import load_scopes
+    sb = get_structure_backend()
+    by_id = {s.id: s for s in load_scopes()}
+    for sid in store.get("chunks", {}):
+        scope = by_id.get(sid)
+        if scope is None or not hasattr(sb, "labels"):
+            continue
+        labels = sb.labels(scope)[:MAX_SYMBOLS]
+        if not labels:
+            continue
+        arrays[f"{SYMBOL_PREFIX}{sid}"] = np.asarray(
+            model.encode(labels, normalize_embeddings=True, batch_size=256,
+                         show_progress_bar=False), dtype="float32")
+        Path(embeddings_file().parent / f".symbols-{sid}.json").write_text(
+            json.dumps(labels), encoding="utf-8")
+        if verbose:
+            print(f"  {store['scopes'].get(sid, sid):<18} {len(labels):>5} symbols")
+
     for sid, raw in store.get("chunks", {}).items():
         if not raw:
             continue

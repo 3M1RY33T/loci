@@ -129,6 +129,33 @@ def _index(**scopes) -> dict:
     return {"version": 1, "scopes": meta, "postings": postings}
 
 
+def test_thresholds_are_read_at_call_time_not_bound_at_import():
+    """A default argument is evaluated once, when the function is defined.
+
+    Binding thresholds in the signature meant `router.MIN_MATCHED = 6` had no
+    effect on callers using the default, which silently turned several sweeps
+    into no-ops and reported constants that matter as inert.
+    """
+    import loci.router as R
+
+    idx = _index(a=("Alpha", "/a", {"widget": 40, "gizmo": 30, "sprocket": 20}, 500),
+                 b=("Beta", "/b", {"flange": 25}, 400))
+    q = "how does the widget gizmo sprocket work"
+    # `evidence_floor` is passed explicitly: it resolves through the calibration
+    # file by design, so a module attribute is not its source of truth.
+    kw = dict(evidence_floor=10 ** 6)
+    saved = (R.MIN_MATCHED, R.CONCENTRATED_EVIDENCE)
+    try:
+        R.CONCENTRATED_EVIDENCE = 10 ** 6
+        R.MIN_MATCHED = 2
+        assert not route(q, idx, **kw).abstain
+        R.MIN_MATCHED = 99          # the only change; must flip the outcome
+        assert route(q, idx, **kw).abstain, \
+            "module-level threshold did not reach route()"
+    finally:
+        R.MIN_MATCHED, R.CONCENTRATED_EVIDENCE = saved
+
+
 def test_thresholds_stay_at_their_fitted_values():
     """Fitted across two corpora (symbol-indexed and prose-only). See router.py."""
     import loci.router as R
@@ -188,7 +215,8 @@ def test_size_prior_stops_the_biggest_scope_winning_everything():
 def test_one_decisive_token_beats_the_count_gate():
     # Two matched tokens is below MIN_MATCHED, but a token exclusive to one
     # scope and prominent within it is stronger evidence than three generic
-    # ones -- a raw count cannot tell those apart.
+    # ones -- a raw count cannot tell those apart. Handled by the concentrated
+    # tier since DECISIVE_EVIDENCE was deleted as a duplicate of it.
     idx = _index(
         a=("Alpha", "/a", {"wrangler": 75, "database": 14}, 732),
         b=("Beta", "/b", {"database": 2180, "common": 40}, 119599),
@@ -235,6 +263,31 @@ def test_is_deictic_detects_pointing_phrases():
     assert is_deictic("how is the app deployed?")
     assert not is_deictic("how does urthreads verify an admin session cookie?")
     assert not is_deictic("which projects use wrangler?")
+
+
+def test_semantic_symbol_seeding_stays_narrow():
+    """Two nearest labels, not four.
+
+    graphify seeds a traversal by lexical similarity to a node label, which
+    cannot connect a question phrased in behaviour to code named for its
+    implementation. Matching embedded labels first bridges that -- structure
+    probes went 4/7 to 6/7 -- but only while the bridge stays narrow: at three
+    or more labels the added tokens are generic and dilute queries the lexical
+    expansion had already aimed correctly, dropping it back to 5/7.
+    """
+    from loci.ask import SEMANTIC_SYMBOL_LABELS
+    assert SEMANTIC_SYMBOL_LABELS <= 2
+
+
+def test_semantic_symbols_degrade_silently_without_embeddings(tmp_path, monkeypatch):
+    """No vectors must mean no seeding, not an exception."""
+    import loci.paths as P
+    from loci.ask import semantic_symbols
+    from loci.backends import episodes as ep
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    ep.reset_caches()
+    assert semantic_symbols("anything at all", "nosuchscope") == []
 
 
 # -- packaging identity ----------------------------------------------------
@@ -347,10 +400,28 @@ def test_gates_are_an_or_not_a_replacement():
     r = route("how is mimetype handled together with voxel?", idx,
               min_matched=4, evidence_floor=1.0)
     assert not r.abstain and r.selected[0] == "tiny"
-    # With both gates raised out of reach it must abstain rather than guess.
+    # With EVERY gate raised out of reach it must abstain rather than guess.
+    # There are three now; a test that enumerates them has to be updated when
+    # one is added, which is the point of enumerating them.
     r = route("how is mimetype handled together with voxel?", idx,
-              min_matched=99, evidence_floor=10**6, decisive_evidence=10**6)
+              min_matched=99, evidence_floor=10**6, concentrated_evidence=10**6)
     assert r.abstain
+
+
+def test_concentrated_tier_returns_every_owner_of_a_shared_term():
+    """A term two projects share must come back with both of them.
+
+    Returning one owner is the failure this tier fixes, not a partial success.
+    Across five corpora these questions scored 0-17% before it existed, and on
+    real repositories they abstained outright rather than ranking badly.
+    """
+    idx = _index(alpha=("Alpha", "/a", {"wrangler": 60, "alpha_only": 40}, 500),
+                 beta=("Beta", "/b", {"wrangler": 55, "beta_only": 30}, 480),
+                 gamma=("Gamma", "/g", {"unrelated": 90}, 500))
+    r = route("how is wrangler handled?", idx)
+    assert not r.abstain
+    assert {"alpha", "beta"} <= set(r.selected)
+    assert "gamma" not in r.selected
 
 
 def test_calibration_sweeps_rather_than_taking_a_band_endpoint():

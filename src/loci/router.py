@@ -30,7 +30,40 @@ WIDEN_RATIO = 0.85     # keep scopes scoring >= WIDEN_RATIO * top
 MAX_SCOPES = 3
 MIN_MATCHED = 4           # legacy count gate; see EVIDENCE_FLOOR
 EVIDENCE_FLOOR = 7.6      # summed token evidence required to route at all
-DECISIVE_EVIDENCE = 4.5   # ...or one token this discriminative, whichever fires
+CONCENTRATED_SCOPES = 2   # a token held by at most this many scopes is "concentrated"
+CONCENTRATED_EVIDENCE = 2.6
+
+# The concentrated tier exists because every other gate asks "is there enough
+# evidence for ONE scope", and a question about something two projects share
+# splits its evidence between them by construction. Measured across five
+# corpora, such questions returned both owners 0-17% of the time -- and on real
+# repositories they did not merely rank badly, they ABSTAINED, so widening never
+# got a chance to help.
+#
+# A short question like "how is curl handled?" carries two tokens. Its summed
+# evidence is low simply because there are two of them; its matched count is
+# below the count gate for the same reason; and DECISIVE_EVIDENCE is calibrated
+# for tokens exclusive to a single scope, which a shared term can never be. It
+# fell through every gate.
+#
+# What identifies it is CONCENTRATION: a token held by very few scopes and
+# prominent inside them. Measured on questions the evidence gate actually
+# decides -- deictic ones are refused earlier by grammar and never reach it --
+# the bands separate cleanly:
+#
+#   contended questions      3.12 and above
+#   nonsense and vague       2.05 and below
+#
+# The threshold sits in that gap. The tier also forces the holding scopes into
+# the result, because returning one owner of a shared term is the failure being
+# fixed, not a partial success.
+# DECISIVE_EVIDENCE was removed. It admitted a question carrying one
+# exceptionally discriminative token, and the concentrated tier below covers
+# that case and more -- a token held by very few scopes is what "decisive"
+# was reaching for, expressed in a way that also identifies WHICH scopes.
+# Disabling it changed no metric on any of six beds or on the held-out
+# hand-authored set, so it was deleted rather than kept as a second name for
+# the same idea.
 
 # EVIDENCE_FLOOR replaced MIN_MATCHED as the primary gate because a matched-token
 # COUNT does not separate routable questions from unroutable ones. Measured
@@ -150,11 +183,25 @@ def _calibrated_floor() -> float:
 
 
 def route(question: str, index: dict, *, cwd: str | Path | None = None,
-          widen_ratio: float = WIDEN_RATIO, max_scopes: int = MAX_SCOPES,
-          min_matched: int = MIN_MATCHED,
-          decisive_evidence: float = DECISIVE_EVIDENCE,
+          widen_ratio: float | None = None, max_scopes: int | None = None,
+          min_matched: int | None = None,
           evidence_floor: float | None = None,
-          size_prior: float = SIZE_PRIOR) -> RouteResult:
+          concentrated_evidence: float | None = None,
+          size_prior: float | None = None) -> RouteResult:
+    """Route a question to scope(s).
+
+    Every threshold defaults to None and is resolved from the module here, not
+    in the signature. A default argument is evaluated once at import time, so
+    `router.MIN_MATCHED = 6` had no effect on a caller using the default -- which
+    silently turned several threshold sweeps into no-ops and made constants that
+    matter look inert.
+    """
+    widen_ratio = WIDEN_RATIO if widen_ratio is None else widen_ratio
+    max_scopes = MAX_SCOPES if max_scopes is None else max_scopes
+    min_matched = MIN_MATCHED if min_matched is None else min_matched
+    concentrated_evidence = (CONCENTRATED_EVIDENCE if concentrated_evidence is None
+                             else concentrated_evidence)
+    size_prior = SIZE_PRIOR if size_prior is None else size_prior
     scopes = index["scopes"]
     postings = index["postings"]
     S = len(scopes)
@@ -166,6 +213,20 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
 
     scores: dict[str, float] = {}
     detail: dict[str, dict] = {}
+
+    # Tokens held by very few scopes, and prominent in them.
+    idf_max_global = math.log(1 + S) or 1.0
+    concentrated_owners: set[str] = set()
+    for t in q:
+        post = postings.get(t)
+        if not post or len(post) > CONCENTRATED_SCOPES:
+            continue
+        idf = math.log(1 + S / len(post))
+        for sid, df in post.items():
+            n = max(1, scopes[sid].get("node_count", 1))
+            ev = idf * (1 + math.log1p(df / n * 1000)) / idf_max_global
+            if ev >= concentrated_evidence:
+                concentrated_owners.add(sid)
 
     for sid, meta in scopes.items():
         n_nodes = max(1, meta.get("node_count", 1))
@@ -223,7 +284,6 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # `forced` means cwd or an explicit alias resolved the subject; deixis is
     # only a problem when nothing else identifies what "this" refers to.
     forced = bool(top and detail[top]["signals"])
-    decisive = bool(top) and detail[top]["evidence"] >= decisive_evidence
     deictic = is_deictic(question)
     # Three independent ways to have enough evidence, any one of which routes:
     # one exceptionally discriminative token, enough summed evidence, or enough
@@ -231,7 +291,8 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # about a rare symbol has high evidence and a low count, a long question
     # about a familiar subsystem has the reverse -- so requiring all three
     # abstains on both.
-    enough = decisive or top_total >= floor or top_matched >= min_matched
+    enough = (top_total >= floor or top_matched >= min_matched
+              or bool(concentrated_owners))
     abstain = not forced and (deictic or not enough)
 
     if abstain:
@@ -239,6 +300,12 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     else:
         cutoff = top_score * widen_ratio
         selected = [s for s in ranked if scores[s] >= cutoff][:max_scopes]
+        # Every scope holding a concentrated token belongs in the answer, in
+        # rank order. Returning one owner of a shared term is the bug.
+        if concentrated_owners:
+            merged = list(dict.fromkeys(
+                selected + [s for s in ranked if s in concentrated_owners]))
+            selected = merged[:max_scopes]
 
     if top:
         detail[top]["deictic"] = deictic

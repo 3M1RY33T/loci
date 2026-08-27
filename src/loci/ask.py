@@ -52,6 +52,54 @@ class Answer:
                 "scopes": [s.to_json() for s in self.scopes]}
 
 
+# How many nearest symbol labels contribute tokens. Measured: 1 or 2 give 6/7
+# on the structure probes, 3 or 4 give 5/7. Past two labels the extra tokens are
+# generic -- "logic", "admin", "mutation" -- and they dilute a query that the
+# lexical expansion had already aimed correctly.
+SEMANTIC_SYMBOL_LABELS = 2
+
+
+def semantic_symbols(question: str, scope_id: str,
+                     k: int = SEMANTIC_SYMBOL_LABELS) -> list[str]:
+    """Tokens of the symbol labels nearest this question, or [] when unavailable.
+
+    graphify picks traversal seeds by lexical similarity to a label, so a
+    question phrased in behaviour rather than in identifiers reaches nothing:
+    "what parses the command line arguments?" expanded to no graph token at all
+    and produced an empty traversal. Matching the question against embedded
+    labels first, then handing graphify the tokens of the nearest ones, bridges
+    that gap without changing how graphify traverses.
+    """
+    import json
+
+    from .backends import episodes as ep
+    from .index import SYMBOL_PREFIX
+    from .paths import embeddings_file
+    from .text import unique_tokens
+
+    emb = ep._embeddings()
+    key = f"{SYMBOL_PREFIX}{scope_id}"
+    if not emb or key not in emb:
+        return []
+    names_file = embeddings_file().parent / f".symbols-{scope_id}.json"
+    if not names_file.is_file():
+        return []
+    try:
+        labels = json.loads(names_file.read_text(encoding="utf-8"))
+        qv = ep._encode_query(question, str(emb["_model"][0]))
+        if qv is None:
+            return []
+        import numpy as np
+        order = np.argsort(-(emb[key] @ qv))[:k]
+    except Exception:
+        return []
+    out: list[str] = []
+    for i in order:
+        if i < len(labels):
+            out.extend(unique_tokens(labels[i]))
+    return list(dict.fromkeys(out))
+
+
 def expand_for_scope(question: str, index: dict, scope_id: str) -> list[str]:
     """Keep only the query tokens this scope's index actually contains.
 
@@ -91,6 +139,13 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
         meta = index["scopes"][sid]
         ans = ScopeAnswer(scope_id=sid, name=meta["name"],
                           expanded=expand_for_scope(question, index, sid))
+        if with_structure and sb.available():
+            # Lexical expansion first, semantic symbols appended. Both, not
+            # either: the lexical half anchors terms the user actually typed,
+            # the semantic half reaches code they described instead of named.
+            extra = [t for t in semantic_symbols(question, sid)
+                     if t not in ans.expanded]
+            ans.expanded = ans.expanded + extra
         if with_structure and sb.available() and ans.expanded:
             sc = Scope(id=sid, name=meta["name"], root=Path(meta["root"]),
                        aliases=meta.get("aliases", []))

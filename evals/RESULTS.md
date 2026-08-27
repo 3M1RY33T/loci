@@ -649,7 +649,99 @@ measurable rank. A constant that decides whether to return *anything* cannot be
 fitted by a metric that always demands a ranking. It needs a measurement that
 scores refusals, which does not exist yet.
 
-## Honest limits## Phase 1: the test bed
+## Phase 4: the known failures
+
+### The sweep harness was broken, and several Phase 3 conclusions were wrong
+
+`route()` bound its thresholds as **default arguments**, which Python evaluates
+once when the function is defined. Setting `router.MIN_MATCHED = 6` therefore had
+no effect on any caller using the default -- so every threshold sweep run
+through `evals/fit.py` and `evals/sweep.py` was a no-op, and each one reported
+"flat" because nothing had changed.
+
+`CWD_BOOST` and `ALIAS_BOOST` were unaffected, because they are read from the
+module inside the function body rather than bound in the signature. That is why
+`CWD_BOOST` showed a real effect while everything else looked inert, and the
+inconsistency should have been the clue.
+
+All thresholds now resolve from the module at call time, with a test that fails
+if any of them regresses to a default argument. The corrected sweeps:
+
+| constant | corrected finding |
+|---|---|
+| `MIN_MATCHED` | **not** inert. At 2, real-corpus abstention falls to 75% and nonsense refusal to 67%. 4 is correct. |
+| `SIZE_PRIOR` | safe band [0.15, 0.35]; 0.6 collapses signature to 43%. |
+| `WIDEN_RATIO` | genuinely flat 0.55-0.95, now measured rather than assumed. |
+| `DECISIVE_EVIDENCE` | redundant -- see below. |
+
+The Phase 3 claim that "`loci eval` cannot measure `MIN_MATCHED`" was an artefact
+of this bug. Three attempts to build a family that could measure it were made
+against a harness that could not have detected any change at all.
+
+### `contended`: 8.3% to 100%
+
+The consistent failure across five corpora. Two distinct causes, and the smaller
+one was the obvious one:
+
+```
+term       owner A                  owner B              ratio  outcome
+software   G2-claude-companion 2.97 3M1RY33T 2.79         0.94  ABSTAIN
+curl       G2-claude-companion 2.84 brewery 2.18          0.77  ABSTAIN
+glasses    G2-claude-companion 3.65 Delroy 1.52           0.42  one owner only
+venv       Delroy 1.96              odysseus 1.77         0.90  both
+```
+
+Five of eight **abstained outright**, so widening never got a chance -- and on
+real repositories that was every single one. Widening was the visible symptom;
+the gate was the cause.
+
+A question about a term two projects share splits its evidence between them by
+construction. "How is curl handled?" carries two tokens, so its summed evidence
+is low simply because there are two; its matched count is below the count gate
+for the same reason; and the old `DECISIVE_EVIDENCE` was calibrated for tokens
+exclusive to a single scope, which a shared term can never be. It fell through
+every gate.
+
+What identifies such a question is **concentration**: a token held by very few
+scopes and prominent inside them. Measured only on questions the evidence gate
+actually decides -- deictic ones are refused earlier by grammar and never reach
+it -- the bands separate cleanly:
+
+```
+contended questions      3.12 and above
+nonsense and vague       2.05 and below
+```
+
+The new tier admits them and forces every holding scope into the result, because
+returning one owner of a shared term is the bug being fixed. `contended` went to
+**100% on all six beds**, mean set 2.0, with every other family unchanged.
+
+### `DECISIVE_EVIDENCE` deleted
+
+It admitted a question carrying one exceptionally discriminative token. The
+concentrated tier covers that and more: a token held by very few scopes is what
+"decisive" was reaching for, expressed in a way that also identifies *which*
+scopes. Disabling it changed no metric on any of six beds or on the held-out
+set, so it was deleted rather than kept as a second name for the same idea.
+
+### The trade this made, stated plainly
+
+`CONCENTRATED_EVIDENCE` is a real trade-off with no dominant side:
+
+| value | held-out negatives | contended |
+|---|---|---|
+| **2.6** *(shipped)* | 67% (4 of 6) | **100%** |
+| 3.0 | 83% (5 of 6) | 67% |
+| disabled | 83% | 8% |
+
+At 2.6 one question leaks: *"Where is the Stripe webhook signature verified?"*
+routes to the two scopes containing `webhook` (evidence 2.96). No project here
+uses Stripe, so the labelled answer is to abstain -- though returning projects
+that genuinely mention webhooks is a near miss rather than a fabrication.
+
+2.6 is shipped because it costs one near-miss and buys four genuine cross-project
+questions. A stricter 3.0 is available and the cost is recorded here rather than
+hidden.## Phase 1: the test bed
 
 `evals/corpus.py` generates corpora with controlled shape; `evals/sweep.py` runs
 `loci eval` across them and can sweep any constant. Dimensions: scope count,
@@ -964,7 +1056,99 @@ measurable rank. A constant that decides whether to return *anything* cannot be
 fitted by a metric that always demands a ranking. It needs a measurement that
 scores refusals, which does not exist yet.
 
-## Honest limits
+## Phase 4: the known failures
+
+### The sweep harness was broken, and several Phase 3 conclusions were wrong
+
+`route()` bound its thresholds as **default arguments**, which Python evaluates
+once when the function is defined. Setting `router.MIN_MATCHED = 6` therefore had
+no effect on any caller using the default -- so every threshold sweep run
+through `evals/fit.py` and `evals/sweep.py` was a no-op, and each one reported
+"flat" because nothing had changed.
+
+`CWD_BOOST` and `ALIAS_BOOST` were unaffected, because they are read from the
+module inside the function body rather than bound in the signature. That is why
+`CWD_BOOST` showed a real effect while everything else looked inert, and the
+inconsistency should have been the clue.
+
+All thresholds now resolve from the module at call time, with a test that fails
+if any of them regresses to a default argument. The corrected sweeps:
+
+| constant | corrected finding |
+|---|---|
+| `MIN_MATCHED` | **not** inert. At 2, real-corpus abstention falls to 75% and nonsense refusal to 67%. 4 is correct. |
+| `SIZE_PRIOR` | safe band [0.15, 0.35]; 0.6 collapses signature to 43%. |
+| `WIDEN_RATIO` | genuinely flat 0.55-0.95, now measured rather than assumed. |
+| `DECISIVE_EVIDENCE` | redundant -- see below. |
+
+The Phase 3 claim that "`loci eval` cannot measure `MIN_MATCHED`" was an artefact
+of this bug. Three attempts to build a family that could measure it were made
+against a harness that could not have detected any change at all.
+
+### `contended`: 8.3% to 100%
+
+The consistent failure across five corpora. Two distinct causes, and the smaller
+one was the obvious one:
+
+```
+term       owner A                  owner B              ratio  outcome
+software   G2-claude-companion 2.97 3M1RY33T 2.79         0.94  ABSTAIN
+curl       G2-claude-companion 2.84 brewery 2.18          0.77  ABSTAIN
+glasses    G2-claude-companion 3.65 Delroy 1.52           0.42  one owner only
+venv       Delroy 1.96              odysseus 1.77         0.90  both
+```
+
+Five of eight **abstained outright**, so widening never got a chance -- and on
+real repositories that was every single one. Widening was the visible symptom;
+the gate was the cause.
+
+A question about a term two projects share splits its evidence between them by
+construction. "How is curl handled?" carries two tokens, so its summed evidence
+is low simply because there are two; its matched count is below the count gate
+for the same reason; and the old `DECISIVE_EVIDENCE` was calibrated for tokens
+exclusive to a single scope, which a shared term can never be. It fell through
+every gate.
+
+What identifies such a question is **concentration**: a token held by very few
+scopes and prominent inside them. Measured only on questions the evidence gate
+actually decides -- deictic ones are refused earlier by grammar and never reach
+it -- the bands separate cleanly:
+
+```
+contended questions      3.12 and above
+nonsense and vague       2.05 and below
+```
+
+The new tier admits them and forces every holding scope into the result, because
+returning one owner of a shared term is the bug being fixed. `contended` went to
+**100% on all six beds**, mean set 2.0, with every other family unchanged.
+
+### `DECISIVE_EVIDENCE` deleted
+
+It admitted a question carrying one exceptionally discriminative token. The
+concentrated tier covers that and more: a token held by very few scopes is what
+"decisive" was reaching for, expressed in a way that also identifies *which*
+scopes. Disabling it changed no metric on any of six beds or on the held-out
+set, so it was deleted rather than kept as a second name for the same idea.
+
+### The trade this made, stated plainly
+
+`CONCENTRATED_EVIDENCE` is a real trade-off with no dominant side:
+
+| value | held-out negatives | contended |
+|---|---|---|
+| **2.6** *(shipped)* | 67% (4 of 6) | **100%** |
+| 3.0 | 83% (5 of 6) | 67% |
+| disabled | 83% | 8% |
+
+At 2.6 one question leaks: *"Where is the Stripe webhook signature verified?"*
+routes to the two scopes containing `webhook` (evidence 2.96). No project here
+uses Stripe, so the labelled answer is to abstain -- though returning projects
+that genuinely mention webhooks is a near miss rather than a fabrication.
+
+2.6 is shipped because it costs one near-miss and buys four genuine cross-project
+questions. A stricter 3.0 is available and the cost is recorded here rather than
+hidden.
 
 - One machine, ten scopes, one author. The author had read parts of these
   corpora before writing family B, which is why `contamination` is a field and

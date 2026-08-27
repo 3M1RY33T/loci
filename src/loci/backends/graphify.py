@@ -86,6 +86,17 @@ class GraphifyBackend:
     def node_count(self, scope: Scope) -> int:
         return sum(s["nodes"] for s in self.sources(scope))
 
+    def labels(self, scope: Scope) -> list[str]:
+        """Every symbol label in this scope's graphs, for semantic seeding."""
+        out: list[str] = []
+        for p in self.graph_paths(scope):
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            out.extend(n.get("label") or "" for n in raw.get("nodes") or [])
+        return [x for x in out if x]
+
     # -- query -------------------------------------------------------------
     def query(self, scope: Scope, query: str, *, budget: int = 2000,
               dfs: bool = False) -> list[StructureHit]:

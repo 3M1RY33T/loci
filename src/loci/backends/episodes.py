@@ -309,12 +309,21 @@ class BuiltinEpisodeBackend:
 
     def search(self, question: str, chunks: list[Chunk], scope_id: str, *,
                k: int = 5, rerank: bool = False,
-               score_floor: float = SCORE_FLOOR,
-               min_grounded: int = MIN_GROUNDED,
-               min_grounded_frac: float = MIN_GROUNDED_FRAC,
-               semantic_floor: float = SEMANTIC_FLOOR,
-               rerank_depth: int = RERANK_DEPTH,
+               score_floor: float | None = None,
+               min_grounded: int | None = None,
+               min_grounded_frac: float | None = None,
+               semantic_floor: float | None = None,
+               rerank_depth: int | None = None,
                gate: bool = True) -> list[EpisodeHit]:
+        # Resolved here rather than in the signature: a default argument is
+        # bound at import time, so sweeping a module constant would not reach a
+        # caller that relies on the default.
+        score_floor = SCORE_FLOOR if score_floor is None else score_floor
+        min_grounded = MIN_GROUNDED if min_grounded is None else min_grounded
+        min_grounded_frac = (MIN_GROUNDED_FRAC if min_grounded_frac is None
+                             else min_grounded_frac)
+        semantic_floor = SEMANTIC_FLOOR if semantic_floor is None else semantic_floor
+        rerank_depth = RERANK_DEPTH if rerank_depth is None else rerank_depth
         if not chunks:
             return []
         bm25, vec, mat, vocab = _fit(scope_id, chunks)
