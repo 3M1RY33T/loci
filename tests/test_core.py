@@ -346,6 +346,7 @@ def test_discover_registers_the_parent_and_its_subscopes(tmp_path):
     (repo / ".git").mkdir(parents=True)
     (repo / "glasses").mkdir()
     (repo / "glasses" / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "plain" / ".git").mkdir(parents=True)   # no sub-projects
 
     found = {s.id: s for s in discover([tmp_path], max_depth=2)}
     assert "delroy" in found
@@ -353,6 +354,14 @@ def test_discover_registers_the_parent_and_its_subscopes(tmp_path):
     assert found["delroy-glasses"].root == (repo / "glasses").resolve()
     assert "delroy" in found["delroy-glasses"].group_set(), \
         "a sub-scope must carry its parent as a containment label"
+    # A containment group that excludes the container is the wrong shape: the
+    # monorepo root still owns everything no sub-project claimed, and under a
+    # hard group policy it would be the one scope ruled out.
+    assert "delroy" in found["delroy"].group_set(), \
+        "the container is not a member of its own containment group"
+    # Tri-state: an ordinary repo was never inferred, which is not the same as
+    # deliberately ungrouped, and `[]` here would make `groups infer` skip it.
+    assert found["plain"].groups is None
 
 
 def test_subscope_ids_never_collide(tmp_path):
@@ -374,6 +383,47 @@ def test_subscope_ids_never_collide(tmp_path):
     ids = [s.id for s in discover([tmp_path], max_depth=2)]
     assert len(ids) == len(set(ids)), f"duplicate scope ids: {ids}"
     assert {"one-client", "two-client"} <= set(ids)
+    # The real repository wins its own id; the generated one takes the suffix.
+    # Filesystem order decided this before, and `upsert` matches on id while
+    # `root` is not preserved -- so the loser's root would be written into the
+    # winner's registry entry, under the winner's aliases and groups.
+    by_id = {s.id: s for s in discover([tmp_path], max_depth=2)}
+    assert by_id["one-client"].root == (tmp_path / "one-client").resolve()
+    assert by_id["one-client-2"].root == (tmp_path / "One" / "client").resolve()
+
+
+def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypatch):
+    """Containment is structural, so a user's own grouping must add to it rather
+    than replace it. `upsert` preserved a stored `groups` wholesale, which meant
+    the first `group set` on a sub-scope silently dropped its parent label the
+    next time `scan` ran -- and nothing would ever put it back.
+    """
+    from argparse import Namespace
+    from dataclasses import replace
+
+    import loci.paths as P
+    from loci.cli import cmd_scan
+    from loci.scopes import load_scopes, save_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    repo = tmp_path / "Delroy"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "glasses").mkdir()
+    (repo / "glasses" / "package.json").write_text("{}", encoding="utf-8")
+
+    cmd_scan(Namespace(roots=[str(repo)], depth=1))
+    assert {s.id for s in load_scopes()} == {"delroy", "delroy-glasses"}
+    assert next(s for s in load_scopes() if s.id == "delroy-glasses").group_set() \
+        == {"delroy"}
+
+    # the user groups the sub-project by hand, naming nothing about containment
+    save_scopes([replace(s, groups=["client:acme"]) if s.id == "delroy-glasses"
+                 else s for s in load_scopes()])
+    cmd_scan(Namespace(roots=[str(repo)], depth=1))
+
+    sub = next(s for s in load_scopes() if s.id == "delroy-glasses")
+    assert sub.group_set() == {"delroy", "client:acme"}, \
+        "a re-scan dropped a label the user's edit never mentioned"
 
 
 # -- router ----------------------------------------------------------------

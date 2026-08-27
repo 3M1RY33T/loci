@@ -149,9 +149,8 @@ def discover(roots: list[Path], *, max_depth: int = 2) -> list[Scope]:
     scope: a monorepo holding six independent projects fused into a single scope
     large enough to win every routing decision by size alone.
     """
-    found: list[Scope] = []
+    repos: list[Path] = []
     seen: set[Path] = set()
-    taken: set[str] = set()
     for raw in roots:
         base = Path(raw).expanduser().resolve()
         if not base.is_dir():
@@ -163,24 +162,47 @@ def discover(roots: list[Path], *, max_depth: int = 2) -> list[Scope]:
                 continue
             seen.add(d)
             if (d / ".git").exists():
-                parent = make_scope(d)
-                parent.id = _unique_id(parent.id, taken)
-                found.append(parent)
-                for sub in subscopes(d):
-                    sc = make_scope(sub, name=f"{parent.name}/{sub.name}")
-                    sc.id = _unique_id(slugify(f"{parent.name}-{sub.name}"), taken)
-                    # Containment is a label, not a parent pointer. The
-                    # parent's own groups come along: a sub-project of a
-                    # client's monorepo is the client's too.
-                    sc.groups = sorted(set(parent.groups or []) | {parent.id})
-                    found.append(sc)
-                continue  # a repo is a leaf for TRAVERSAL; sub-scopes are handled here
+                repos.append(d)
+                continue  # a repo is a leaf for TRAVERSAL; sub-scopes come later
             if depth >= max_depth:
                 continue
             try:
-                stack.extend((c, depth + 1) for c in d.iterdir() if c.is_dir())
+                # Sorted, and reversed because the stack is LIFO: unordered
+                # `iterdir` made id assignment depend on filesystem order, and
+                # `upsert` matches on id while `root` is not preserved -- so two
+                # scopes trading which one holds the bare id would land one
+                # project's root in the other's registry entry.
+                children = sorted((c for c in d.iterdir() if c.is_dir()), reverse=True)
             except PermissionError:
                 continue
+            stack.extend((c, depth + 1) for c in children)
+
+    # Two passes, deliberately: every real repository claims its id before any
+    # generated sub-scope id exists to take it.
+    found: list[Scope] = []
+    taken: set[str] = set()
+    families: list[tuple[Scope, list[Path]]] = []
+    for d in repos:
+        parent = make_scope(d)
+        parent.id = _unique_id(parent.id, taken)
+        subs = subscopes(d)
+        if subs:
+            # The container is a member of its own containment group. Excluding
+            # it makes `members(["delroy"])` return the sub-projects but not the
+            # monorepo root, which still owns the code no sub-project claimed.
+            parent.groups = [parent.id]
+        found.append(parent)
+        families.append((parent, subs))
+    for parent, subs in families:
+        for sub in subs:
+            sc = make_scope(sub, name=f"{parent.name}/{sub.name}")
+            sc.id = _unique_id(slugify(f"{parent.name}-{sub.name}"), taken)
+            # Containment is a label, not a parent pointer, and it is structural:
+            # computed from the filesystem, like everything else `discover` reads.
+            # Inheriting a user's own groups belongs at registration time, where
+            # the loaded registry is in hand; `discover` never reads it.
+            sc.groups = [parent.id]
+            found.append(sc)
     return sorted(found, key=lambda s: s.name.lower())
 
 
@@ -216,9 +238,10 @@ def upsert(scopes: list[Scope], new: Scope, *,
     `new` is never modified: the caller still holds the scope it asked for, and
     editing it under them made `loci add` print values nobody had requested.
 
-    Preservation is per field. `groups` and `aliases` carry over whole; a glob
-    list carries over only the entries the current defaults do not provide, so
-    a re-scan still delivers a newly shipped default (see the comment below).
+    Preservation is per field. `aliases` carries over whole; `groups` unions,
+    because discovery now computes labels of its own that a user's list must not
+    erase; a glob list carries over only the entries the current defaults do not
+    provide, so a re-scan still delivers a newly shipped default (see below).
     """
     old = next((s for s in scopes if s.id == new.id), None)
     if old is not None:
@@ -234,7 +257,15 @@ def upsert(scopes: list[Scope], new: Scope, *,
             # inferred value (including a deliberate []) is worth preserving.
             if field_name == "groups":
                 if current is not None:
-                    carried["groups"] = list(current)
+                    # Union, not replace. `discover` computes structural labels
+                    # -- a monorepo's containment group -- and a stored user list
+                    # must not be able to erase them: `group set` on a sub-scope
+                    # would otherwise drop its parent label on the next scan,
+                    # permanently. Removal still works for every label discovery
+                    # does not re-assert. Appended rather than sorted, so a list
+                    # the user ordered by hand comes back in that order.
+                    carried["groups"] = list(current) + [
+                        g for g in (new.groups or []) if g not in current]
             elif not current:
                 continue
             elif field_name in defaults:
