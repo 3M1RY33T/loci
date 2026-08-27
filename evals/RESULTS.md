@@ -274,6 +274,21 @@ graph does not change that.
 
 The fix for a cold scope is `loci graphs`, which is free and takes seconds.
 
+## Note on a single-item movement
+
+Pruning vendored directories out of traversal removed ~85 tokens from one
+scope's vocabulary, which cost `cross-macos-app` two matched tokens and tipped
+it into abstention. Uncontaminated top-1 moved 85.7% -> 71.4% as a result.
+
+`MIN_MATCHED` was re-swept on the pruned corpus and 4 is still correct: clean
+accuracy is flat at 71.4% across 2, 3 and 4, while negatives (50% -> 67% -> 83%)
+and deictic abstention (75% -> 87.5% -> 100%) both peak at 4. The threshold is
+not the cause, and lowering it recovers nothing.
+
+With seven items in that family, one item is 14.3 points. This is recorded
+rather than chased: tuning a threshold until a single question passes is the
+failure mode this whole eval exists to avoid.
+
 ## Honest limits
 
 - One machine, ten scopes, one author. The author had read parts of these

@@ -122,11 +122,32 @@ def build_server():
     return server
 
 
+def _warm_up() -> None:
+    """Load the embedding model and the largest scopes' rankers at boot.
+
+    Without this the FIRST tool call an agent makes pays ~4.4s of import and
+    model construction while the user waits, and every call after it costs
+    ~0.1s. A server that is going to pay that cost anyway should pay it before
+    anyone is watching.
+    """
+    try:
+        from .backends import episodes as ep
+        from .index import load_episodes, load_index
+        index = load_index()
+        store = load_episodes()
+        biggest = sorted(index["scopes"],
+                         key=lambda s: -index["scopes"][s].get("chunk_count", 0))[:3]
+        ep.warm_up(store, biggest)
+    except Exception:
+        pass  # a cold server still answers; it is just slower on the first call
+
+
 def main() -> int:
     import anyio
     from mcp.server.stdio import stdio_server
 
     async def run() -> None:
+        _warm_up()
         server = build_server()
         async with stdio_server() as (read, write):
             await server.run(read, write, server.create_initialization_options())

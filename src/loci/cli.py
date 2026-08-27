@@ -74,7 +74,8 @@ def cmd_index(args) -> int:
     if not args.quiet:
         print(f"indexing {len(scopes)} scope(s)")
     idx = build(scopes, episodes=not args.no_episodes,
-                episode_vocab=args.episode_vocab, verbose=not args.quiet)
+                episode_vocab=args.episode_vocab, verbose=not args.quiet,
+                force=args.force)
     print(f"\n{len(idx['scopes'])} scopes, {len(idx['postings'])} tokens -> {home()}")
     missing = [m["name"] for m in idx["scopes"].values() if not m.get("sources")]
     if missing:
@@ -147,6 +148,11 @@ def cmd_ask(args) -> int:
                       file=sys.stderr)
                 return 2
             forced.append(sid)
+    if args.fast:
+        # Loading sentence_transformers costs ~1.6s of import plus model
+        # construction, which dominates a single CLI question.
+        from .backends import episodes as _ep
+        _ep._EMB = {}
     cwd = None if args.no_cwd else (args.cwd or os.getcwd())
     answer = ask(" ".join(args.question), cwd=cwd, budget=args.budget,
                  episodes_k=args.k, dfs=args.dfs, rerank=args.rerank,
@@ -255,6 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("index", help="build the routing index and episode store")
     s.add_argument("-q", "--quiet", action="store_true")
     s.add_argument("--no-episodes", action="store_true")
+    s.add_argument("--force", action="store_true",
+                   help="re-parse every scope even if nothing changed")
     s.add_argument("--episode-vocab", action="store_true",
                    help="fold episode prose into routing vocabulary (see README)")
     s.set_defaults(func=cmd_index)
@@ -280,6 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--chars", type=int, default=400)
     s.add_argument("--dfs", action="store_true")
     s.add_argument("--rerank", action="store_true", help="cross-encoder rerank (opt-in)")
+    s.add_argument("--fast", action="store_true",
+                   help="skip semantic ranking; ~5s faster per one-shot invocation")
     s.add_argument("--no-structure", action="store_true")
     s.add_argument("--no-episodes", action="store_true")
     s.add_argument("--json", action="store_true")

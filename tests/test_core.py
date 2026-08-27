@@ -209,7 +209,8 @@ def test_install_hints_name_the_distribution_not_the_import():
 
 
 def test_distribution_name_matches_the_install_hints():
-    import tomllib
+    # tomllib is 3.11+; the package supports 3.10, so the TEST has to too.
+    tomllib = pytest.importorskip("tomllib", reason="3.11+; library itself is 3.10-safe")
     root = Path(__file__).resolve().parent.parent
     meta = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     assert meta["name"] == "loci-mem"
@@ -281,6 +282,65 @@ def test_docstring_routing_fallback_stays_disabled():
     """
     from loci.index import DOCSTRING_FALLBACK_VOCAB
     assert DOCSTRING_FALLBACK_VOCAB == 0
+
+
+# -- redaction -------------------------------------------------------------
+SECRETS = [
+    ('aws_key = "AKIAIOSFODNN7EXAMPLE"', "aws-key-id"),
+    ("token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789", "github-token"),
+    ("postgres://admin:hunter2hunter2@db.internal:5432/app", "connection-string"),
+    ("-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----",
+     "private-key"),
+    ('client_secret = "aVeryLongOpaqueValue1234567890"', "secret-assignment"),
+]
+SAFE = [
+    "The admin session cookie needs SameSite and Secure set together.",
+    "def get_api_key(env): return env.get('API_KEY')",
+    "password: required",
+    "Deployment uses Cloudflare Workers and a D1 database.",
+]
+
+
+@pytest.mark.parametrize("text,label", SECRETS)
+def test_redaction_catches_credentials(text, label):
+    from loci.redact import redact
+    out, found = redact(text)
+    assert label in found
+    assert "REDACTED" in out
+
+
+@pytest.mark.parametrize("text", SAFE)
+def test_redaction_leaves_ordinary_prose_alone(text):
+    from loci.redact import redact
+    out, found = redact(text)
+    assert found == {} and out == text
+
+
+def test_sensitive_files_are_never_collected(tmp_path):
+    from loci.redact import is_sensitive_file
+    for name in (".env", ".dev.vars", "secrets.yaml", "id_rsa", "server.pem"):
+        assert is_sensitive_file(tmp_path / name), name
+    for name in ("README.md", "app.py", "config.json", "index.ts"):
+        assert not is_sensitive_file(tmp_path / name), name
+
+
+def test_every_collection_path_redacts(tmp_path):
+    """Chunks are built through one constructor so no path can skip redaction."""
+    from loci.backends import episodes as ep
+    leak = "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+    # markdown body
+    md = f"# Title\n\nWe rotated the token {leak} after the incident was found.\n"
+    chunks = ep.chunk_markdown(md, "doc:x.md", "doc", "")
+    assert chunks and leak not in chunks[0].text
+    # a heading carrying one
+    chunks = ep.chunk_markdown(f"# key {leak}\n\n" + ("word " * 20), "doc:y.md", "doc", "")
+    assert chunks and leak not in chunks[0].heading
+
+
+def test_redaction_preserves_the_key_name_so_the_chunk_still_routes():
+    from loci.redact import redact
+    out, _ = redact('client_secret = "aVeryLongOpaqueValue1234567890"')
+    assert "client_secret" in out and "aVeryLongOpaqueValue" not in out
 
 
 # -- episode gate ----------------------------------------------------------

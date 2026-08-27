@@ -25,7 +25,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..paths import embeddings_file
+from ..paths import embeddings_file, rankers_dir
+from ..redact import is_sensitive_file, redact
 from ..text import tokens as vtokens
 from ..text import token_set
 from ..types import Chunk, EpisodeHit, Scope
@@ -39,9 +40,6 @@ MIN_CONTENT_WORDS = 8
 NAV_LINK_RATIO = 0.6
 MAX_COMMITS = 400
 MAX_CODE_FILES = 1500      # a hard stop, so one huge repo cannot dominate
-CODE_SKIP = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist",
-             "build", "vendor", "target", ".next", ".tox", "site-packages",
-             "graphify-out", ".mypy_cache", ".pytest_cache", "migrations"}
 
 # -- ranking ---------------------------------------------------------------
 BM25_WEIGHT = 0.40
@@ -148,8 +146,7 @@ def chunk_markdown(text: str, source: str, kind: str, ts: str) -> list[Chunk]:
         for piece in pack(body):
             if len(piece) < MIN_CHUNK_CHARS or is_stub(piece) or is_navigation(piece):
                 continue
-            chunks.append(Chunk(kind=kind, source=source,
-                                heading=" > ".join(cur), text=piece, ts=ts))
+            chunks.append(_chunk(kind, source, " > ".join(cur), piece, ts))
 
     for line in text.splitlines():
         m = HEADING.match(line)
@@ -167,6 +164,25 @@ def chunk_markdown(text: str, source: str, kind: str, ts: str) -> list[Chunk]:
 # ==========================================================================
 # collection
 # ==========================================================================
+_REDACTIONS: Counter = Counter()
+
+
+def _chunk(kind: str, source: str, heading: str, text: str, ts: str) -> Chunk:
+    """Build a chunk with its text redacted. The only constructor collectors use.
+
+    Funnelled through one function on purpose: there are four collection paths
+    and a fifth is easy to add, so redaction lives where a new path cannot avoid
+    it rather than being repeated at each call site.
+    """
+    clean, found = redact(text)
+    if found:
+        _REDACTIONS.update(found)
+    head, head_found = redact(heading)
+    if head_found:
+        _REDACTIONS.update(head_found)
+    return Chunk(kind=kind, source=source, heading=head, text=clean, ts=ts)
+
+
 def _read(p: Path) -> str:
     try:
         return p.read_text(encoding="utf-8", errors="replace")
@@ -185,27 +201,23 @@ def collect_code(scope: Scope) -> list[Chunk]:
     """Mine docstrings and comment blocks from the scope's source files."""
     from .docstrings import extract
 
+    from ..walk import iter_files
+
     out: list[Chunk] = []
-    seen: set[Path] = set()
     files = 0
-    for pattern in scope.code_globs or []:
-        for f in sorted(scope.root.glob(pattern)):
-            if files >= MAX_CODE_FILES:
-                return out
-            if f in seen or not f.is_file():
-                continue
-            if any(part in CODE_SKIP for part in f.parts):
-                continue
-            seen.add(f)
-            files += 1
-            try:
-                rel = str(f.relative_to(scope.root))
-            except ValueError:
-                rel = f.name
-            ts = _mtime(f)
-            for heading, body in extract(f, rel):
-                out.append(Chunk(kind="docstring", source=f"code:{rel}",
-                                 heading=heading, text=body, ts=ts))
+    for f in iter_files(scope.root, scope.code_globs or []):
+        if files >= MAX_CODE_FILES:
+            return out
+        if is_sensitive_file(f):
+            continue
+        files += 1
+        try:
+            rel = str(f.relative_to(scope.root))
+        except ValueError:
+            rel = f.name
+        ts = _mtime(f)
+        for heading, body in extract(f, rel):
+            out.append(_chunk("docstring", f"code:{rel}", heading, body, ts))
     return out
 
 
@@ -233,8 +245,8 @@ def collect_git(root: Path) -> list[Chunk]:
         sha, ts, subject = parts[0], parts[1], parts[2]
         body = parts[3] if len(parts) > 3 else ""
         text = f"{subject}\n{body}".strip() or subject
-        chunks.append(Chunk(kind="commit", source=f"git:{sha[:10]}",
-                            heading=subject, text=text[:HARD_MAX_CHARS], ts=ts))
+        chunks.append(_chunk("commit", f"git:{sha[:10]}", subject,
+                             text[:HARD_MAX_CHARS], ts))
     return chunks
 
 
@@ -242,31 +254,32 @@ class BuiltinEpisodeBackend:
     name = "builtin"
 
     def collect(self, scope: Scope) -> list[Chunk]:
+        _REDACTIONS.clear()
         chunks: list[Chunk] = []
         seen: set[Path] = set()
         chunks += collect_code(scope)
-        for pattern in scope.episode_globs or []:
-            expanded = Path(pattern).expanduser()
-            # An absolute glob lets a scope pull in prose that lives outside the
-            # repo -- an external vault, a notes directory, a host app's store.
-            if expanded.is_absolute():
-                base, pat = expanded.anchor, str(expanded.relative_to(expanded.anchor))
-                candidates = Path(base).glob(pat)
-            else:
-                candidates = scope.root.glob(pattern)
-            for f in sorted(candidates):
-                if not f.is_file() or f in seen:
-                    continue
-                seen.add(f)
-                kind = "doc" if f.suffix.lower() in {".md", ".markdown", ".rst", ".txt"} else "note"
-                try:
-                    rel = f.relative_to(scope.root)
-                    label = str(rel)
-                except ValueError:
-                    label = f.name
-                chunks += chunk_markdown(_read(f), f"{kind}:{label}", kind, _mtime(f))
+        from ..walk import iter_files
+        # An absolute glob lets a scope pull in prose that lives outside the
+        # repo -- an external vault, a notes directory, a host app's store.
+        for f in iter_files(scope.root, scope.episode_globs or []):
+            if f in seen or is_sensitive_file(f):
+                continue
+            seen.add(f)
+            kind = "doc" if f.suffix.lower() in {".md", ".markdown", ".rst", ".txt"} else "note"
+            try:
+                label = str(f.relative_to(scope.root))
+            except ValueError:
+                label = f.name
+            chunks += chunk_markdown(_read(f), f"{kind}:{label}", kind, _mtime(f))
         chunks += collect_git(scope.root)
         return chunks
+
+    def redactions(self) -> dict[str, int]:
+        """What the last `collect` removed, by kind."""
+        return dict(_REDACTIONS)
+
+    def save_rankers(self, scope_id: str, chunks: list[Chunk]) -> None:
+        save_rankers(scope_id, chunks)
 
     def vocabulary(self, chunks: list[Chunk]) -> Counter:
         counts: Counter = Counter()
@@ -366,9 +379,8 @@ class BuiltinEpisodeBackend:
 # ==========================================================================
 # ranking internals
 # ==========================================================================
-def _fit(scope_id: str, chunks: list[Chunk]):
-    if scope_id in _FIT:
-        return _FIT[scope_id]
+def fit(chunks: list[Chunk]):
+    """Build the lexical rankers for one scope. Expensive; see `_fit`."""
     from rank_bm25 import BM25Okapi
     from sklearn.feature_extraction.text import TfidfVectorizer
 
@@ -383,7 +395,49 @@ def _fit(scope_id: str, chunks: list[Chunk]):
         vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=1,
                               max_features=60000, lowercase=True)
         mat = vec.fit_transform(texts)
-    _FIT[scope_id] = (bm25, vec, mat, vocab)
+    return bm25, vec, mat, vocab
+
+
+def save_rankers(scope_id: str, chunks: list[Chunk]) -> None:
+    """Persist one scope's fitted rankers so queries never refit.
+
+    Fitting char 3-5 gram TF-IDF over a large scope costs ~1.5s. The in-process
+    cache below never survives a CLI or MCP invocation, so without this every
+    single question paid that cost -- measured at 4.6-6.1s per query end to end,
+    which is disqualifying for a tool an agent calls in a loop.
+    """
+    import joblib
+
+    d = rankers_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    bm25, vec, mat, vocab = fit(chunks)
+    joblib.dump({"n": len(chunks), "bm25": bm25, "vec": vec, "mat": mat,
+                 "vocab": vocab}, d / f"{scope_id}.joblib", compress=3)
+
+
+def _load_rankers(scope_id: str, n_chunks: int):
+    """Return persisted rankers, or None when absent or stale."""
+    f = rankers_dir() / f"{scope_id}.joblib"
+    if not f.is_file():
+        return None
+    try:
+        import joblib
+        blob = joblib.load(f)
+    except Exception:
+        return None
+    if blob.get("n") != n_chunks:
+        return None  # store changed under us; refit rather than misalign
+    return blob["bm25"], blob["vec"], blob["mat"], blob["vocab"]
+
+
+def _fit(scope_id: str, chunks: list[Chunk]):
+    if scope_id in _FIT:
+        return _FIT[scope_id]
+    cached = _load_rankers(scope_id, len(chunks))
+    if cached is not None:
+        _FIT[scope_id] = cached
+        return cached
+    _FIT[scope_id] = fit(chunks)
     return _FIT[scope_id]
 
 
@@ -455,6 +509,29 @@ def _recency(ts: str, now: datetime) -> float:
         t = t.replace(tzinfo=timezone.utc)
     days = max(0.0, (now - t).total_seconds() / 86400)
     return 1.0 / (1.0 + math.log1p(days / 30))
+
+
+def warm_up(store: dict | None = None, scope_ids: list[str] | None = None) -> None:
+    """Pay the one-off costs before a user is waiting on them.
+
+    Measured cold: the first query in a process costs ~4.4s and every one after
+    it costs 0.02-0.5s. Almost all of that is importing sentence_transformers
+    (1.6s) and sklearn (0.6s) plus constructing the embedding model -- process
+    startup, not work. A long-lived server should absorb it at boot; only a
+    one-shot CLI invocation has no way to avoid paying it per question.
+    """
+    emb = _embeddings()
+    if emb:
+        try:
+            _encode_query("warm up", str(emb["_model"][0]) if "_model" in emb else "")
+        except Exception:
+            pass
+    if store and scope_ids:
+        from ..index import chunks_for
+        for sid in scope_ids:
+            chunks = chunks_for(store, sid)
+            if chunks:
+                _fit(sid, chunks)
 
 
 def reset_caches() -> None:

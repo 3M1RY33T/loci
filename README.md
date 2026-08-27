@@ -89,6 +89,69 @@ building structure graphs for 2 scope(s) (AST-only, no model calls, no API cost)
 fixes it, so this is not something to discover from a diagnostic you had no
 reason to run.
 
+## Redaction
+
+Everything collected is passed through `loci.redact` **before** it is written,
+so a credential committed by accident never reaches `episodes.json`, the
+embedding vectors, or the fitted rankers. Nothing downstream has to be trusted
+to handle it.
+
+Two layers. Files that exist to hold secrets are never opened at all — `.env*`,
+`.dev.vars`, `*.pem`, `*.key`, `id_rsa`, `secrets.*`, `credentials.json`. Then
+every chunk's text and heading is scanned for AWS keys, GitHub/Slack/Google/
+Stripe/OpenAI/Anthropic tokens, private-key blocks, JWTs, `user:password@host`
+connection strings, bearer tokens, and long opaque values assigned to a
+secret-shaped name.
+
+Chunks are built through a single constructor, so a new collection path cannot
+forget to redact. A secret-assignment keeps its key name and loses only its
+value, so the chunk still reads sensibly and still routes:
+
+```
+client_secret = "aVeryLong..."   ->   client_secret = "[REDACTED:secret-assignment]"
+```
+
+`loci index` reports what it removed, per scope and by kind — silent redaction
+is indistinguishable from no redaction:
+
+```
+redacted 4 credential(s) before indexing: github-tokenx2, aws-key-idx1, connection-stringx1
+  leaky: aws-key-idx1, github-tokenx2, connection-stringx1
+```
+
+Deliberately biased toward over-redaction: a false positive costs one chunk a
+little retrieval quality, a false negative copies a live credential into a
+plaintext file and a vector index. Verified end to end against a repository with
+planted secrets across a README, a docstring and a commit body — all four were
+removed, and `.env` was never read.
+
+## Performance
+
+```
+loci index          15s full · 3.9s when nothing changed (fingerprint reuse)
+loci ask            1.0s one-shot with --fast · ~5s with semantic ranking
+MCP server          6s at boot, then 0.2-0.3s per tool call
+```
+
+Three things make that work, and each was a measured bottleneck first:
+
+**Traversal prunes, it does not filter.** `Path.glob("**/*.py")` descends into
+`node_modules`, `.venv` and `Pods` in full and leaves the caller to discard the
+results — 32.9s to enumerate one repo. Pruning the walk brings it under a
+second, and it improves the index as well as the clock: one Flutter project was
+66% vendored Firebase source before pruning.
+
+**Lexical rankers are fitted at index time, not per query.** Char 3–5 gram
+TF-IDF over a large scope costs ~1.5s, and the in-process cache never survives a
+CLI or MCP invocation, so every question used to pay it.
+
+**The embedding model is loaded at MCP boot.** It is ~2.3s of imports plus model
+construction — process startup, not work. A long-lived server absorbs it before
+anyone is waiting; a one-shot CLI question cannot, which is what `--fast` is for.
+
+`loci index` reuses any scope whose files and git HEAD are unchanged, so
+reindexing is cheap enough to run on a hook. `--force` re-parses everything.
+
 ## MCP
 
 ```bash

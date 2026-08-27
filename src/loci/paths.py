@@ -50,3 +50,14 @@ def episode_store_file() -> Path:
 
 def embeddings_file() -> Path:
     return home() / "embeddings.npz"
+
+
+def rankers_dir() -> Path:
+    """Fitted lexical rankers, one file per scope.
+
+    Per-scope rather than one bundle so a query loads only what it asks for:
+    routing usually selects one or two scopes out of many, and deserializing
+    every scope's matrix to answer about one is the same waste as loading every
+    graph to decide which project a question is about.
+    """
+    return home() / "rankers"

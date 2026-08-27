@@ -7,7 +7,7 @@ So the scope index is an inverted `token -> {scope: node_df}` map, built once.
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,9 +52,48 @@ ROUTING_KINDS = {"note", "doc", "session", "commit"}
 DOCSTRING_FALLBACK_VOCAB = 0
 
 
+def fingerprint(scope: Scope, sb) -> str:
+    """Cheap content signature: which files exist and when they last changed.
+
+    Stat-ing every candidate file is fast; parsing them is not. Reindexing an
+    unchanged scope re-parses thousands of files to produce byte-identical
+    chunks, so the signature is what makes `loci index` idempotent in practice
+    rather than only in result.
+    """
+    import hashlib
+
+    from .walk import iter_files
+
+    h = hashlib.sha256()
+    globs = list(scope.episode_globs or []) + list(scope.code_globs or [])
+    for f in iter_files(scope.root, globs):
+        try:
+            h.update(str(f).encode("utf-8", "replace"))
+            h.update(str(int(f.stat().st_mtime)).encode())
+        except OSError:
+            continue
+    for g in sb.graph_paths(scope) if hasattr(sb, "graph_paths") else []:
+        try:
+            h.update(f"{g}:{int(g.stat().st_mtime)}".encode())
+        except OSError:
+            continue
+    # git HEAD moves independently of any working-tree file
+    head = scope.root / ".git" / "HEAD"
+    try:
+        h.update(head.read_bytes())
+        ref = head.read_text(encoding="utf-8").strip()
+        if ref.startswith("ref: "):
+            rp = scope.root / ".git" / ref[5:]
+            if rp.is_file():
+                h.update(rp.read_bytes())
+    except OSError:
+        pass
+    return h.hexdigest()[:16]
+
+
 def build(scopes: list[Scope], *, structure: str = "graphify",
           episodes: bool = True, episode_vocab: bool = False,
-          verbose: bool = True) -> dict:
+          verbose: bool = True, force: bool = False) -> dict:
     """Build and persist the scope index and (optionally) the episode store.
 
     `episode_vocab` folds episode prose into the ROUTING vocabulary. It measured
@@ -68,15 +107,38 @@ def build(scopes: list[Scope], *, structure: str = "graphify",
     meta: dict[str, dict] = {}
     store: dict[str, list[dict]] = {}
 
+    prev_index: dict = {}
+    prev_store: dict = {}
+    if not force:
+        try:
+            prev_index = load_index()
+            prev_store = load_episodes()
+        except (FileNotFoundError, ValueError):
+            pass
+    reused = 0
+    redacted: dict[str, dict[str, int]] = {}
+
     for sc in scopes:
         counts = sb.vocabulary(sc) if sb.available() else {}
         nodes = sb.node_count(sc) if sb.available() else 0
         srcs = sb.sources(sc) if sb.available() else []
 
+        fp = fingerprint(sc, sb)
+        prev = prev_index.get("scopes", {}).get(sc.id, {})
+        unchanged = bool(prev) and prev.get("fingerprint") == fp \
+            and sc.id in prev_store.get("chunks", {})
+
         chunks: list[Chunk] = []
         used_docstrings = False
         if episodes:
-            chunks = eb.collect(sc)
+            if unchanged:
+                chunks = [Chunk.from_json(c) for c in prev_store["chunks"][sc.id]]
+                reused += 1
+            else:
+                chunks = eb.collect(sc)
+                red = eb.redactions() if hasattr(eb, "redactions") else {}
+                if red:
+                    redacted[sc.id] = red
             store[sc.id] = [c.to_json() for c in chunks]
             # `episode_vocab` augments structure vocabulary and is off by
             # default. But a scope with NO structure graph has nothing to
@@ -92,6 +154,9 @@ def build(scopes: list[Scope], *, structure: str = "graphify",
                     used_docstrings = True
                 for t, n in prose_vocab.items():
                     counts[t] = counts.get(t, 0) + n
+
+        if chunks and not unchanged:
+            eb.save_rankers(sc.id, chunks)
 
         if not counts:
             if verbose:
@@ -110,6 +175,7 @@ def build(scopes: list[Scope], *, structure: str = "graphify",
             "node_count": max(nodes or sum(1 for c in chunks
                                            if c.kind in ROUTING_KINDS) or len(chunks), 1),
             "structure_nodes": nodes,
+            "fingerprint": fp,
             "docstring_routing": used_docstrings,
             "token_count": len(counts),
             "chunk_count": len(chunks), "sources": srcs,
@@ -117,9 +183,23 @@ def build(scopes: list[Scope], *, structure: str = "graphify",
         }
         if verbose:
             kinds = ",".join(s["kind"] for s in srcs) or "-"
-            print(f"  + {sc.name:<18} {nodes:>7} nodes  {len(counts):>6} tokens  "
-                  f"{len(chunks):>5} chunks  [{kinds}]")
+            tag = " (unchanged)" if unchanged else ""
+            print(f"  {'=' if unchanged else '+'} {sc.name:<18} {nodes:>7} nodes  "
+                  f"{len(counts):>6} tokens  {len(chunks):>5} chunks  [{kinds}]{tag}")
 
+    if redacted:
+        total = sum(sum(v.values()) for v in redacted.values())
+        kinds = Counter()
+        for v in redacted.values():
+            kinds.update(v)
+        if verbose:
+            print(f"\n  redacted {total} credential(s) before indexing: "
+                  f"{', '.join(f'{k}x{n}' for k, n in kinds.most_common())}")
+            for sid, v in redacted.items():
+                print(f"    {meta.get(sid, {}).get('name', sid)}: "
+                      f"{', '.join(f'{k}x{n}' for k, n in v.items())}")
+    if verbose and reused:
+        print(f"\n  {reused}/{len(scopes)} scope(s) unchanged, reused without re-parsing")
     index = {
         "version": INDEX_VERSION,
         "built_at": datetime.now(timezone.utc).isoformat(),
@@ -145,7 +225,12 @@ def load_index() -> dict:
     if not f.is_file():
         raise FileNotFoundError(
             f"no scope index at {f}. Run `loci index` first.")
-    idx = json.loads(f.read_text(encoding="utf-8"))
+    try:
+        idx = json.loads(f.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"scope index at {f} is corrupt ({exc}). Run `loci index` to rebuild."
+        ) from exc
     if idx.get("version") != INDEX_VERSION:
         raise ValueError(
             f"scope index at {f} is version {idx.get('version')}, "
@@ -157,7 +242,12 @@ def load_episodes() -> dict:
     f = episode_store_file()
     if not f.is_file():
         return {"version": INDEX_VERSION, "scopes": {}, "chunks": {}}
-    return json.loads(f.read_text(encoding="utf-8"))
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"episode store at {f} is corrupt ({exc}). Run `loci index` to rebuild."
+        ) from exc
 
 
 def chunks_for(store: dict, scope_id: str) -> list[Chunk]:

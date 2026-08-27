@@ -39,6 +39,13 @@ class EpisodeBackend(Protocol):
     def vocabulary(self, chunks: list[Chunk]) -> Counter:
         """token -> number of chunks containing it."""
 
+    def save_rankers(self, scope_id: str, chunks: list[Chunk]) -> None:
+        """Persist whatever `search` would otherwise rebuild per process.
+
+        Called once at index time. A no-op is a valid implementation; a backend
+        that needs no warm state simply does nothing here.
+        """
+
     def search(self, question: str, chunks: list[Chunk], scope_id: str, *,
                k: int = 5, rerank: bool = False) -> list[EpisodeHit]:
         """Rank within one scope.

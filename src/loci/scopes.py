@@ -14,16 +14,12 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .defaults import DEFAULT_CODE_GLOBS, DEFAULT_EPISODE_GLOBS
+from .defaults import DEFAULT_CODE_GLOBS, DEFAULT_EPISODE_GLOBS, SKIP_DIRS
 from .paths import ensure_home, registry_file
 from .types import Scope
 
 
-# Directories that are never a project of the user's own.
-SKIP_DIRS = {
-    ".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build",
-    "vendor", "target", ".next", ".tox", "site-packages",
-}
+
 
 
 def slugify(name: str) -> str:
