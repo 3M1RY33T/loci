@@ -334,7 +334,305 @@ A first attempt at this measurement cycled ten fixed domains, so at fifty scopes
 five shared identical vocabulary and the gold label was genuinely ambiguous.
 That measured the generator, not the router; terms are now unique per scope.
 
-## Honest limits## Honest limits
+## Phase 1: the test bed
+
+`evals/corpus.py` generates corpora with controlled shape; `evals/sweep.py` runs
+`loci eval` across them and can sweep any constant. Dimensions: scope count,
+vocabulary overlap, pair-shared terms, size skew, prose-to-code ratio, doc
+density, naming convention, character set, vendored noise.
+
+```
+shape            cwd  nocwd  nons  signat  contend   set  secs
+baseline        100%   100%  100%    100%      86%  1.86   1.8
+many-scopes     100%   100%  100%    100%      83%  1.83   3.1
+size-skew       100%   100%  100%    100%     100%  2.00   3.3
+undocumented    100%   100%  100%    100%      43%  1.43   1.2
+cjk             100%   100%  100%    100%     100%  2.00   1.3
+vendored        100%   100%  100%    100%     100%  2.00   1.4
+```
+
+### Three real bugs it found
+
+**Mixed-script identifiers lost their non-Latin half.** `invoice設定` tokenized
+to `['invoice']`. The camelCase pattern matches ASCII Latin only, and applying it
+to a mixed chunk silently discarded everything else. Tokens now split into
+per-script runs first; only Latin runs are case-split. Pure CJK survives
+unsegmented -- imperfect for languages written without spaces, but not lost.
+
+**A length floor tuned for English hid a whole writing system.** `signature_terms`
+filtered `len(t) < 4`, excluding every two-character CJK token. The benchmark
+reported a CJK corpus as unroutable without ever having looked at its
+vocabulary. The floor is now script-aware, as is the tokenizer's.
+
+**Scopes with no distinctive vocabulary beyond their own name were scored as
+failures.** A scope's name is excluded from signature terms on purpose -- a
+question containing it would route on the alias boost and test nothing -- but a
+scope with nothing else was then counted as a miss. `loci eval` now reports
+those as unmeasurable and names them.
+
+### A new family: `contended`
+
+Terms held by exactly two scopes, asked as `"how is X handled?"`, gold being both
+owners. It is the only family where more than one scope has a real claim, and
+therefore the only one where widening does anything.
+
+It immediately found a genuine weakness on the real corpus: **8.3%**. For terms
+like `glasses` (shared by Delroy and G2-claude-companion) loci returns both
+owners once in twelve tries. This is the multi-scope recall problem that was
+suspected from cross-scope gold coverage but never had a metric.
+
+### Five artifacts in the bed itself, and what they cost
+
+Every one produced a confidently wrong number before being caught:
+
+1. **Cycled domains** -- ten domains over fifty scopes made five identical, so
+   the gold label was ambiguous and routing "collapsed" at scale.
+2. **Best-case term sampling** -- drawing only a scope's rarest words put the
+   fitted evidence band two points too high.
+3. **Domain-named scopes** -- naming a scope after its own vocabulary made that
+   vocabulary an alias, and aliases are excluded, so three shapes scored 0%.
+4. **Overlap shared within a domain only** -- with more domains than scopes each
+   scope held a unique domain and the parameter did nothing. The entire bed was
+   insensitive: `SIZE_PRIOR` from 0.0 to 1.2 moved no metric at all.
+5. **Shared terms concatenated first** -- the README uses `terms[0..3]`, so past
+   50% overlap the prose held nothing distinctive while unique terms sat in
+   docstrings, which routing excludes. The metric fell off a cliff instead of
+   degrading.
+
+The pattern is worth stating plainly: **a synthetic benchmark fails silently and
+looks like a finding.** Four of these five presented as a defect in loci.
+
+### What the bed cannot do
+
+`WIDEN_RATIO` and `SIZE_PRIOR` remain unmeasurable here. Swept across their full
+range on every shape, neither moves any metric. Synthetic pair-shared terms are
+equally prominent in both owners, so the scores tie and any widen ratio keeps
+both; real corpora have a term that is central to one project and marginal in
+another, which is exactly when widening matters.
+
+**Phase 3 must fit those two against real repositories, not generated ones.**
+That is roadmap rule 7 -- synthetic corpora test robustness, not optimality --
+arriving as a measurement rather than a principle.
+
+## Phase 1.2: real held-out repositories
+
+`evals/real_corpus.py` holds a manifest of twenty public repositories chosen for
+shape variety rather than convenience, with a resumable shallow fetcher and
+named subsets. Nothing in it is the author's, and it is deliberately not all
+Python -- a tokenizer and a set of thresholds fitted on one language's naming
+conventions is exactly what this set exists to detect.
+
+Seven repositories spanning C, Rust, Go, Java, Python, JavaScript and Ruby
+(cJSON, ripgrep, hugo, guava, flask, express, rails; 149MB, 11s to index):
+
+```
+7 scopes | random guessing would score 14.3%
+
+family                  n  correct  scopes
+deictic + cwd          56  100.0%       -
+deictic, no cwd         8  100.0%       -
+unanswerable            6  100.0%       -
+signature              14  100.0%     1.0
+contended              12    0.0%       -
+```
+
+**Four families out of five transfer intact to code nobody involved has read.**
+That is the strongest generalisation evidence the project has: cwd routing,
+abstention on deictic questions, refusal of nonsense, and scope
+distinguishability all hold on seven languages at once.
+
+### `contended` fails everywhere, and that is the finding
+
+Zero percent here, zero on a four-repo subset, 8.3% on the development corpus.
+Three independent corpora agree: **loci does not return both owners for a term
+two projects genuinely share.** Cross-project questions under-report, and the
+fix is not a threshold -- see below.
+
+### What the real corpus exposed that generated ones could not
+
+**A floor fitted elsewhere is simply wrong.** Run uncalibrated, the real corpus
+was routed with `EVIDENCE_FLOOR = 7.6` -- fitted to the author's repositories --
+while its own contended questions score around 6.0, so every one abstained. This
+is the generalisation problem happening live rather than argued about.
+
+**Calibration had a blind spot.** Its routable sample was drawn only from
+signature questions, which are structurally high-evidence. Contended questions
+occupy a lower band entirely, so the fitted floor sat above the range they live
+in and refused all of them. They are now part of the sample. On this corpus it
+did not move the floor -- the sweep still prefers refusing 14 unroutable
+questions to admitting 12 contended ones -- which says the fix belongs in
+ranking, not in the threshold.
+
+**Parser warnings leaked to the user.** Indexing somebody else's repository
+printed `SyntaxWarning: "\*" is an invalid escape sequence` from `ast.parse`.
+A user can do nothing about a warning in code they did not write.
+
+**The verdict line contradicted its own table.** `contended` sat at 0% across
+three corpora while the summary read "routing looks healthy on this corpus".
+A summary that disagrees with the numbers above it is worse than no summary.
+
+### Cost
+
+```
+smoke     4 repos    12MB    2s to index
+polyglot  7 repos   149MB   11s to index
+```
+
+Subsets are named (`smoke`, `polyglot`, `prose`, `nonenglish`, `all`) so the
+expensive ones are opt-in. The `prose` and `nonenglish` subsets are unfetched;
+they are the ones most likely to break the tokenizer, and Phase 1 already found
+two length-and-script assumptions that only a non-English corpus would surface.
+
+## Honest limits## Phase 1: the test bed
+
+`evals/corpus.py` generates corpora with controlled shape; `evals/sweep.py` runs
+`loci eval` across them and can sweep any constant. Dimensions: scope count,
+vocabulary overlap, pair-shared terms, size skew, prose-to-code ratio, doc
+density, naming convention, character set, vendored noise.
+
+```
+shape            cwd  nocwd  nons  signat  contend   set  secs
+baseline        100%   100%  100%    100%      86%  1.86   1.8
+many-scopes     100%   100%  100%    100%      83%  1.83   3.1
+size-skew       100%   100%  100%    100%     100%  2.00   3.3
+undocumented    100%   100%  100%    100%      43%  1.43   1.2
+cjk             100%   100%  100%    100%     100%  2.00   1.3
+vendored        100%   100%  100%    100%     100%  2.00   1.4
+```
+
+### Three real bugs it found
+
+**Mixed-script identifiers lost their non-Latin half.** `invoice設定` tokenized
+to `['invoice']`. The camelCase pattern matches ASCII Latin only, and applying it
+to a mixed chunk silently discarded everything else. Tokens now split into
+per-script runs first; only Latin runs are case-split. Pure CJK survives
+unsegmented -- imperfect for languages written without spaces, but not lost.
+
+**A length floor tuned for English hid a whole writing system.** `signature_terms`
+filtered `len(t) < 4`, excluding every two-character CJK token. The benchmark
+reported a CJK corpus as unroutable without ever having looked at its
+vocabulary. The floor is now script-aware, as is the tokenizer's.
+
+**Scopes with no distinctive vocabulary beyond their own name were scored as
+failures.** A scope's name is excluded from signature terms on purpose -- a
+question containing it would route on the alias boost and test nothing -- but a
+scope with nothing else was then counted as a miss. `loci eval` now reports
+those as unmeasurable and names them.
+
+### A new family: `contended`
+
+Terms held by exactly two scopes, asked as `"how is X handled?"`, gold being both
+owners. It is the only family where more than one scope has a real claim, and
+therefore the only one where widening does anything.
+
+It immediately found a genuine weakness on the real corpus: **8.3%**. For terms
+like `glasses` (shared by Delroy and G2-claude-companion) loci returns both
+owners once in twelve tries. This is the multi-scope recall problem that was
+suspected from cross-scope gold coverage but never had a metric.
+
+### Five artifacts in the bed itself, and what they cost
+
+Every one produced a confidently wrong number before being caught:
+
+1. **Cycled domains** -- ten domains over fifty scopes made five identical, so
+   the gold label was ambiguous and routing "collapsed" at scale.
+2. **Best-case term sampling** -- drawing only a scope's rarest words put the
+   fitted evidence band two points too high.
+3. **Domain-named scopes** -- naming a scope after its own vocabulary made that
+   vocabulary an alias, and aliases are excluded, so three shapes scored 0%.
+4. **Overlap shared within a domain only** -- with more domains than scopes each
+   scope held a unique domain and the parameter did nothing. The entire bed was
+   insensitive: `SIZE_PRIOR` from 0.0 to 1.2 moved no metric at all.
+5. **Shared terms concatenated first** -- the README uses `terms[0..3]`, so past
+   50% overlap the prose held nothing distinctive while unique terms sat in
+   docstrings, which routing excludes. The metric fell off a cliff instead of
+   degrading.
+
+The pattern is worth stating plainly: **a synthetic benchmark fails silently and
+looks like a finding.** Four of these five presented as a defect in loci.
+
+### What the bed cannot do
+
+`WIDEN_RATIO` and `SIZE_PRIOR` remain unmeasurable here. Swept across their full
+range on every shape, neither moves any metric. Synthetic pair-shared terms are
+equally prominent in both owners, so the scores tie and any widen ratio keeps
+both; real corpora have a term that is central to one project and marginal in
+another, which is exactly when widening matters.
+
+**Phase 3 must fit those two against real repositories, not generated ones.**
+That is roadmap rule 7 -- synthetic corpora test robustness, not optimality --
+arriving as a measurement rather than a principle.
+
+## Phase 1.2: real held-out repositories
+
+`evals/real_corpus.py` holds a manifest of twenty public repositories chosen for
+shape variety rather than convenience, with a resumable shallow fetcher and
+named subsets. Nothing in it is the author's, and it is deliberately not all
+Python -- a tokenizer and a set of thresholds fitted on one language's naming
+conventions is exactly what this set exists to detect.
+
+Seven repositories spanning C, Rust, Go, Java, Python, JavaScript and Ruby
+(cJSON, ripgrep, hugo, guava, flask, express, rails; 149MB, 11s to index):
+
+```
+7 scopes | random guessing would score 14.3%
+
+family                  n  correct  scopes
+deictic + cwd          56  100.0%       -
+deictic, no cwd         8  100.0%       -
+unanswerable            6  100.0%       -
+signature              14  100.0%     1.0
+contended              12    0.0%       -
+```
+
+**Four families out of five transfer intact to code nobody involved has read.**
+That is the strongest generalisation evidence the project has: cwd routing,
+abstention on deictic questions, refusal of nonsense, and scope
+distinguishability all hold on seven languages at once.
+
+### `contended` fails everywhere, and that is the finding
+
+Zero percent here, zero on a four-repo subset, 8.3% on the development corpus.
+Three independent corpora agree: **loci does not return both owners for a term
+two projects genuinely share.** Cross-project questions under-report, and the
+fix is not a threshold -- see below.
+
+### What the real corpus exposed that generated ones could not
+
+**A floor fitted elsewhere is simply wrong.** Run uncalibrated, the real corpus
+was routed with `EVIDENCE_FLOOR = 7.6` -- fitted to the author's repositories --
+while its own contended questions score around 6.0, so every one abstained. This
+is the generalisation problem happening live rather than argued about.
+
+**Calibration had a blind spot.** Its routable sample was drawn only from
+signature questions, which are structurally high-evidence. Contended questions
+occupy a lower band entirely, so the fitted floor sat above the range they live
+in and refused all of them. They are now part of the sample. On this corpus it
+did not move the floor -- the sweep still prefers refusing 14 unroutable
+questions to admitting 12 contended ones -- which says the fix belongs in
+ranking, not in the threshold.
+
+**Parser warnings leaked to the user.** Indexing somebody else's repository
+printed `SyntaxWarning: "\*" is an invalid escape sequence` from `ast.parse`.
+A user can do nothing about a warning in code they did not write.
+
+**The verdict line contradicted its own table.** `contended` sat at 0% across
+three corpora while the summary read "routing looks healthy on this corpus".
+A summary that disagrees with the numbers above it is worse than no summary.
+
+### Cost
+
+```
+smoke     4 repos    12MB    2s to index
+polyglot  7 repos   149MB   11s to index
+```
+
+Subsets are named (`smoke`, `polyglot`, `prose`, `nonenglish`, `all`) so the
+expensive ones are opt-in. The `prose` and `nonenglish` subsets are unfetched;
+they are the ones most likely to break the tokenizer, and Phase 1 already found
+two length-and-script assumptions that only a non-English corpus would surface.
+
+## Honest limits
 
 - One machine, ten scopes, one author. The author had read parts of these
   corpora before writing family B, which is why `contamination` is a field and

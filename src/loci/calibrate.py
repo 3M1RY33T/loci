@@ -33,7 +33,8 @@ import json
 import math
 from dataclasses import dataclass
 
-from .eval import NONSENSE, SIGNATURE_TEMPLATES, TAXONOMY, signature_terms
+from .eval import (NONSENSE, SIGNATURE_TEMPLATES, TAXONOMY, contended_terms,
+                   signature_terms)
 from .paths import atomic_write, home
 
 CALIBRATION_VERSION = 2
@@ -98,6 +99,17 @@ def collect_samples(index: dict) -> tuple[list[float], list[float]]:
                 # corpus is ambiguous, not that this evidence level is routable.
                 if r.ranked and r.ranked[0] == sid:
                     should_route.append(_evidence_total(r, idf_max))
+
+    # Contended questions belong in the routable sample. They are structurally
+    # lower-evidence than signature questions -- two words, one of them shared
+    # by two scopes -- and fitting a floor without them puts it above the range
+    # they occupy. Measured on a corpus of four real repositories: signature
+    # questions scored from 7.76, contended ones around 6.0, and the fitted
+    # floor of 8.69 refused every contended question in the set.
+    for term, sids in contended_terms(index):
+        r = route(f"how is {term} handled?", index)
+        if r.ranked and r.ranked[0] in sids:
+            should_route.append(_evidence_total(r, idf_max))
 
     for q in TAXONOMY + NONSENSE:
         should_abstain.append(_evidence_total(route(q, index), idf_max))

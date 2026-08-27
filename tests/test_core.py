@@ -28,6 +28,20 @@ def test_common_verbs_survive_stopwording():
         assert t in tokens(f"how do I {t} this")
 
 
+@pytest.mark.parametrize("text,expected", [
+    # A mixed-script identifier must not lose its non-Latin half. This one
+    # tokenized to ['invoice'] before the fix, and the part that identified the
+    # project silently vanished.
+    ("invoice\u8a2d\u5b9a", ["invoice", "\u8a2d\u5b9a"]),
+    ("\u8a2d\u5b9a\u51e6\u7406", ["\u8a2d\u5b9a\u51e6\u7406"]),
+    ("\u043f\u0435\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f", ["\u043f\u0435\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f"]),
+    ("na\u00efve_handler", ["naive", "handler"]),
+    ("invoice_record", ["invoice", "record"]),
+])
+def test_tokenizer_keeps_every_script(text, expected):
+    assert tokens(text) == expected
+
+
 def test_unique_tokens_preserves_order():
     assert unique_tokens("step budget step landing") == ["step", "budget", "landing"]
 
@@ -358,6 +372,40 @@ def test_taxonomy_questions_are_unanswerable_without_a_working_directory():
                  b=("Beta", "/b", {"flange": 30, "deploy": 12, "entry": 9}, 400))
     for q in TAXONOMY:
         assert route(q, idx).abstain, f"taxonomy question is routable without cwd: {q!r}"
+
+
+def test_signature_terms_do_not_exclude_non_latin(tmp_path):
+    """A length floor tuned for English hides whole writing systems.
+
+    CJK tokens are commonly two characters, so a flat `len < 4` filter excluded
+    every one of them and the benchmark reported a CJK corpus as unroutable
+    without ever having considered its vocabulary.
+    """
+    from loci.eval import signature_terms
+    idx = _index(a=("Alpha", str(tmp_path), {"\u8a2d\u5b9a": 40, "\u51e6\u7406": 30,
+                                             "handler": 5}, 200))
+    terms = signature_terms(idx, "a", k=3)
+    assert "\u8a2d\u5b9a" in terms and "\u51e6\u7406" in terms
+
+
+def test_verdict_never_says_healthy_while_a_family_is_at_zero(tmp_path):
+    """A summary line that contradicts the table above it is worse than none.
+
+    `contended` sat at 0% across three separate corpora while the verdict read
+    "routing looks healthy on this corpus."
+    """
+    from loci.eval import Family, render
+
+    fams = {
+        "cwd": Family("deictic + cwd", n=8, correct=8),
+        "nocwd": Family("deictic, no cwd", n=8, correct=8),
+        "nonsense": Family("unanswerable", n=6, correct=6),
+        "signature": Family("signature", n=4, correct=4),
+        "contended": Family("contended", n=12, correct=0),
+    }
+    out = render({"families": fams, "n_scopes": 4, "chance": 0.25})
+    assert "healthy" not in out
+    assert "share" in out.lower()
 
 
 def test_eval_needs_no_hand_labels(tmp_path):

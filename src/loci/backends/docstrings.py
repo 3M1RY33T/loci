@@ -104,10 +104,20 @@ def _symbol_at(ranges: list[tuple[int, int, str]], line: int) -> str:
 
 
 def extract_python(text: str, rel: str) -> list[tuple[str, str]]:
-    """Return (heading, body) pairs for one Python file."""
+    """Return (heading, body) pairs for one Python file.
+
+    Warnings are suppressed because this parses code the user did not write:
+    a repository containing `"\*"` in a docstring makes CPython emit a
+    SyntaxWarning, and `loci index` printing parser complaints about somebody
+    else's source is noise the user can do nothing about.
+    """
+    import warnings
+
     try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
         return []
     out: list[tuple[str, str]] = []
     ranges = _py_symbol_ranges(tree)

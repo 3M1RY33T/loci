@@ -12,9 +12,18 @@ import unicodedata
 
 _WORDISH = re.compile(r"[^\W\d_]+", re.UNICODE)
 _CAMEL = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+")
+# A chunk may mix scripts. The camelCase pattern above matches ASCII Latin only,
+# so applying it to a mixed chunk SILENTLY DISCARDS everything else: `invoice設定`
+# tokenized to `['invoice']` and the identifying half vanished. Split into
+# per-script runs first, and only camel-split the Latin ones.
+_SCRIPT_RUN = re.compile(r"[A-Za-z]+|[^\WA-Za-z\d_]+", re.UNICODE)
 
 MIN_LEN = 3
 MAX_LEN = 30
+# Scripts written without spaces pack more meaning per character, so a 3-char
+# floor tuned for English discards whole words. Two characters is a common noun
+# in Chinese and Japanese.
+MIN_LEN_NON_LATIN = 2
 
 # Pure prose function words only. Common English VERBS are deliberately absent:
 # identifier vocabularies are full of them (run_agent_turn, get_node, use_cache,
@@ -39,12 +48,18 @@ def tokens(text: str, *, drop_stopwords: bool = True) -> list[str]:
     """Lowercase tokens with camelCase / snake_case / path decomposition."""
     out: list[str] = []
     for chunk in _WORDISH.findall(strip_diacritics(text)):
-        for part in (_CAMEL.findall(chunk) or [chunk]):
-            t = part.lower()
-            if MIN_LEN <= len(t) <= MAX_LEN:
-                if drop_stopwords and t in STOPWORDS:
-                    continue
-                out.append(t)
+        for run in (_SCRIPT_RUN.findall(chunk) or [chunk]):
+            # Latin runs decompose by case; other scripts have no case to read,
+            # so they pass through whole. Unsegmented is imperfect for languages
+            # written without spaces, but it is not silently lost.
+            parts = _CAMEL.findall(run) if run.isascii() else [run]
+            for part in (parts or [run]):
+                t = part.lower()
+                floor = MIN_LEN if t.isascii() else MIN_LEN_NON_LATIN
+                if floor <= len(t) <= MAX_LEN:
+                    if drop_stopwords and t in STOPWORDS:
+                        continue
+                    out.append(t)
     return out
 
 

@@ -15,6 +15,11 @@ construction, so nobody has to label anything:
                     project "this" means.
   nonsense          questions no software corpus can answer. Correct answer is
                     abstain. Fixed list, independent of any corpus.
+  contended         built from a term that exactly two scopes share. Gold is
+                    both of them, so this is the only family where widening and
+                    size-bias do anything -- every other family produces a
+                    dominant winner, and a metric with one winner cannot
+                    measure a parameter that decides how many to return.
   signature         built from each scope's own most discriminative vocabulary,
                     excluding its name. Gold is that scope. This measures
                     whether the user's scopes are distinguishable FROM EACH
@@ -102,13 +107,39 @@ def signature_terms(index: dict, scope_id: str, k: int = 2) -> list[str]:
 
     scored = []
     for t, post in postings.items():
-        if scope_id not in post or t in banned or len(t) < 4:
+        # The length floor is script-aware. A flat `len < 4` is tuned for
+        # English and silently excludes every CJK token, which are commonly two
+        # characters -- the benchmark then reported that a corpus of CJK
+        # identifiers was unroutable when in fact it had never looked at them.
+        floor = 4 if t.isascii() else 2
+        if scope_id not in post or t in banned or len(t) < floor:
             continue
         idf = math.log(1 + S / max(1, len(post)))
         ev = idf * (1 + math.log1p(post[scope_id] / n_nodes * 1000)) / idf_max
         scored.append((ev, t))
     scored.sort(reverse=True)
     return [t for _, t in scored[:k]]
+
+
+def contended_terms(index: dict, limit: int = 12) -> list[tuple[str, list[str]]]:
+    """Terms held by exactly two scopes, most prominent first.
+
+    These are what a genuinely cross-scope question is made of, and they are the
+    only questions in this benchmark where more than one scope has a real claim.
+    Constants governing how WIDE a result set should be are invisible without
+    them: measured on generated corpora, sweeping `WIDEN_RATIO` from 0.5 to 0.95
+    moved no metric at all, because every other family had one obvious winner.
+    """
+    postings = index["postings"]
+    scopes = index["scopes"]
+    out = []
+    for t, post in postings.items():
+        if len(post) != 2 or len(t) < (4 if t.isascii() else 2):
+            continue
+        share = min(post[s] / max(1, scopes[s].get("node_count", 1)) for s in post)
+        out.append((share, t, sorted(post)))
+    out.sort(reverse=True)
+    return [(t, sids) for _, t, sids in out[:limit]]
 
 
 def run(index: dict, *, signature_per_scope: int = 2) -> dict:
@@ -148,9 +179,16 @@ def run(index: dict, *, signature_per_scope: int = 2) -> dict:
     fams["nonsense"] = neg_f
 
     sig_f = Family("signature", detail="are your scopes distinguishable from each other?")
+    unmeasurable: list[str] = []
     for sid, meta in scopes.items():
         terms = signature_terms(index, sid, k=2)
         if len(terms) < 2:
+            # Its name is excluded on purpose -- a question containing it would
+            # route on the alias boost and test nothing. A scope with no other
+            # distinctive vocabulary cannot be measured by this family, and
+            # counting that as a failure would report a benchmark limitation as
+            # a routing defect.
+            unmeasurable.append(meta["name"])
             continue
         for tpl in SIGNATURE_TEMPLATES[:signature_per_scope]:
             q = tpl.format(a=terms[0], b=terms[1])
@@ -165,7 +203,25 @@ def run(index: dict, *, signature_per_scope: int = 2) -> dict:
                 sig_f.misses.append(f"{meta['name']} -> {got}: {q}")
     fams["signature"] = sig_f
 
+    con_f = Family("contended", detail="two scopes share the term; both should come back")
+    for term, sids in contended_terms(index):
+        q = f"how is {term} handled?"
+        r = route(q, index)
+        con_f.n += 1
+        if r.abstain:
+            con_f.abstained += 1
+            continue
+        con_f.set_total += len(r.selected)
+        got = set(r.selected)
+        if set(sids) <= got:
+            con_f.correct += 1
+        else:
+            names = ", ".join(scopes[s]["name"] for s in sids)
+            con_f.misses.append(f"{names} -> {', '.join(scopes[s]['name'] for s in r.selected)}: {q}")
+    fams["contended"] = con_f
+
     return {"families": fams, "n_scopes": len(scopes),
+            "unmeasurable": unmeasurable,
             "chance": 1.0 / len(scopes) if scopes else 0.0}
 
 
@@ -185,6 +241,7 @@ def render(result: dict, *, show_misses: bool = False) -> str:
     out.append("")
 
     cwd, nocwd, neg, sig = (fams["cwd"], fams["nocwd"], fams["nonsense"], fams["signature"])
+    con = fams.get("contended")
     verdicts = []
     if cwd.rate < 0.95:
         verdicts.append("! cwd routing is unreliable here -- that is the signal everything "
@@ -196,9 +253,20 @@ def render(result: dict, *, show_misses: bool = False) -> str:
         worst = sig.set_total / sig.n if sig.n else 0
         verdicts.append(f"! your scopes are hard to tell apart (avg {worst:.1f} returned). "
                         f"Projects that share vocabulary need cwd or an explicit --scope.")
+    if con is not None and con.n and con.rate < 0.5:
+        verdicts.append(f"! questions about terms two projects SHARE return both owners "
+                        f"only {con.rate:.0%} of the time. Cross-project questions will "
+                        f"under-report;\n  name the projects explicitly when you want "
+                        f"all of them.")
     if not verdicts:
         verdicts.append("routing looks healthy on this corpus.")
     out += verdicts
+    unm = result.get("unmeasurable") or []
+    if unm:
+        shown = ", ".join(unm[:4]) + (f" +{len(unm) - 4} more" if len(unm) > 4 else "")
+        out.append(f"\n  ({len(unm)} scope(s) have no distinctive vocabulary beyond "
+                   f"their own name, so the\n   signature family could not measure "
+                   f"them: {shown}. They still route by name.)")
 
     if show_misses:
         for f in fams.values():
