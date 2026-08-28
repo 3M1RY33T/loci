@@ -398,10 +398,12 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
     the first `group set` on a sub-scope silently dropped its parent label the
     next time `scan` ran -- and nothing would ever put it back.
 
-    `me` rides along because `scan` now labels what it registers with the
-    provenance it inferred, and a sub-scope inherits its container's groups.
-    The sets are still pinned by equality: the point is that nothing is LOST,
-    and a subset check would not notice a loss.
+    `me` rides along on the first scan because `scan` now labels what it
+    registers with the provenance it inferred from that scope's own git. It
+    does NOT come back after the user's edit wipes it: the re-scan finds nothing
+    fresh, so nothing is re-classified, and provenance is never inherited from a
+    container. The sets are pinned by equality: the point is that nothing is
+    LOST, and a subset check would not notice a loss.
     """
     from argparse import Namespace
     from dataclasses import replace
@@ -427,7 +429,7 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
     cmd_scan(Namespace(roots=[str(repo)], depth=1))
 
     sub = next(s for s in load_scopes() if s.id == "delroy-glasses")
-    assert sub.group_set() == {"delroy", "client:acme", "me"}, \
+    assert sub.group_set() == {"delroy", "client:acme"}, \
         "a re-scan dropped a label the user's edit never mentioned"
 
 
@@ -2921,10 +2923,19 @@ def _owned_corpus(base):
     """
     corpus = base / "corpus"
     corpus.mkdir()
-    return (corpus,
-            _repo(corpus, "mine", origin="git@github.com:ACME/mine.git"),
-            _repo(corpus, "mine2", origin="https://github.com/acme/mine2.git"),
-            _repo(corpus, "theirs", origin="https://github.com/stranger/x.git"))
+    made = []
+    for name, origin in (("mine", "git@github.com:ACME/mine.git"),
+                         ("mine2", "https://github.com/acme/mine2.git"),
+                         ("theirs", "https://github.com/stranger/x.git")):
+        r = _repo(corpus, name, origin=origin)
+        # Long enough to clear MIN_CONTENT_WORDS, so `loci setup` has something
+        # to index: a shorter README is discarded as a stub and the scope then
+        # has nothing indexable at all, which aborts the run before its report.
+        (r / "README.md").write_text(
+            f"# {name}\n\nSigns the admin session cookie with a rotating HMAC "
+            f"key and refuses SameSite None on localhost.\n", encoding="utf-8")
+        made.append(r)
+    return (corpus, *made)
 
 
 def test_scan_summary_groups_repositories_by_owner(tmp_path, hermetic_git):
@@ -2975,6 +2986,10 @@ def test_scan_puts_a_vendor_group_to_a_vote_and_never_your_own(
     """The asymmetry is the flow. The user asked to scan their own projects, so
     a prompt about `me` has one honest answer and is worth deleting; a stranger's
     repository entering the corpus is the decision they were never offered.
+
+    What was declined is then reported. Registering in silence is the failure
+    this feature closes, and declining in silence is the same failure inverted:
+    the corpus is quietly smaller than the scan found and nothing says so.
     """
     import builtins
     import sys as _sys
@@ -2999,6 +3014,10 @@ def test_scan_puts_a_vendor_group_to_a_vote_and_never_your_own(
     assert len(asked) == 1, f"asked about more than the vendor group: {asked}"
     assert "vendor:stranger" in asked[0]
     assert {s.name for s in load_scopes()} == {"mine", "mine2"}
+
+    out = capsys.readouterr().out
+    assert "vendor:stranger: 1 left out" in out
+    assert "loci add <path>" in out, "no way back to what was declined"
 
 
 def test_setup_counts_repositories_and_scopes_separately(tmp_path, monkeypatch,
@@ -3039,18 +3058,34 @@ def test_subscopes_inherit_the_groups_the_registry_holds(tmp_path):
     Both halves of "sub-scope" are load-bearing, and each has a negative here:
     the containment LABEL (Sibling carries it and is nowhere near the parent)
     and the PATH (Nested lies inside the parent and never claimed the label).
+
+    PROVENANCE is never inherited, in either direction: `classify` reads one
+    repository's own git, so a vendored repo nested in the user's monorepo is
+    still the vendor's, and a monorepo OF vendored code does not make its
+    sub-projects the same vendor's. Both are asserted -- dropping either half of
+    `is_provenance` leaves the other half's case passing.
     """
     from loci.scopes import inherit_parent_groups
 
-    mono = tmp_path / "mono"
-    (mono / "client").mkdir(parents=True)
-    (mono / "nested").mkdir()
+    mono, third = tmp_path / "mono", tmp_path / "third"
+    for d in ("client", "vendored", "nested"):
+        (mono / d).mkdir(parents=True)
+    (third / "sub").mkdir(parents=True)
     (tmp_path / "sibling").mkdir()
 
     scopes = [Scope(id="mono", name="Mono", root=mono,
                     groups=["mono", "client:acme", "me"]),
               Scope(id="mono-client", name="Mono/client", root=mono / "client",
-                    groups=["mono"]),
+                    groups=["mono", "me"]),
+              # A repository vendored into the monorepo: `third_party/`,
+              # `external/`, a submodule carrying a workspace marker.
+              Scope(id="mono-vendored", name="Mono/vendored",
+                    root=mono / "vendored",
+                    groups=["mono", "vendor:stranger"]),
+              Scope(id="third", name="Third", root=third,
+                    groups=["third", "vendor:alpha"]),
+              Scope(id="third-sub", name="Third/sub", root=third / "sub",
+                    groups=["third", "vendor:beta"]),
               Scope(id="nested", name="Nested", root=mono / "nested",
                     groups=["me"]),
               Scope(id="sibling", name="Sibling", root=tmp_path / "sibling",
@@ -3059,6 +3094,10 @@ def test_subscopes_inherit_the_groups_the_registry_holds(tmp_path):
     by_id = {s.id: s.group_set() for s in inherit_parent_groups(scopes)}
 
     assert by_id["mono-client"] == {"mono", "client:acme", "me"}
+    assert by_id["mono-vendored"] == {"mono", "client:acme", "vendor:stranger"}, \
+        "a vendored repo was put back in `me` by its container"
+    assert by_id["third-sub"] == {"third", "vendor:beta"}, \
+        "a container's vendor label was asserted of a sub-project"
     assert by_id["nested"] == {"me"}, "inherited without ever claiming the label"
     assert by_id["sibling"] == {"mono"}, "inherited from a container it is not in"
     assert by_id["mono"] == {"mono", "client:acme", "me"}, "the parent changed"
@@ -3154,3 +3193,86 @@ def test_scan_reads_who_you_are_from_the_whole_scan_not_the_new_arrivals(
     groups = {s.name: s.group_set() for s in load_scopes()}
     assert groups["newcomer"] == {"vendor:outsider"}
     assert groups["mine"] == {"me"}, "the first scan's labels were rewritten"
+
+
+def test_setup_reports_a_declined_group_in_the_skip_report(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """`skipped:` exists because a setup that silently omits a step leaves the
+    user believing they have something they do not. A declined group is exactly
+    that: the corpus is smaller than the scan found, and only this line says so
+    or names the way back.
+
+    The count is unit-free on purpose. `summary[g]` holds SCOPES, so "(5 repos)"
+    was the same miscount the repository line eleven lines above it fixes.
+    """
+    import builtins
+    import sys as _sys
+
+    import loci.paths as P
+    from loci.scopes import load_scopes
+    from loci.setup import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus, *_ = _owned_corpus(tmp_path)
+
+    class _Tty:
+        def isatty(self):
+            return True
+
+    asked: list[str] = []
+    monkeypatch.setattr(_sys, "stdin", _Tty())
+    monkeypatch.setattr(builtins, "input",
+                        lambda prompt="": (asked.append(prompt), "n")[1])
+
+    assert run([corpus], graphs=False, embed=False, calibrate=False) == 0
+    out = capsys.readouterr().out
+
+    assert len(asked) == 1, f"asked about more than the vendor group: {asked}"
+    assert "skipped:" in out
+    assert ("vendor:stranger (1 left out) loci scan <root>, or loci add <path>"
+            in out)
+    assert {s.name for s in load_scopes()} == {"mine", "mine2"}
+
+
+def test_a_vendored_repo_does_not_inherit_its_containers_provenance(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """`vendor/` is in SKIP_DIRS; `third_party/`, `external/`, `packages/<fork>`
+    and any submodule carrying a workspace marker are not, so a foreign
+    repository really does register as a sub-scope of the user's monorepo.
+
+    `classify` reads its own git and gets it right. Inheriting the container's
+    `me` then put it straight back into the routable set -- and `doctor` would
+    go on naming `loci group set me --mode hard` as the way to keep it out while
+    that command no longer did. The last two assertions are that claim, checked
+    rather than assumed.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.groups import Policy, confinement
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    mine = _repo(corpus, "mine", origin="git@github.com:acme/mine.git")
+    _repo(corpus, "mine2", origin="git@github.com:acme/mine2.git")
+    mono = _repo(corpus, "mono", origin="git@github.com:acme/mono.git")
+    vendored = _repo(mono, "vendored", origin="https://github.com/stranger/v.git")
+    (vendored / "package.json").write_text("{}", encoding="utf-8")
+
+    assert main(["scan", str(corpus)]) == 0
+    scopes = load_scopes()
+    groups = {s.name: s.group_set() for s in scopes}
+
+    assert groups["mono/vendored"] == {"mono", "vendor:stranger"}
+    assert groups["mono"] == {"mono", "me"}, "the container lost its own label"
+
+    conf = confinement(Policy(groups={"me": "hard"}), scopes, cwd=mine)
+    assert conf.mode == "hard"
+    assert "mono-vendored" not in conf.eligible, \
+        "the remedy `doctor` names does not keep the vendor out"
+    assert {"mine", "mine2", "mono"} <= conf.eligible

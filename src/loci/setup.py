@@ -227,7 +227,11 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
                 accepted, declined = accept_by_group(fresh, found,
                                                     interactive=interactive)
                 for g, listed in declined.items():
-                    skipped.append((f"{g} ({len(listed)} repos)",
+                    # "left out", not "repos": `listed` is `summary[g]` and
+                    # holds SCOPES, so a declined vendor monorepo would print
+                    # "(5 repos)" for one repository -- the same miscount the
+                    # count above exists to fix, eleven lines away from it.
+                    skipped.append((f"{g} ({len(listed)} left out)",
                                     "loci scan <root>, or loci add <path>"))
             # Scopes already known are re-upserted so `upsert` carries their
             # preserved fields forward; a declined vendor group is simply never

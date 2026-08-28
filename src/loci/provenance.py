@@ -105,6 +105,19 @@ def infer_identity(roots: list[Path]) -> Identity:
     return Identity(org=top_org, email=email, confident=True)
 
 
+def is_provenance(group: str) -> bool:
+    """True for a label `classify` produces: `me`, or `vendor:<org>`.
+
+    Provenance is read from ONE repository's own git, so it is a claim about
+    that repository and nothing else. Anything that copies group membership
+    between scopes -- containment inheritance, most obviously -- has to leave
+    these alone: a vendored repository nested inside the user's monorepo is
+    still the vendor's, and inheriting `me` onto it puts it back in the routable
+    set that `classify` had just taken it out of.
+    """
+    return group == "me" or group.startswith("vendor:")
+
+
 def classify(root: Path, identity: Identity) -> str:
     """The provenance group for one repository.
 

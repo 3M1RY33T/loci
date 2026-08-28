@@ -18,6 +18,7 @@ from typing import Any
 
 from .defaults import DEFAULT_CODE_GLOBS, DEFAULT_EPISODE_GLOBS, SKIP_DIRS
 from .paths import atomic_write, ensure_home, registry_file
+from .provenance import is_provenance
 from .types import Scope
 
 
@@ -323,6 +324,16 @@ def inherit_parent_groups(scopes: list[Scope]) -> list[Scope]:
     anything of that container's (`loci group add solo mono` is legal), and
     inheriting there would hand it labels nobody asserted.
 
+    PROVENANCE is never inherited. It is read from one repository's own git, and
+    a repository vendored into a monorepo -- `third_party/`, `external/`, a
+    submodule carrying a workspace marker -- is still the vendor's however it
+    got there. Inheriting `me` onto it silently undoes the classification the
+    user was asked about, and then `doctor` says `loci group set me --mode hard`
+    keeps it out of the routable set when it no longer would. Every scope scan
+    registers gets its own label from its own git, so there is nothing for
+    inheritance to supply; a scope missing one is what `loci groups infer` is
+    for, and that reads git too rather than guessing from a container.
+
     Additive, like `groups infer`: it never removes, and a label inherited once
     survives the parent losing it. Membership is a claim, and the user removes
     their own claims with `loci group rm`.
@@ -338,7 +349,8 @@ def inherit_parent_groups(scopes: list[Scope]) -> list[Scope]:
             if parent is None or parent.id == s.id:
                 continue
             if parent.root in s.root.parents:
-                inherited |= frozen[parent.id]
+                inherited |= {p for p in frozen[parent.id]
+                              if not is_provenance(p)}
         if inherited - frozen[s.id]:
             s.groups = sorted(frozen[s.id] | inherited)
     return scopes
