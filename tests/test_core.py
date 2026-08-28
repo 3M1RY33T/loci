@@ -1864,6 +1864,185 @@ def test_setup_reads_a_project_path_containing_spaces(monkeypatch):
     assert got == [Path("/tmp/My Projects"), Path("/tmp/code")]
 
 
+# -- update ----------------------------------------------------------------
+def test_update_refuses_an_empty_registry_and_names_setup(tmp_path, monkeypatch,
+                                                          capsys):
+    """`update` on a machine with nothing registered is a first run in disguise.
+
+    It must not traceback its way through five steps that all have nothing to
+    do; it must say which command the user actually wanted.
+    """
+    import loci.paths as P
+    from loci.update import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    assert run() == 1
+    assert "loci setup" in capsys.readouterr().out
+
+
+def test_update_rebuilds_every_graph_not_only_the_missing_ones(tmp_path,
+                                                               monkeypatch):
+    """This is the entire reason the command exists.
+
+    `loci graphs` skips a scope that already has a graph and `loci setup` does
+    the same unless forced, so a project whose code moved keeps routing on the
+    symbols it had the day it was registered -- silently, since nothing else
+    reports it. If `update` ever inherits that filter it stops being an update.
+    """
+    import loci.paths as P
+    import loci.setup as S
+    from loci.update import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus = tmp_path / "corpus"
+    _fake_repo(corpus, "alpha", "Signs the admin session cookie with a rotating "
+                                "HMAC key and refuses SameSite None on localhost.")
+    _fake_repo(corpus, "beta", "Compresses ZIM archives with zstd and streams "
+                               "them to object storage from a manifest table.")
+    S.run([corpus], assume_yes=True, graphs=False, embed=False, calibrate=False)
+
+    seen: list = []
+    monkeypatch.setattr(S, "build_graphs",
+                        lambda sb, scopes, **kw: seen.extend(s.name for s in scopes) or [])
+    # A graph backend that claims every scope already has one: the filter this
+    # test exists to catch would read exactly this and build nothing.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/graphify")
+    from loci.backends import get_structure_backend
+    sb = get_structure_backend()
+    monkeypatch.setattr(type(sb), "sources",
+                        lambda self, sc: [{"kind": "code", "nodes": 10, "path": "x"}])
+    monkeypatch.setattr("loci.backends.get_structure_backend", lambda *a, **k: sb)
+
+    run(assume_yes=True, scan=False, embed=False, calibrate=False)
+    assert sorted(seen) == ["alpha", "beta"]
+
+
+def test_update_finds_a_project_created_after_the_last_scan(tmp_path, monkeypatch):
+    """The registry records scope roots; none of them answers "where would a
+    NEW repository appear?". Without the roots a scan was pointed at, `update`
+    with no arguments is blind to exactly the case the user runs it for.
+    """
+    import loci.paths as P
+    import loci.setup as S
+    from loci.scopes import load_scopes
+    from loci.update import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus = tmp_path / "corpus"
+    _fake_repo(corpus, "alpha", "Signs the admin session cookie with a rotating "
+                                "HMAC key and refuses SameSite None on localhost.")
+    S.run([corpus], assume_yes=True, graphs=False, embed=False, calibrate=False)
+
+    _fake_repo(corpus, "gamma", "Parses wrangler bindings and provisions D1 "
+                                "databases from a declarative manifest file.")
+    run(assume_yes=True, graphs=False, embed=False, calibrate=False)
+
+    assert {s.id for s in load_scopes()} == {"alpha", "gamma"}
+
+
+def test_a_registry_rewrite_that_scanned_nothing_keeps_the_scan_roots(tmp_path,
+                                                                     monkeypatch):
+    """`group add`, `add` and `groups infer` all rewrite the registry wholesale
+    without scanning anything. If that dropped the recorded roots, the next
+    `loci update` would silently stop looking for new projects -- and the only
+    symptom is a repository that never turns up.
+    """
+    import loci.paths as P
+    from loci.scopes import load_roots, load_scopes, save_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path))
+    root = tmp_path / "corpus"
+    root.mkdir()
+    save_scopes([Scope(id="a", name="Alpha", root=tmp_path / "a")], roots=[root])
+    assert load_roots() == [root]
+
+    save_scopes(load_scopes())            # what every non-scanning caller does
+    assert load_roots() == [root]
+
+
+def test_update_does_not_opt_you_into_a_model_download(tmp_path, monkeypatch):
+    """An update refreshes what you have. Someone who chose lexical search ran
+    this command to keep that working, not to spend 130MB finding out that the
+    default changed under them.
+    """
+    import loci.paths as P
+    import loci.setup as S
+    from loci.update import run
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus = tmp_path / "corpus"
+    _fake_repo(corpus, "alpha", "Signs the admin session cookie with a rotating "
+                                "HMAC key and refuses SameSite None on localhost.")
+    S.run([corpus], assume_yes=True, graphs=False, embed=False, calibrate=False)
+
+    import loci.index as I
+    monkeypatch.setattr(I, "build_embeddings",
+                        lambda *a, **k: pytest.fail("update started an encode "
+                                                    "with no embeddings on disk"))
+    run(assume_yes=True, graphs=False, calibrate=False)
+
+
+# -- agent skill -----------------------------------------------------------
+def test_the_skill_ships_inside_the_package():
+    """It is read through importlib.resources, so a packaging mistake breaks
+    `loci skill install` for everyone who pip-installed and for nobody working
+    in a source checkout -- which is the definition of a silent regression.
+    """
+    from loci.agent_skill import skill_text
+
+    text = skill_text()
+    assert text.startswith("---\n")
+    assert "name: loci" in text
+
+
+def test_every_command_the_skill_documents_exists():
+    """The skill tells an agent which commands to run. A renamed or dropped
+    subcommand leaves it confidently instructing the model to run something
+    that has not existed for two releases, and nothing else would catch it.
+    """
+    import argparse
+
+    from loci.agent_skill import skill_text
+    from loci.cli import build_parser
+
+    sub = next(a for a in build_parser()._actions
+               if isinstance(a, argparse._SubParsersAction))
+    usage = skill_text().split("## Usage")[1].split("```")[1]
+    documented = set()
+    for line in usage.splitlines():
+        parts = line.split()
+        # `/loci "<question>"` and `/loci <anything else>` are the two entries
+        # that name no subcommand: one is the bare-question path, the other is
+        # the passthrough rule.
+        if len(parts) >= 2 and parts[0] == "/loci" and parts[1].isalpha():
+            documented.add(parts[1])
+    assert documented, "the Usage block parsed to nothing"
+    assert documented <= set(sub.choices), (
+        f"documented but not a command: {sorted(documented - set(sub.choices))}")
+
+
+def test_skill_install_is_idempotent_and_will_not_clobber_an_edit(tmp_path):
+    """Someone who tuned the skill for their own workflow must not lose it to a
+    routine `loci skill install` after an upgrade. An identical file is left
+    alone too, so the mtime does not move for no reason.
+    """
+    from loci.agent_skill import install
+
+    wrote, dest, _ = install(tmp_path)
+    assert wrote and dest.is_file()
+
+    wrote, _, detail = install(tmp_path)
+    assert not wrote and detail == "already up to date"
+
+    dest.write_text(dest.read_text(encoding="utf-8") + "\nmine\n", encoding="utf-8")
+    wrote, _, detail = install(tmp_path)
+    assert not wrote and "--force" in detail
+    assert "mine" in dest.read_text(encoding="utf-8")
+
+    wrote, _, _ = install(tmp_path, force=True)
+    assert wrote and "mine" not in dest.read_text(encoding="utf-8")
+
+
 # -- provenance ------------------------------------------------------------
 @pytest.fixture
 def hermetic_git(tmp_path, monkeypatch):

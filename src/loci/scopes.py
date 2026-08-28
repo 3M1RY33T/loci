@@ -241,12 +241,57 @@ def load_scopes() -> list[Scope]:
     return [Scope.from_json(d) for d in raw.get("scopes", [])]
 
 
-def save_scopes(scopes: list[Scope]) -> Path:
+def load_roots() -> list[Path]:
+    """Directories a previous scan was pointed at.
+
+    The registry records every scope's own root, and none of them answers the
+    question `loci update` has to ask: where would a repository that did not
+    exist yet turn up? A scope root is the answer for a project already known.
+    Deriving the search root from it -- taking each scope's parent -- guesses,
+    and guesses wrong in the one case that matters: a scope registered at the
+    home directory would nominate the whole home directory for scanning.
+
+    Returned verbatim, including entries that are not directories right now. An
+    unmounted volume or an unplugged disk is not a reason to forget where the
+    user keeps their code; the caller decides what to do about a root it cannot
+    reach today.
+    """
+    f = registry_file()
+    if not f.is_file():
+        return []
+    try:
+        raw = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [Path(r) for r in raw.get("roots", []) if isinstance(r, str)]
+
+
+def save_scopes(scopes: list[Scope], *, roots: list[Path] | None = None) -> Path:
+    """Write the registry, and remember where its scopes were scanned from.
+
+    `roots` accumulates rather than replaces: someone who scanned `~/code` in
+    March and `~/work` in June wants `loci update` to look in both. Passing
+    None keeps what is already recorded, which is what makes the default safe
+    -- `add`, `group` and `groups infer` all rewrite the scope list without
+    scanning anything, and a default of "forget" would blind the next update
+    every time one of them ran.
+
+    `loci add` deliberately records nothing: it registers one directory, and
+    entering it here would send a later scan hunting for repositories INSIDE a
+    project the user named on purpose.
+    """
     ensure_home()
     f = registry_file()
+    known = {str(p) for p in load_roots()}
+    for r in roots or []:
+        try:
+            known.add(str(Path(r).expanduser().resolve()))
+        except OSError:
+            continue
     atomic_write(f, json.dumps(
         {"version": 1,
          "updated_at": datetime.now(timezone.utc).isoformat(),
+         "roots": sorted(known),
          "scopes": [s.to_json() for s in scopes]},
         indent=2))
     return f

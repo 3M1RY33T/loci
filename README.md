@@ -385,6 +385,7 @@ holder of a shared-or-rare term into the answer. Demoted is not excluded.
 | command | purpose |
 |---|---|
 | `loci setup [dirs…]` | scan, graph, index, embed and calibrate in one pass (`-y`, `--no-embed`, `--split`) |
+| `loci update [dirs…]` | refresh graphs, index, vectors and calibration for what is registered (`--no-scan`, `--force`) |
 | `loci scan <dirs>` | discover git repos and register them as scopes (`--split`) |
 | `loci add <path>` | register one scope explicitly (`--alias`, `--glob`) |
 | `loci scopes` | list what is registered (`--group`) |
@@ -400,10 +401,95 @@ holder of a shared-or-rare term into the answer. Demoted is not excluded.
 | `loci ask "…"` | route, then query both stores (`--scope`, `--group`, `--fast`, `--rerank`) |
 | `loci doctor` | coverage gaps per scope, and the fix for each |
 | `loci eval` | measure routing on your corpus (`--misses`) |
+| `loci skill install` | install the `/loci` skill for an AI client (`--dir`, `--print`) |
 | `loci mcp` | run the MCP server on stdio |
 
 `loci index` reuses any scope whose files and git HEAD are unchanged, so
 reindexing is cheap enough to run from a commit hook.
+
+### Keeping it current
+
+Nothing updates itself. There is no watcher, no daemon and no installed git
+hook: every refresh is a command you run.
+
+```bash
+loci update            # the whole chain, for everything registered
+```
+
+It is `setup` for an install that already exists, so it prompts for nothing and
+opts you into nothing new: embeddings are re-encoded because you already had
+embeddings, and the thresholds are refitted because they were already fitted.
+It also rescans wherever your last scan was pointed, so a repository created
+since then is registered rather than missed — that is what the `roots` key in
+`scopes.json` is for, and `loci update ~/work` adds another.
+
+The one thing it rebuilds unconditionally is the **structure graph**, because
+that is the only staleness in loci that is otherwise silent. `loci graphs`
+builds a graph that is *missing* and skips every scope that already has one, so
+a project whose code moved keeps routing on the symbols it had the day it was
+registered. Everything else announces itself: `index` re-parses a scope whose
+fingerprint moved, and `doctor` names embeddings that no longer line up with
+the store. Rebuilding all of them is affordable because graphify does not
+rewrite a graph whose code did not change — measured, a second consecutive run
+left `graph.json` byte-identical with its mtime untouched, and loci's own
+fingerprint reads that mtime, so refreshing the graphs does not force a reindex
+of the scopes that stood still.
+
+By hand, the same thing, and the order is the dependency chain again:
+
+```bash
+loci graphs --all      # `loci graphs` alone would skip every existing graph
+loci index             # unchanged scopes are reused, not re-parsed
+loci embed             # a full re-encode; skipping it silently disables
+                       # semantic search for every scope whose chunk count moved
+loci calibrate         # the floor measures shared vocabulary, which just changed
+```
+
+Two things `update` cannot do for you. A project deleted from disk stays in the
+registry — it is reported, not removed, because the entry carries groups and
+aliases you set by hand and the directory may only be unmounted. And a
+long-running `loci mcp` server holds its fitted rankers and vectors in memory
+from boot, so restart it after a rebuild.
+
+---
+
+## From inside an AI client
+
+```bash
+loci skill install          # -> ~/.claude/skills/loci/SKILL.md
+```
+
+That installs one skill with subcommands, not eight commands cluttering the
+listing:
+
+```
+/loci "<question>"          ask memory; routes on your working directory
+/loci update                refresh everything registered
+/loci doctor                coverage gaps per project, and the fix for each
+/loci scopes                what is registered, and the group each is in
+/loci route "<question>"    where a question routes, and why it abstained
+/loci add <path>            register one project
+/loci setup [dirs…]         first run
+/loci <anything else>       passed through to the `loci` CLI verbatim
+```
+
+The passthrough rule is what keeps it short: `index`, `embed`, `graphs`,
+`calibrate`, `eval` and `groups` all work from the client without being
+documented twice, so the skill cannot drift from flags it never mentions. What
+it *does* mention is checked — a test parses the Usage block and fails if any
+command in it stops existing.
+
+The skill ships inside the package rather than in a dotfiles repo, because it
+documents flags and abstention reasons that the CLI can change; `loci skill
+install` after an upgrade is the whole update path. `--print` writes it to
+stdout for a client that does not read `~/.claude/skills`.
+
+Two things it teaches an agent that are not obvious from the CLI. **Run it from
+the project root** — cwd is the primary routing signal, so a question asked from
+the wrong directory routes worse than one asked from none. And **`ABSTAINED` is
+an answer**: the reason names what to do next, and an agent that rephrases and
+retries instead is burning turns on a decision that was about vocabulary rather
+than wording.
 
 ---
 
@@ -527,7 +613,9 @@ indexes would turn the cheap question into the expensive one.
 ```
 ~/.loci/                    what it holds               written by
 
-├── scopes.json             the scope registry          scan, add, group
+├── scopes.json             the scope registry, and     scan, add, group,
+│                           the roots it was scanned    update
+│                           from, for `loci update`
 ├── groups.json             group policy: default mode  group set
 │                           and any mode set per group
 ├── scope_index.json        routing index, the token    index

@@ -118,7 +118,9 @@ def cmd_scan(args) -> int:
             registry = upsert(registry, sc)
     for sc in accepted:
         registry = upsert(registry, sc)
-    save_scopes(inherit_parent_groups(registry))
+    # The roots go in with the scopes: `loci update` looks here again for
+    # repositories that did not exist when this ran.
+    save_scopes(inherit_parent_groups(registry), roots=roots)
 
     print(f"\n{len(registry)} scope(s) registered -> {home()/'scopes.json'}")
     for g, listed in declined.items():
@@ -594,6 +596,38 @@ def cmd_setup(args) -> int:
         return 130
 
 
+def cmd_update(args) -> int:
+    from .update import run
+    try:
+        return run(args.roots, assume_yes=args.yes, scan=args.scan,
+                   graphs=args.graphs, embed=args.embed,
+                   calibrate=args.calibrate, depth=args.depth,
+                   model=args.model, force=args.force, timeout=args.timeout,
+                   split=args.split)
+    except KeyboardInterrupt:
+        print("\naborted. Finished steps are already on disk; re-run "
+              "`loci update` to pick up from there.")
+        return 130
+
+
+def cmd_skill(args) -> int:
+    from .agent_skill import MCP_HINT, install, skill_text
+
+    if args.print:
+        print(skill_text(), end="")
+        return 0
+    wrote, dest, detail = install(args.dir, force=args.force)
+    print(f"{'wrote' if wrote else 'unchanged'}  {dest}   ({detail})")
+    if not wrote and detail.startswith("differs"):
+        return 1
+    print("\n  /loci \"<question>\"      ask memory from inside the client")
+    print("  /loci update            refresh it")
+    print(f"\nthe MCP server is a separate registration, and worth it -- it "
+          f"holds\nthe model in memory instead of paying ~4.4s of startup per "
+          f"question:\n  {MCP_HINT}")
+    return 0
+
+
 def cmd_doctor(args) -> int:
     from .doctor import check, group_report, render
     from .index import embeddings_status, load_episodes
@@ -691,6 +725,33 @@ def build_parser() -> argparse.ArgumentParser:
                    help=SPLIT_HELP)
     s.set_defaults(func=cmd_setup)
 
+    s = sub.add_parser("update", help="refresh graphs, index, vectors and "
+                                      "calibration for what is registered")
+    s.add_argument("roots", nargs="*", type=Path,
+                   help="also scan here for new repos (default: the roots "
+                        "your last scan recorded)")
+    s.add_argument("-y", "--yes", action="store_true",
+                   help="take every default without prompting")
+    s.add_argument("--scan", action=argparse.BooleanOptionalAction, default=None,
+                   help="look for newly created repositories (default: yes, "
+                        "wherever a previous scan was pointed)")
+    s.add_argument("--graphs", action=argparse.BooleanOptionalAction, default=None,
+                   help="rebuild every structure graph (default: yes -- this is "
+                        "the staleness no other command fixes)")
+    s.add_argument("--embed", action=argparse.BooleanOptionalAction, default=None,
+                   help="re-encode episode chunks (default: only if you already "
+                        "have embeddings; never a new model download)")
+    s.add_argument("--calibrate", action=argparse.BooleanOptionalAction, default=None,
+                   help="refit routing thresholds (default: only if already fitted)")
+    s.add_argument("--depth", type=int, default=2, help="how deep to scan for repos")
+    s.add_argument("--model", help="embedding model (default: bge-small)")
+    s.add_argument("--force", action="store_true",
+                   help="re-parse every scope, including ones nothing changed in")
+    s.add_argument("--timeout", type=int, default=600, help="per-scope graph timeout")
+    s.add_argument("--split", action=argparse.BooleanOptionalAction, default=False,
+                   help=SPLIT_HELP)
+    s.set_defaults(func=cmd_update)
+
     s = sub.add_parser("scan", help="discover git repos under roots and register them")
     s.add_argument("roots", nargs="*", type=Path)
     s.add_argument("--depth", type=int, default=2)
@@ -773,6 +834,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--all", action="store_true", help="rebuild even where one exists")
     s.add_argument("--timeout", type=int, default=600)
     s.set_defaults(func=cmd_graphs)
+
+    s = sub.add_parser("skill", help="install the /loci skill for an AI client")
+    s.add_argument("action", nargs="?", default="install", choices=["install"],
+                   help="install the skill (the only action there is)")
+    s.add_argument("--dir", type=Path,
+                   help="skills root (default: ~/.claude/skills)")
+    s.add_argument("--force", action="store_true",
+                   help="overwrite a SKILL.md that differs from the shipped one")
+    s.add_argument("--print", action="store_true",
+                   help="write the skill to stdout instead, for a client that "
+                        "does not read ~/.claude/skills")
+    s.set_defaults(func=cmd_skill)
 
     s = sub.add_parser("doctor", help="report coverage gaps per scope")
     s.set_defaults(func=cmd_doctor)

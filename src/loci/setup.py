@@ -241,7 +241,7 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
                     registry = upsert(registry, s)
             for s in accepted:
                 registry = upsert(registry, s)
-            save_scopes(inherit_parent_groups(registry))
+            save_scopes(inherit_parent_groups(registry), roots=want)
 
     if not registry:
         print("\n  no projects registered, and loci needs at least one:")
