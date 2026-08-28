@@ -895,7 +895,9 @@ Every command ran against a scratch `LOCI_HOME`. The working install at
 `~/.loci` was not touched (10 scopes before, 10 scopes after, `updated_at`
 unchanged), nothing was written into any scanned repository, and `loci graphs`
 was not run, so every scope routes on the structure graph it already had on
-disk. `loci embed` was skipped: routing does not consult embeddings, and the
+disk. Those scratch `LOCI_HOME`s are session-local and will not outlive this
+work, so the output blocks below are the artifact -- every one was produced by
+re-running against the stage it names, not transcribed from memory. `loci embed` was skipped: routing does not consult embeddings, and the
 consequence is only that `loci calibrate` reports `semantic floor 0.57
 (default; no embeddings built)` at every stage.
 
@@ -1058,8 +1060,21 @@ when the user names the sub-project and costs accuracy when they do not -- and
 91.7% -> 58.3% looks like the worst number here. It is not a number at all:
 `contended_terms` selects terms held by *exactly two* scopes, so partitioning
 `Delroy` and `3M1RY33T.github.io` rewrites the question set. Eight of the twelve
-terms changed; only `swift`, `evals`, `kiwix` and `embedding` survive into both
-stages, and all four still pass. Three of the new terms (`portfolio`,
+terms changed. Four survive into both stages, and scored at both -- the same
+licensed-subset standard `detailed` gets below -- all four pass at both:
+
+```
+LOCI_HOME=<scratch>/home-s<n> python3 contended_surv.py swift evals kiwix embedding
+
+--- S1 ---                                                      --- S3 ---
+PASS swift     owners=brewery, hlep_davay    -> brewery, hlep_davay        (identical)
+PASS evals     owners=Delroy, loci           -> loci, Delroy               (identical)
+PASS kiwix     owners=tensor-serve, TSRC     -> tensor-serve, TSRC         (identical)
+PASS embedding owners=odysseus, tensor-serve -> odysseus, tensor-serve     (identical)
+
+licensed subset: 4 terms -> S1 4/4   S3 4/4
+```
+ Three of the new terms (`portfolio`,
 `statements`, `moderating`) are shared between `3M1RY33T.github.io` and its own
 `_site` build directory -- a scope and a copy of itself, which is not a
 cross-project question. Four of the five failures are `no_evidence` abstentions
@@ -1209,19 +1224,21 @@ that survive both stages. Seven of the fourteen pre-existing scopes ask a
 *routing-identical* `detailed` question at S1 and S3:
 
 ```
-python3 licensed_diff.py s1-det.json s3-det.json     (scratch harness)
+python3 licensed_render.py s1-det.json s3-det.json            (scratch harness)
 
-scope                    identical string  same 4 terms  S1        S3
-brewery                  False             True          ..        ..
-hlep-davay               True              True          ..        ..
-loci                     True              True          ..        ..
-odysseus                 True              True          ..        ..
-tsrc                     True              True          ..        ..
-urthreads                False             True          ..        ..
-zim-compress             True              True          ..        ..
+scope                  same string  S1    S3    the four terms drawn (S1 -> S3)
+brewery                reordered    2/2   2/2   core,sources,homebrew,formula  ->  sources,core,homebrew,formula
+hlep-davay             yes          2/2   2/2   firestore,boring,chttp,absl
+loci                   yes          2/2   2/2   backends,deictic,doctor,graphify
+odysseus               yes          2/2   2/2   docx,gallery,hwfit,research
+tsrc                   yes          2/2   2/2   vite,function,tensor,preload
+urthreads              reordered    2/2   2/2   likes,worker,admin,moderation  ->  admin,likes,moderation,worker
+zim-compress           yes          2/2   2/2   article,temporary,mmap,archives
 
-LICENSED SUBSET: 7 scopes, 14 items -> S1 14/14   S3 14/14
+licensed subset: 7 scopes, 14 items -> S1 14/14   S3 14/14
 ```
+
+`S1`/`S3` are that scope's two `DETAILED_TEMPLATES` items scored at each stage.
 
 Four of the seven kept their rank-5-9 terms outright. `zim-compress` differs
 only at rank 9 and the template formats `a,b,c,d` from `terms[0:4]`
@@ -1230,8 +1247,11 @@ only at rank 9 and the template formats `a,b,c,d` from `terms[0:4]`
 scores a token multiset, and the one order-sensitive test is `_alias_hit`'s
 contiguous run, which none of this corpus's multi-token aliases (`g2 claude
 companion`, `hlep davay`, `tensor serve`, `zim compress`, and three sub-scope
-names) can match inside those four tokens. Both stages were scored directly
-rather than argued: `..` and `..`.
+names) can match inside those four tokens. That licence is load-bearing rather
+than a formality -- after stopwording, all four terms land contiguous, so a two-
+or three-token alias genuinely could match a run that a swap destroys. None
+does, and both stages were scored directly rather than argued: 2/2 and 2/2 for
+each of the seven.
 
 **Same question, changed index, 14/14 -> 14/14.** That is the like-for-like the
 split was to be scored on, and it says the split cost `detailed` nothing where
@@ -1420,11 +1440,40 @@ S3 (after the split)
 ```
 
 Five matched tokens and the highest evidence in the corpus lose to two matched
-tokens and a name collision. The same mechanism produced two of the six
-`detailed` misses; subtract the 6.0 there and `G2-claude-companion` wins 1.9490
-to 0.6574, so the alias is entirely decisive. **Any real question to
-`G2-claude-companion` containing the word "glasses" now routes to
-`Delroy/glasses`.**
+tokens and a name collision. (Both `->` lines list two scopes because
+`concentrated_here` merges the owners of a concentrated token into the selected
+set, router.py:403-408; the ranking is what matters here.)
+
+One probe does not establish a rule, so seven more hand-written
+`G2-claude-companion` questions containing the word were scored at both stages:
+
+```
+LOCI_HOME=<scratch>/home-s<n> python3 glasses_probe.py        (scratch harness)
+
+question                                                    S1 top-1     S3 top-1
+how does the companion daemon drive the glasses display?    G2 (3.0632)  glasses (7.2453)
+what protocol does the companion use to talk to the glasses? G2 (2.1680) glasses (6.9777)
+where is the glasses pairing handshake implemented?         G2 (1.5066)  glasses (7.9081)
+which spikes cover glasses connectivity?                    G2 (2.3724)  glasses (7.6486)
+how do the injector and hook set up glasses permissions?    G2 (2.8674)  glasses (7.4584)
+does the headless daemon need glasses hardware to run ...?  ABSTAIN      glasses (7.4114)
+what happens when glasses firmware reports an unsupported...? G2 (1.3568) glasses (7.4285)
+how is the glasses session resumed after the daemon restarts? G2 (2.1321) glasses (7.1946)
+
+reached G2-claude-companion:  S1 7/8    S3 0/8
+```
+
+**Eight for eight.** `G2-claude-companion` is rank 2 in every one, its own score
+barely moved (3.0632 -> 3.2241 on the first), and `Delroy/glasses` wins each on
+`signals={'alias': 'glasses'}` alone at 6.98-7.91. The sixth is the worst case
+in the set: before the split it correctly *abstained*, and after it returns a
+confident answer from the wrong project. The same mechanism produced two of the
+six `detailed` misses; subtract the 6.0 there and `G2-claude-companion` wins
+1.9490 to 0.6574.
+
+Scored, not asserted: every question a user might ask `G2-claude-companion` that
+happens to contain the word "glasses" is at risk, and eight of eight tried here
+were captured.
 
 The generator's missing ban list made this visible; it is not the cause. The
 cause is that a sub-project's directory name becomes a corpus-wide 6.0-point
@@ -1484,8 +1533,9 @@ merely left the reachable set.
 
 **The split cost `deictic + cwd` 100.0% -> 87.5%, and that is the finding.**
 Nine of seventy-two items fail, all of them new sub-scopes, and the family is
-the only family whose questions are fixed rather than drawn from the index it
-scores. Every scope that existed before the split still routes at 100%, which
+one of only three families whose questions come from a fixed list rather than
+from the index they score, and the only one of those three that scores routing
+rather than abstention. Every scope that existed before the split still routes at 100%, which
 makes this additive damage rather than a corruption of what worked -- but it is
 damage: standing inside a `Delroy` sub-project reaches it 1 time in 4, and the
 fifth new scope, `Delroy/extension`, never entered the routing index at all and
@@ -1548,9 +1598,11 @@ delroy-n8n-runtime-adapter   2026-08-28T00:44:56.415418+00:00   <- scan time
 ```
 
 `_site` would win that tiebreak even if its parent had been committed to five
-minutes earlier. The three Delroy sub-scopes lose anyway only because their
-evidence gap (5.1733 - 4.9106 = 0.2627) exceeds the 0.15 the boost can ever
-supply. So the nesting pair is decided by an evidence base when the gap is wide
+minutes earlier. The three Delroy sub-scopes lose *despite* the same free
+freshness, not for want of it: 5.1733 - 4.9106 = 0.2627 is a gap between
+**final scores**, and `Delroy/glasses` is scan-stamped while `Delroy` is
+git-stamped, so the child has already been paid its recency advantage and is
+still 0.2627 behind. The 0.15 is spent, not available. So the nesting pair is decided by an evidence base when the gap is wide
 enough and by a timestamp that means nothing when it is not -- never by
 containment, which is the one fact that actually answers the question.
 
