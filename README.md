@@ -84,7 +84,7 @@ graphs are what the index is built from, the index writes the chunks `embed`
 encodes, and `calibrate` fits its semantic floor from those vectors.
 
 ```bash
-loci scan ~/code       # register every git repo it finds, monorepos split
+loci scan ~/code       # register every git repo it finds, one scope each
 loci graphs            # optional: add code symbols (free, no model calls)
 loci index             # build the routing index + episode store
 loci embed             # optional: local vectors for semantic recall
@@ -95,12 +95,23 @@ loci ask "which projects use wrangler and D1?"
 loci eval              # measure routing accuracy on YOUR corpus
 ```
 
-`scan` registers one scope per git repository, and splits a monorepo into one
-scope per package — anything carrying `package.json`, `pyproject.toml`,
-`Cargo.toml` or `go.mod` one level down, plus whatever a repo-local `.loci.json`
-declares. It also reads who owns each repository out of git, prints the split,
-and asks before registering the ones that are not yours; that prompt takes its
-default like every other, which is to register everything.
+`scan` registers one scope per git repository. It also reads who owns each
+repository out of git, prints the split, and asks before registering the ones
+that are not yours; that prompt takes its default like every other, which is to
+register everything.
+
+A monorepo can become one scope per package instead. `--split` on `loci scan` or
+`loci setup` takes anything carrying `package.json`, `pyproject.toml`,
+`Cargo.toml` or `go.mod` one level down; a repo-local `.loci.json` names the rest
+and is honoured with or without the flag. **`--split` is off by default**, and
+the reason is measured rather than cautious: a new scope's aliases include its
+bare directory name, and an alias outranks your working directory (6.0 to 4.0).
+On the development corpus, splitting a repository holding `glasses/` sent eight
+hand-written questions about a *different* project to `Delroy/glasses` — seven of
+them had routed correctly before the split, and six of the eight reverted when
+the alias boost was zeroed. A Jekyll `_site/` build directory became a scope of
+its own on the same run. A `.loci.json` you wrote does not have that problem: you
+named those sub-projects deliberately, so you can see what they are called.
 
 `ask` uses your working directory by default, and should. Questions that name no
 project — *"how is this deployed?"*, *"how do I run the tests?"* — route
@@ -113,7 +124,8 @@ signal here, it is the primary one.
 ## Concepts
 
 **Scope.** One project, one namespace. A registered git repository, one package
-of a monorepo, or anything you add explicitly. Scopes are never merged.
+of a monorepo (under `--split`, or named in `.loci.json`), or anything you add
+explicitly. Scopes are never merged.
 
 **Group.** An overlapping label on a scope: `me` and `vendor:<org>`, read from
 git provenance; `client:acme` and anything else you assert by hand; and a
@@ -150,8 +162,8 @@ the biggest*. Both layers can refuse.
 
 | command | purpose |
 |---|---|
-| `loci setup [dirs…]` | scan, graph, index, embed and calibrate in one pass (`-y`, `--no-embed`) |
-| `loci scan <dirs>` | discover git repos and register them as scopes |
+| `loci setup [dirs…]` | scan, graph, index, embed and calibrate in one pass (`-y`, `--no-embed`, `--split`) |
+| `loci scan <dirs>` | discover git repos and register them as scopes (`--split`) |
 | `loci add <path>` | register one scope explicitly (`--alias`, `--glob`) |
 | `loci scopes` | list what is registered (`--group`) |
 | `loci groups` | list groups, their resolved mode, and how many are in each |
@@ -260,8 +272,8 @@ comment blocks), and `git log`. Add anything else with `loci add --glob`,
 including absolute paths outside the repo.
 
 The only configuration loci reads from inside a repository is `.loci.json`, and
-only if you write it. It names the sub-projects `scan` cannot see from a
-workspace marker, at any depth:
+only if you write it. It names sub-projects at any depth, and unlike
+`--split` it is honoured on every scan:
 
 ```json
 {"scopes": [{"path": "client"}, {"path": "services/api"}]}

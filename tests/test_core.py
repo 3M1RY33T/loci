@@ -262,7 +262,7 @@ def test_add_with_an_explicit_alias_beats_preservation(tmp_path, monkeypatch, ca
     assert load_scopes()[0].aliases == ["second"]
     assert "aliases: second" in out, f"reported an alias it did not register: {out!r}"
 
-    cmd_scan(Namespace(roots=[str(root)], depth=1))
+    cmd_scan(Namespace(roots=[str(root)], depth=1, split=False))
     assert load_scopes()[0].aliases == ["second"], "re-scan discarded a custom alias"
 
 
@@ -286,7 +286,7 @@ def test_subscopes_finds_depth_one_markers_only(tmp_path):
     (repo / "node_modules").mkdir()
     (repo / "node_modules" / "package.json").write_text("{}", encoding="utf-8")
 
-    assert {p.name for p in subscopes(repo)} == {"glasses", "extension"}
+    assert {p.name for p in subscopes(repo, markers=True)} == {"glasses", "extension"}
 
 
 def test_declaration_file_adds_what_markers_cannot_see(tmp_path):
@@ -335,7 +335,7 @@ def test_malformed_declaration_is_ignored_not_fatal(tmp_path):
                     '{"scopes": [["client"]]}',  # an entry is not an object
                     '{"scopes": [null]}'):       # an entry is nothing at all
         (repo / ".loci.json").write_text(payload, encoding="utf-8")
-        assert {p.name for p in subscopes(repo)} == {"glasses"}, \
+        assert {p.name for p in subscopes(repo, markers=True)} == {"glasses"}, \
             f"the marker-found sub-scope was lost to {payload!r}"
 
 
@@ -348,7 +348,7 @@ def test_discover_registers_the_parent_and_its_subscopes(tmp_path):
     (repo / "glasses" / "package.json").write_text("{}", encoding="utf-8")
     (tmp_path / "plain" / ".git").mkdir(parents=True)   # no sub-projects
 
-    found = {s.id: s for s in discover([tmp_path], max_depth=2)}
+    found = {s.id: s for s in discover([tmp_path], max_depth=2, markers=True)}
     assert "delroy" in found
     assert "delroy-glasses" in found
     assert found["delroy-glasses"].root == (repo / "glasses").resolve()
@@ -380,14 +380,14 @@ def test_subscope_ids_never_collide(tmp_path):
     # assertion below passes with no uniquing at all.
     (tmp_path / "one-client" / ".git").mkdir(parents=True)
 
-    ids = [s.id for s in discover([tmp_path], max_depth=2)]
+    ids = [s.id for s in discover([tmp_path], max_depth=2, markers=True)]
     assert len(ids) == len(set(ids)), f"duplicate scope ids: {ids}"
     assert {"one-client", "two-client"} <= set(ids)
     # The real repository wins its own id; the generated one takes the suffix.
     # Filesystem order decided this before, and `upsert` matches on id while
     # `root` is not preserved -- so the loser's root would be written into the
     # winner's registry entry, under the winner's aliases and groups.
-    by_id = {s.id: s for s in discover([tmp_path], max_depth=2)}
+    by_id = {s.id: s for s in discover([tmp_path], max_depth=2, markers=True)}
     assert by_id["one-client"].root == (tmp_path / "one-client").resolve()
     assert by_id["one-client-2"].root == (tmp_path / "One" / "client").resolve()
 
@@ -418,7 +418,7 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
     (repo / "glasses").mkdir()
     (repo / "glasses" / "package.json").write_text("{}", encoding="utf-8")
 
-    cmd_scan(Namespace(roots=[str(repo)], depth=1))
+    cmd_scan(Namespace(roots=[str(repo)], depth=1, split=True))
     assert {s.id for s in load_scopes()} == {"delroy", "delroy-glasses"}
     assert next(s for s in load_scopes() if s.id == "delroy-glasses").group_set() \
         == {"delroy", "me"}
@@ -426,11 +426,110 @@ def test_a_rescan_cannot_erase_a_subscopes_containment_label(tmp_path, monkeypat
     # the user groups the sub-project by hand, naming nothing about containment
     save_scopes([replace(s, groups=["client:acme"]) if s.id == "delroy-glasses"
                  else s for s in load_scopes()])
-    cmd_scan(Namespace(roots=[str(repo)], depth=1))
+    cmd_scan(Namespace(roots=[str(repo)], depth=1, split=True))
 
     sub = next(s for s in load_scopes() if s.id == "delroy-glasses")
     assert sub.group_set() == {"delroy", "client:acme"}, \
         "a re-scan dropped a label the user's edit never mentioned"
+
+
+def test_a_monorepo_is_one_scope_until_the_split_is_asked_for(
+        tmp_path, monkeypatch, capsys):
+    """Marker splitting is OFF by default, because a new scope's aliases include
+    its bare directory name and `ALIAS_BOOST` (6.0) beats `CWD_BOOST` (4.0):
+    measured on the real corpus, splitting a repo holding `glasses/` sent 8/8
+    hand-written questions about a DIFFERENT project to `Delroy/glasses`, 7 of
+    which had routed correctly before. `--split` opts back in, and both
+    directions are pinned here -- a default flipped to True fails the first
+    block, a flag parsed and dropped fails the second.
+
+    Through the CLI rather than `discover`, because the flag has to survive the
+    parser and `cmd_scan` as well as reach `subscopes`.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    repo = tmp_path / "corpus" / "Delroy"
+    (repo / ".git").mkdir(parents=True)
+    for name in ("glasses", "extension"):
+        (repo / name).mkdir()
+        (repo / name / "package.json").write_text("{}", encoding="utf-8")
+
+    assert main(["scan", str(tmp_path / "corpus")]) == 0
+    assert {s.id for s in load_scopes()} == {"delroy"}, \
+        "workspace markers split a monorepo with nobody asking"
+
+    assert main(["scan", "--split", str(tmp_path / "corpus")]) == 0
+    assert {s.id for s in load_scopes()} == {"delroy", "delroy-glasses",
+                                            "delroy-extension"}
+    # The machinery is intact, not merely reachable: the containment labels the
+    # exclusion threading and `--group` both read are still written.
+    by_id = {s.id: s for s in load_scopes()}
+    assert by_id["delroy-glasses"].group_set() >= {"delroy"}
+    assert by_id["delroy"].group_set() >= {"delroy"}
+
+    # And `--no-split` is not merely accepted -- it is the default's spelling.
+    assert main(["scan", "--no-split", str(tmp_path / "corpus")]) == 0
+    assert "delroy-glasses" in {s.id for s in load_scopes()}, \
+        "a scope already registered was dropped by a later plain scan"
+
+
+def test_a_declaration_splits_whether_or_not_the_flag_is_passed(tmp_path):
+    """Writing `.loci.json` is the user asserting "these are separate projects"
+    about one repository they know; a workspace marker is loci guessing it about
+    every repository in the corpus. Only the guess is held back, so a repo
+    carrying both a declaration and a marker splits on the declaration alone
+    with the flag off, and on both with it on.
+
+    The marker directory is what makes this discriminating: honouring
+    declarations by simply leaving `subscopes` alone would put `glasses` in the
+    first set too.
+    """
+    from loci.scopes import discover, subscopes
+
+    repo = tmp_path / "mono"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "client").mkdir()
+    (repo / "glasses").mkdir()
+    (repo / "glasses" / "package.json").write_text("{}", encoding="utf-8")
+    (repo / ".loci.json").write_text(
+        json.dumps({"scopes": [{"path": "client"}]}), encoding="utf-8")
+
+    assert {p.name for p in subscopes(repo)} == {"client"}
+    assert {p.name for p in subscopes(repo, markers=True)} == {"client", "glasses"}
+
+    assert {s.id for s in discover([tmp_path], max_depth=2)} == {"mono", "mono-client"}
+    assert {s.id for s in discover([tmp_path], max_depth=2, markers=True)} \
+        == {"mono", "mono-client", "mono-glasses"}
+
+
+def test_the_split_flag_is_parsed_and_passed_on_by_both_commands(tmp_path,
+                                                                 monkeypatch):
+    """`setup` reaches `discover` through `setup.run`, so nothing above proves
+    `cmd_setup` forwards the flag rather than parsing it and dropping it -- the
+    failure mode is a `loci setup --split` that silently does not split.
+    """
+    import loci.setup as S
+    from loci.cli import build_parser, main
+
+    p = build_parser()
+    assert p.parse_args(["scan", "x"]).split is False
+    assert p.parse_args(["scan", "--split", "x"]).split is True
+    assert p.parse_args(["scan", "--no-split", "x"]).split is False
+    assert p.parse_args(["setup", "x"]).split is False
+    assert p.parse_args(["setup", "--split", "x"]).split is True
+
+    seen: list = []
+    monkeypatch.setattr(S, "run", lambda *a, **kw: seen.append(kw.get("split")) or 0)
+    assert main(["setup", "--split", str(tmp_path)]) == 0
+    assert main(["setup", str(tmp_path)]) == 0
+    assert seen == [True, False]
 
 
 # -- scopes: exclusion -----------------------------------------------------
@@ -2863,7 +2962,7 @@ def test_groups_infer_does_not_let_one_monorepo_outvote_the_corpus(
     for name in ("one", "two", "three"):
         _repo(corpus, name, origin=f"https://github.com/acme/{name}.git")
 
-    assert main(["scan", str(corpus)]) == 0
+    assert main(["scan", "--split", str(corpus)]) == 0
     before = {s.name: s.group_set() for s in load_scopes()}
     assert before["one"] == {"me"}, "fixture lost its point"
     capsys.readouterr()
@@ -3307,7 +3406,7 @@ def test_setup_counts_repositories_and_scopes_separately(tmp_path, monkeypatch,
     (mono / "pkg" / "package.json").write_text("{}", encoding="utf-8")
 
     assert run([corpus], assume_yes=True, graphs=False, embed=False,
-               calibrate=False) == 0
+               calibrate=False, split=True) == 0
     out = capsys.readouterr().out
 
     assert "1 git repository under" in out
@@ -3429,7 +3528,7 @@ def test_scan_does_not_let_one_monorepo_outvote_the_corpus(
     for name in ("one", "two", "three"):
         _repo(corpus, name, origin=f"https://github.com/acme/{name}.git")
 
-    assert main(["scan", str(corpus)]) == 0
+    assert main(["scan", "--split", str(corpus)]) == 0
     groups = {s.name: s.group_set() for s in load_scopes()}
 
     assert groups["one"] == {"me"}, "the user's own repository filed as a vendor's"
@@ -3533,7 +3632,7 @@ def test_a_vendored_repo_does_not_inherit_its_containers_provenance(
     vendored = _repo(mono, "vendored", origin="https://github.com/stranger/v.git")
     (vendored / "package.json").write_text("{}", encoding="utf-8")
 
-    assert main(["scan", str(corpus)]) == 0
+    assert main(["scan", "--split", str(corpus)]) == 0
     scopes = load_scopes()
     groups = {s.name: s.group_set() for s in scopes}
 

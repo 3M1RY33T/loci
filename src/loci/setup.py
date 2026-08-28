@@ -178,7 +178,7 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
         graphs: bool | None = None, embed: bool | None = None,
         calibrate: bool | None = None, depth: int = 2,
         model: str | None = None, force: bool = False,
-        timeout: int = 600) -> int:
+        timeout: int = 600, split: bool = False) -> int:
     from .index import DEFAULT_EMBED_MODEL
     from .scopes import (discover, inherit_parent_groups, load_scopes,
                          repositories, save_scopes, upsert)
@@ -211,7 +211,7 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
                                  interactive=interactive)
 
     if want:
-        found = discover(want, max_depth=depth)
+        found = discover(want, max_depth=depth, markers=split)
         repos = repositories(found)
         known = {s.id for s in registry}
         fresh = [s for s in found if s.id not in known]

@@ -10,6 +10,15 @@ from pathlib import Path
 from . import __version__
 from .paths import BuildLock, groups_file, home
 
+# One string, two parsers. `scan` and `setup` reach the same `discover` call and
+# a flag that means one thing under one command and another under the other is
+# worse than no flag; the modes list in `group set` is derived for the same
+# reason. Off by default -- scopes.WORKSPACE_MARKERS records the measurement
+# that put it there.
+SPLIT_HELP = ("split a monorepo into one scope per depth-1 workspace marker "
+              "(package.json, pyproject.toml, Cargo.toml, go.mod). Off by "
+              "default; a repo-local .loci.json splits either way.")
+
 
 def _load_index_or_die():
     from .index import load_index
@@ -88,7 +97,7 @@ def cmd_scan(args) -> int:
     from .setup import accept_by_group
 
     roots = [Path(r) for r in (args.roots or [Path.cwd()])]
-    found = discover(roots, max_depth=args.depth)
+    found = discover(roots, max_depth=args.depth, markers=args.split)
     if not found:
         print("no git repositories found; use `loci add <path>` instead")
         return 1
@@ -268,6 +277,14 @@ def _containment_holder(sc, group: str, scopes):
     promises a scan that will never restore the label, and leaves the user
     unable to undo their own `group add`. `subscopes` is also what `discover`
     itself calls, so the two cannot disagree about what a sub-project is.
+
+    `markers=True` here against a default of False in `discover`, deliberately.
+    The registry does not record which flags produced a label, so the question
+    this can answer is not "would the next scan restore it" but "could a scan
+    restore it" -- and a marker label exists at all only because some scan ran
+    with `--split`, which the same user is liable to run again. The two errors
+    are not symmetric: refusing wrongly is visible and says why, allowing
+    wrongly is the silent reappearance the guard exists to prevent.
     """
     from .scopes import subscopes
 
@@ -284,7 +301,7 @@ def _containment_holder(sc, group: str, scopes):
     # `if subs:` is the same guard `discover` applies before labelling anything,
     # so a container with nothing inside it never carried the label structurally
     # and must not be told it lives inside itself.
-    subs = subscopes(holder.root)
+    subs = subscopes(holder.root, markers=True)
     if not subs:
         return None
     if holder.id == sc.id or sc.root.resolve() in subs:
@@ -322,16 +339,18 @@ def cmd_group(args) -> int:
         sc.groups = sorted(current | {args.group})
     else:
         # A containment label is structural: `discover` recomputes it from the
-        # filesystem on every scan and `upsert` unions it back in, so removing
-        # one here reappears at the next `loci scan`. Refuse rather than no-op.
+        # filesystem and `upsert` unions it back in, so removing one here
+        # reappears at the next scan that sees the same shape. Refuse, not no-op.
         holder = _containment_holder(sc, args.group, scopes)
         if holder is not None:
             where = ("holds sub-projects and is a member of its own containment "
                      "group" if holder.id == sc.id
                      else f"is a sub-project of {holder.name}")
             print(f"error: {args.group!r} is structural -- {sc.name} {where}, and "
-                  f"`loci scan` recomputes that label every run, so removing it "
-                  f"here would not survive the next one.", file=sys.stderr)
+                  f"`loci scan` recomputes that label from the filesystem "
+                  f"(always for .loci.json, with --split for workspace markers), "
+                  f"so removing it here would not survive the next one.",
+                  file=sys.stderr)
             return 2
         sc.groups = sorted(current - {args.group})
     # Written straight to the registry, NOT through `upsert`: `upsert` unions
@@ -535,7 +554,8 @@ def cmd_setup(args) -> int:
     try:
         return run(args.roots, assume_yes=args.yes, graphs=args.graphs,
                    embed=args.embed, calibrate=args.calibrate, depth=args.depth,
-                   model=args.model, force=args.force, timeout=args.timeout)
+                   model=args.model, force=args.force, timeout=args.timeout,
+                   split=args.split)
     except KeyboardInterrupt:
         # Every step persists as it finishes, and `loci index` reuses scopes
         # whose fingerprint is unchanged, so a re-run resumes rather than
@@ -639,11 +659,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true",
                    help="rebuild everything, even where nothing changed")
     s.add_argument("--timeout", type=int, default=600, help="per-scope graph timeout")
+    s.add_argument("--split", action=argparse.BooleanOptionalAction, default=False,
+                   help=SPLIT_HELP)
     s.set_defaults(func=cmd_setup)
 
     s = sub.add_parser("scan", help="discover git repos under roots and register them")
     s.add_argument("roots", nargs="*", type=Path)
     s.add_argument("--depth", type=int, default=2)
+    s.add_argument("--split", action=argparse.BooleanOptionalAction, default=False,
+                   help=SPLIT_HELP)
     s.set_defaults(func=cmd_scan)
 
     s = sub.add_parser("add", help="register one scope explicitly")
