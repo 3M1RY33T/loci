@@ -69,9 +69,10 @@ loci ask "why was the session cookie dropped on localhost?"
 ```
 
 `setup` asks only what it cannot decide for you: which directories hold your
-projects, and whether to spend a one-time model download on semantic search. It
-ends by running `doctor`, so whatever it could not cover is the last thing you
-read rather than something you discover from a bad answer a week later.
+projects, whether to register the repositories it found that are not yours, and
+whether to spend a one-time model download on semantic search. It ends by
+running `doctor`, so whatever it could not cover is the last thing you read
+rather than something you discover from a bad answer a week later.
 
 Every prompt takes its default when stdin is not a terminal, so it is safe to
 run unattended in a container or under an agent. `-y` does the same from a
@@ -83,7 +84,7 @@ graphs are what the index is built from, the index writes the chunks `embed`
 encodes, and `calibrate` fits its semantic floor from those vectors.
 
 ```bash
-loci scan ~/code       # register every git repo it finds
+loci scan ~/code       # register every git repo it finds, monorepos split
 loci graphs            # optional: add code symbols (free, no model calls)
 loci index             # build the routing index + episode store
 loci embed             # optional: local vectors for semantic recall
@@ -93,6 +94,13 @@ loci doctor            # what is missing, and the command that fixes it
 loci ask "which projects use wrangler and D1?"
 loci eval              # measure routing accuracy on YOUR corpus
 ```
+
+`scan` registers one scope per git repository, and splits a monorepo into one
+scope per package — anything carrying `package.json`, `pyproject.toml`,
+`Cargo.toml` or `go.mod` one level down, plus whatever a repo-local `.loci.json`
+declares. It also reads who owns each repository out of git, prints the split,
+and asks before registering the ones that are not yours; that prompt takes its
+default like every other, which is to register everything.
 
 `ask` uses your working directory by default, and should. Questions that name no
 project — *"how is this deployed?"*, *"how do I run the tests?"* — route
@@ -104,8 +112,22 @@ signal here, it is the primary one.
 
 ## Concepts
 
-**Scope.** One project, one namespace. A registered git repository, or anything
-you add explicitly. Scopes are never merged.
+**Scope.** One project, one namespace. A registered git repository, one package
+of a monorepo, or anything you add explicitly. Scopes are never merged.
+
+**Group.** An overlapping label on a scope: `me` and `vendor:<org>`, read from
+git provenance; `client:acme` and anything else you assert by hand; and a
+monorepo's own id, carried by every package inside it. A scope can be in
+several, and the scope set stays flat — a group changes what routing considers,
+never how scores are computed. What it does to a question is its **mode**:
+`explicit` does nothing until `--group` names it, `soft` (the default)
+multiplies every outside scope's evidence base by 0.5, and `hard` confines
+routing to members and abstains when the best answer is outside. Membership
+lives in the scope registry, mode in `groups.json`, so a re-scan — which
+rewrites the registry wholesale — cannot discard policy. Measured: `hard`
+anchored on cwd fires on questions that *name* an outside project (12 of 12) and
+not on questions carrying only its vocabulary (0 of 24), so in practice `--group`
+and project names drive it rather than where you are standing.
 
 **Structure store.** What calls what — symbols, files, references, traversals
 with `file:line` citations. Supplied by [graphify](https://github.com/safishamsi/graphify)
@@ -131,13 +153,17 @@ the biggest*. Both layers can refuse.
 | `loci setup [dirs…]` | scan, graph, index, embed and calibrate in one pass (`-y`, `--no-embed`) |
 | `loci scan <dirs>` | discover git repos and register them as scopes |
 | `loci add <path>` | register one scope explicitly (`--alias`, `--glob`) |
-| `loci scopes` | list what is registered |
+| `loci scopes` | list what is registered (`--group`) |
+| `loci groups` | list groups, their resolved mode, and how many are in each |
+| `loci groups infer` | label every scope `me` or `vendor:<org>` from git provenance |
+| `loci group set <group> --mode` | how much a group confines: `explicit`, `soft`, `hard` |
+| `loci group add\|rm <scope> <group>` | edit one scope's membership |
 | `loci graphs [scope…]` | build missing structure graphs via graphify |
 | `loci index` | build the routing index and episode store (`--force`) |
 | `loci embed` | encode episode chunks locally (`--model`) |
 | `loci calibrate` | fit the evidence floor to your corpus (`--show`) |
-| `loci route "…"` | show where a question routes (`--explain`) |
-| `loci ask "…"` | route, then query both stores (`--scope`, `--fast`, `--rerank`) |
+| `loci route "…"` | show where a question routes (`--explain`, `--group`) |
+| `loci ask "…"` | route, then query both stores (`--scope`, `--group`, `--fast`, `--rerank`) |
 | `loci doctor` | coverage gaps per scope, and the fix for each |
 | `loci eval` | measure routing on your corpus (`--misses`) |
 | `loci mcp` | run the MCP server on stdio |
@@ -157,9 +183,10 @@ Three tools — `ask`, `scopes`, `doctor` — not several dozen. Agents are the
 primary consumer, and a wide tool surface pushes orchestration onto the model
 and burns a turn per hop.
 
-Pass `cwd` to `ask` whenever the client knows it. The server loads the embedding
-model and the largest scopes' rankers at boot, so the first tool call an agent
-makes is fast rather than paying ~4.4s of startup while the user waits.
+Pass `cwd` to `ask` whenever the client knows it, and `group` to narrow the same
+way `--group` does on the command line. The server loads the embedding model and
+the largest scopes' rankers at boot, so the first tool call an agent makes is
+fast rather than paying ~4.4s of startup while the user waits.
 
 ---
 
@@ -232,7 +259,22 @@ Collected per scope: `README*`, `docs/**/*.md`, source files (for docstrings and
 comment blocks), and `git log`. Add anything else with `loci add --glob`,
 including absolute paths outside the repo.
 
-Written to `~/.loci` (or `$LOCI_HOME`): the scope registry, routing index,
+The only configuration loci reads from inside a repository is `.loci.json`, and
+only if you write it. It names the sub-projects `scan` cannot see from a
+workspace marker, at any depth:
+
+```json
+{"scopes": [{"path": "client"}, {"path": "services/api"}]}
+```
+
+Paths are relative to the repository root and may not escape it. A malformed
+file is ignored — a scan that aborts on a stray comma is worse than one that
+misses a declaration. Nothing writes this file; you do. The only thing loci ever
+puts inside a repository is `graphify-out/graph.json`, and only when you run
+`loci graphs`.
+
+Written to `~/.loci` (or `$LOCI_HOME`): the scope registry, `groups.json` (the
+group policy — default mode, and any mode you set per group), routing index,
 episode store, fitted rankers, and optional vectors.
 
 ### Redaction
