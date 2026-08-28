@@ -883,3 +883,271 @@ every Phase 1.2 through Phase 4 section duplicated, while four sections that wer
 Three silent no-op edits happened this session by the same mechanism: a string
 replacement whose target had drifted. None of them raised anything. Appending is
 now used instead of anchor replacement.
+
+## Scope groups
+
+Measured on the real corpus (`~/Documents/GitHub`, 11 git repositories plus
+three nested one level deeper) rather than a fixture, because the thing this
+feature changes -- how many scopes there are and how alike they look -- is the
+one property a synthetic bed cannot supply.
+
+Every command ran against a scratch `LOCI_HOME`. The working install at
+`~/.loci` was not touched (10 scopes before, 10 scopes after, `updated_at`
+unchanged), nothing was written into any scanned repository, and `loci graphs`
+was not run, so every scope routes on the structure graph it already had on
+disk. `loci embed` was skipped: routing does not consult embeddings, and the
+consequence is only that `loci calibrate` reports `semantic floor 0.57
+(default; no embeddings built)` at every stage.
+
+### The four stages
+
+| stage | code | registry |
+|---|---|---|
+| **S0 baseline** | `507c04c`, the commit before this feature | 14 scopes, no groups, no split |
+| **S1 inert** | `HEAD`, marker split suppressed, groups stripped | 14 scopes, no groups |
+| **S2 provenance** | `HEAD`, marker split suppressed | 14 scopes, provenance groups |
+| **S3 split** | `HEAD`, unmodified | 19 registered, 18 indexed |
+
+S1 exists because S0 changes two things at once -- the feature and 24 commits of
+code. Suppressing only `WORKSPACE_MARKERS` isolates them.
+
+`Delroy/client` carries no workspace marker, so it splits only with a
+`.loci.json` written into a repository that is not this one. It was left out;
+the split measured here is marker-only, and `client/` is unmeasured.
+
+### Per-family rates
+
+```
+family              n   S0      S1      S2      S3
+deictic + cwd      56/72  100.0%  100.0%  100.0%   87.5%
+deictic, no cwd     4     100.0%  100.0%  100.0%  100.0%
+unanswerable        3     100.0%  100.0%  100.0%  100.0%
+signature          14/18   92.9%   92.9%   92.9%   88.9%
+detailed           28/36   92.9%   92.9%   92.9%   88.9%
+contended          12      91.7%   91.7%   91.7%   58.3%
+
+evidence_floor            6.151   6.151   6.151   4.317
+routable band from        2.144   2.144   2.144   1.997
+unroutable band to        5.998   5.998   5.998   6.607
+bands                     OVERLAP OVERLAP OVERLAP separated
+self-classification        77.1%   77.1%   77.1%   94.0%
+```
+
+S0, S1 and S2 are identical line for line, including the fitted floor to three
+decimals. Two things follow.
+
+**The code drift is inert.** Twenty-four commits, including a group-aware
+`route`, changed no number on a corpus with no groups. That is what the feature
+was supposed to do when nothing asks for it.
+
+**`loci eval` cannot see provenance at all, and that is a property of the
+benchmark, not a result.** `eval.run` calls `route(q, index, cwd=...)` and
+passes no `eligible`, no `demoted`, no `strict_group`. Group policy reaches
+routing only through `groups.confinement`, which `loci route` and `loci ask`
+call and `loci eval` does not. Labelling `odysseus` as
+`vendor:pewdiepie-archdaemon` and `beacon` as `vendor:unknown` therefore cannot
+move a single `loci eval` figure, whatever it does to real questions. Re-running
+the same families through a wrapper that *does* resolve confinement per question
+reproduces the table above exactly -- under the default `soft` mode and under
+`loci group set me --mode hard` alike. The reason is the shape of the question
+set: confinement is anchored on cwd, only `deictic + cwd` supplies a cwd, and
+that family was already at ceiling.
+
+### The split hurt, and here is exactly where
+
+`deictic + cwd` fell 100.0% -> 87.5%. All nine misses are the new sub-scopes:
+
+```
+Delroy/glasses:             What is the entry point and how does it start up?
+Delroy/glasses:             What are the known risks, gaps or limitations here?
+Delroy/glasses:             What configuration or environment variables does it need?
+Delroy/n8n-nodes-delroy:    How do I run the tests?
+Delroy/n8n-nodes-delroy:    What is the entry point and how does it start up?
+Delroy/n8n-nodes-delroy:    What are the known risks, gaps or limitations here?
+Delroy/n8n-runtime-adapter: How do I run the tests?
+Delroy/n8n-runtime-adapter: What is the entry point and how does it start up?
+Delroy/n8n-runtime-adapter: What are the known risks, gaps or limitations here?
+```
+
+Restricted to the fourteen scopes that existed before the split, the same family
+scores **56/56 = 100.0%** on the split index. The split cost nothing that
+already worked; it added twelve scope-question pairs it cannot answer.
+
+The mechanism is `CWD_BOOST`, and it is structural rather than tunable. A
+sub-scope's root is *inside* its parent's root, so both satisfy
+`root in cwd_path.parents` and both collect `CWD_BOOST` (4.0). The tie is then
+broken by evidence base, and the parent has thirty times the vocabulary:
+
+```
+loci route --cwd ~/Documents/GitHub/Delroy/glasses --explain \
+  "What is the entry point and how does it start up?"
+-> Delroy, Delroy/glasses
+ * Delroy          score=5.1733  matched=3  signals={'cwd': '.../Delroy'}
+ * Delroy/glasses  score=4.9106  matched=2  signals={'cwd': '.../Delroy/glasses'}
+```
+
+### Does a question about `glasses` reach `delroy-glasses`?
+
+Two different questions, two different answers.
+
+**Named -- yes, decisively.** `ALIAS_BOOST` (6.0) outranks `CWD_BOOST` (4.0),
+and the sub-scope owns the alias:
+
+```
+loci route --no-cwd --explain "how does the glasses app talk to the runtime?"
+-> Delroy/glasses
+ * Delroy/glasses  score=7.6255  matched=2  signals={'alias': 'glasses'}
+   Delroy          score=1.2839  matched=4  signals=-
+```
+
+**Deictic, from inside `glasses/` -- mostly no.** Over the four evaluation-half
+taxonomy questions applied to the parent and its three indexed sub-scopes:
+
+```
+top-1 is the right scope                7/16   43.8%
+right scope present in the widened set 14/16   87.5%
+```
+
+The parent scores 4/4; each sub-scope scores 1/4. So the split is worth having
+when the user names the sub-project and costs accuracy when they do not -- and
+"do not" is the case `cwd` exists to serve.
+
+### The `contended` collapse is not comparable, and saying so is the finding
+
+91.7% -> 58.3% looks like the worst number here. It is not a number at all:
+`contended_terms` selects terms held by *exactly two* scopes, so partitioning
+`Delroy` and `3M1RY33T.github.io` rewrites the question set. Eight of the twelve
+terms changed; only `swift`, `evals`, `kiwix` and `embedding` survive into both
+stages, and all four still pass. Three of the new terms (`portfolio`,
+`statements`, `moderating`) are shared between `3M1RY33T.github.io` and its own
+`_site` build directory -- a scope and a copy of itself, which is not a
+cross-project question. Four of the five failures are `no_evidence` abstentions
+on terms too rare to clear any floor.
+
+Diffing the inputs before the outputs, per ROADMAP rule 4: **the family is
+derived from the index it scores and cannot be compared across a change that
+alters the index's scope partition.** `deictic + cwd` is the only family here
+that is genuinely like-for-like, because its questions are fixed.
+
+`signature` and `detailed` carry a weaker form of the same caveat: their terms
+are per scope, stable except for the two scopes that were partitioned.
+
+### The floor moved, and it explains none of it
+
+`evidence_floor` fell 6.151 -> 4.317 and the bands stopped overlapping
+(self-classification 77.1% -> 94.0%). Not because the parent shrank -- `Delroy`
+went from 6,469 routing tokens to 6,404, which is nothing. Calibration fits on
+its own generated half, and that half grew from 146 routable samples to 175 as
+the scope count went 14 -> 18, which also moves every IDF in the corpus. Which
+of the two drove the floor was not isolated.
+
+Per ROADMAP rule 1, the threshold was not re-fitted to recover anything. The
+opposite check was run: the split corpus was re-evaluated with S1's floor forced
+back to 6.151, and every family reported the identical rate. The regression is
+the corpus shape, not the constant.
+
+### `loci group set vendor:... --mode explicit` does not do what the plan said
+
+The plan's Step 3 called for `loci group set vendor:pewdiepie-archdaemon --mode
+explicit` to take a foreign repository out of the competition. Run on the split
+corpus, it does not:
+
+```
+loci route --cwd ~/Documents/GitHub/loci --explain \
+  "how is mammoth handled together with cookbook?"
+-> loci, odysseus
+ * loci      score=4.1147  matched=0  signals={'cwd': '.../loci'}
+ * odysseus  score=1.2339  matched=4  signals=-
+```
+
+A mode governs what a group does to questions asked from *inside* it, and
+`explicit` is the mode that confines least. `loci doctor` says so unprompted --
+"`loci group set me --mode hard` ... keeps them out of every question asked from
+inside it" -- and the doctor is right. Worth noting separately: `loci` wins that
+line with **zero matched tokens**, purely on `CWD_BOOST`, while `odysseus`
+matches four high-evidence terms and is still returned second.
+
+### cwd-anchored `hard` mode barely fires -- confirmed, quantified
+
+`out_of_group` requires the *corpus-wide* winner to sit outside the group. cwd
+adds 4.0 to a scope that is in the group by construction, and measured evidence
+bases occupy 0.1-1.5. With `me` set to `hard` on the split corpus, over six
+in-group anchors x six probes built from the out-of-group scopes' own most
+discriminative vocabulary:
+
+```
+out_of_group fired                                     12/36
+  of which, probes that NAME the outside project       12/12
+  probes carrying only its distinctive vocabulary       0/24
+same probes with --group me and no cwd                  6/6
+```
+
+Every firing came from `ALIAS_BOOST` (6.0) beating `CWD_BOOST` (4.0). The
+twenty-four evidence-only probes -- questions whose true answer is a vendor
+repository -- all routed to whatever scope the user happened to be standing in.
+Hard mode is `--group`-driven and alias-driven in practice, exactly as the
+review claimed. It is not useless; it is not cwd-anchored protection.
+
+### Two defects the split surfaced
+
+**`Delroy/extension` is registered, stored, and unreachable.** Nineteen scopes
+register; eighteen index. `extension/` contains no markdown of any kind, so its
+343 episode chunks are all `kind="docstring"`, and `ROUTING_KINDS` excludes
+docstrings. The guard meant to catch this is
+
+```python
+if not nodes and len(prose_vocab) < DOCSTRING_FALLBACK_VOCAB:   # index.py:164
+```
+
+with `DOCSTRING_FALLBACK_VOCAB = 0` (index.py:53), so `0 < 0` is false and the
+fallback never runs. Folding the docstrings in by hand yields 1,724 vocabulary
+tokens -- the scope is not empty, it is discarded. The constant is deliberate
+and test-pinned (`test_docstring_routing_fallback_stays_disabled`: warm it costs
+14 points of top-1, cold it halves accuracy), so the defect is not the value.
+The defect is that the comment above it promises the fallback keeps a
+prose-only scope from having its "chunks sit indexed and unreachable", and that
+is precisely what happens: the scope is absent from the routing index, no
+question can reach it, and `loci ask --scope delroy-extension` answers `error:
+unknown scope`. Before the split those 343 chunks were reachable through
+`Delroy`. Sub-projects with no README and no graph are the shape this bites, and
+splitting a monorepo manufactures them.
+
+**`_site` became a scope.** `3M1RY33T.github.io/_site` is a Jekyll build
+output. It carries a `package.json`, it is not in `SKIP_DIRS`, and it does not
+start with a dot, so the depth-1 marker rule registered it. It indexed 221
+tokens that duplicate its parent's 221 and contributed two of the twelve
+`contended` terms. Generated directories need excluding by name the way
+`node_modules` already is.
+
+The chunk-partition invariant does hold: across all four sub-scopes, `delroy`
+shares **zero** chunk texts with any of them, and all 1,046 chunks the parent
+lost were recovered by exactly one sub-scope. Nothing was double-counted and
+nothing left the store -- 343 of them merely left the reachable set.
+
+### What this measurement does not cover
+
+- `Delroy/client`, which needs a `.loci.json` in a repository this task was not
+  authorised to write to.
+- Any effect of provenance labels on real questions, in a metric. `loci eval`
+  is structurally blind to group policy; the `--group me` probes above are a
+  spot check, not a benchmark.
+- Semantic ranking. No embeddings were built, so `semantic_floor` is the 0.57
+  default at every stage and `loci ask`'s episode ranking was not exercised.
+- Missing structure graphs were left missing rather than built. `MyBlog`,
+  `tensor-serve`, `Delroy/n8n-nodes-delroy` and `Delroy/n8n-runtime-adapter`
+  route on prose alone; `Delroy/extension` routes on nothing.
+
+### Reading
+
+The split does what it was built to do -- a named sub-project now reaches its
+own scope instead of a 6,469-token parent that would have won on size -- and it
+manufactures the failure the README's scale table warns about, in the one place
+the table predicted: nested scopes whose cwd signal is ambiguous by
+construction, because a sub-scope's root is inside its parent's.
+
+`CWD_BOOST` is the constant at fault and it cannot be tuned out of this. Any
+value large enough to make cwd the dominant signal is added to *both* scopes in
+a nesting pair, so the tie always falls to whichever has more vocabulary, which
+is always the parent. Fixing it needs the boost to prefer the *most specific*
+containing scope rather than every containing scope -- a change to what the
+signal means, not to its size. Recorded, not fixed, and not fitted around.
