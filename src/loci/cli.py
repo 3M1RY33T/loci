@@ -269,15 +269,19 @@ def cmd_groups_infer(args) -> int:
     dual = [s for s in scopes if "me" in s.group_set()
             and any(p.startswith("vendor:") for p in s.group_set())]
     if dual:
-        listed = ", ".join(f"{s.name} ({v})" for s in dual
+        # IDs, not names: only the id is uniquified, so two clones of one
+        # upstream repo are both named "utils" and a user handed that name has
+        # no way to say which one they mean. `resolve` answers an id before any
+        # name, so an id is the one string that always reaches the scope meant.
+        listed = ", ".join(f"{s.id} ({v})" for s in dual
                            for v in sorted(p for p in s.group_set()
                                            if p.startswith("vendor:")))
         print(f"\n{len(dual)} scope(s) are in `me` AND a vendor group: {listed}")
-        print("  `me` is never retracted here -- your own work under a second "
-              "org is still yours. But `loci group set me --mode hard` admits "
-              "these, so if one is a stranger's, `loci group rm <scope> me` "
-              "settles it; inference will not put `me` back while it can name "
-              "your org.")
+        print(f"  `me` is never retracted here -- your own work under a second "
+              f"org is still yours. But `loci group set me --mode hard` admits "
+              f"these, so if one is a stranger's, "
+              f"`loci group rm {dual[0].id} me` settles it; inference will not "
+              f"put `me` back while it can name your org.")
     return 0
 
 
@@ -377,7 +381,11 @@ def cmd_group(args) -> int:
     # `groups` so a re-scan cannot erase a structural label, which also means a
     # removal routed through it removes nothing at all.
     save_scopes(scopes)
-    print(f"{sc.name}: {', '.join(sc.groups) or '(no groups)'}")
+    # The ID, so the confirmation says WHICH scope was edited. Two clones of one
+    # upstream repo share a name, and `{sc.name}: ...` reported success against
+    # a name that names both -- indistinguishable from the run that edited the
+    # other one.
+    print(f"{sc.id}: {', '.join(sc.groups) or '(no groups)'}")
     return 0
 
 

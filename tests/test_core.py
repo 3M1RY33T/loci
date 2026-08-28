@@ -116,6 +116,33 @@ def test_resolve_by_alias():
     assert resolve([s], "nope") is None
 
 
+def test_resolve_answers_an_id_before_any_other_scopes_name():
+    """Only the id is uniquified. `make_scope` takes `name` from the directory
+    and `_unique_id` suffixes the id, so two clones of one upstream repo
+    register as (`utils`, "utils") and (`utils-2`, "utils").
+
+    Resolved by one three-way `or` per scope, `resolve("utils")` answered
+    whichever came first in registry order -- filesystem order -- so in half of
+    all scans the scope whose id is literally `utils` was unreachable by any
+    string, and `loci group rm utils me` edited its sibling and reported
+    success. BOTH orders are checked here: one of them passes under the old
+    code, which is exactly why a single-order test would have missed this.
+
+    It also pins the two-PASS structure rather than the ordering of one
+    comparison: checking `s.id` before `s.name` inside a single loop is the same
+    expression, and still lets an earlier scope's name beat a later scope's id.
+    """
+    a = Scope(id="utils", name="utils", root=Path("/x/utils"), aliases=["utils"])
+    b = Scope(id="utils-2", name="utils", root=Path("/y/utils"), aliases=["utils"])
+
+    for order in ([a, b], [b, a]):
+        assert resolve(order, "utils") is a
+        assert resolve(order, "utils-2") is b
+    # A name still resolves when no id claims it -- this is a precedence rule,
+    # not the removal of name lookup.
+    assert resolve([b], "utils") is b
+
+
 def test_absent_groups_is_not_the_same_as_empty_groups():
     """A registry written before groups existed must not read as "the user
     deliberately ungrouped this" -- that would make `groups infer` a no-op on
@@ -3101,6 +3128,11 @@ def test_groups_infer_names_the_scopes_it_left_in_both_groups(
     corpus.mkdir()
     mine = _repo(corpus, "a", origin="git@github.com:myname/a.git")
     _repo(corpus, "stranger", origin="git@github.com:evilcorp/s.git")
+    # Stays dual to the end, so the notice is still PRINTED on the last run.
+    # Without it the final assertion passes for the wrong reason -- the notice
+    # is skipped wholesale -- and cannot tell "omits this scope" from "says
+    # nothing at all".
+    _repo(corpus, "w1", origin="git@github.com:workorg/w1.git")
 
     # One org each: `infer_identity` refuses to name one, `classify` returns
     # `me` for everything, and the stranger is registered as the user's own.
@@ -3139,13 +3171,104 @@ def test_groups_infer_names_the_scopes_it_left_in_both_groups(
     assert main(["group", "rm", "stranger", "me"]) == 0
     assert main(["groups", "infer"]) == 0
     after = capsys.readouterr().out
-    assert "stranger" not in after.split("you are myname")[1], \
+    # On the PAIR, not on the word. The notice's own prose contains "a
+    # stranger's", so `"stranger" not in after` is satisfied by boilerplate and
+    # would fail on any mutant that merely keeps the notice alive.
+    assert "w1 (vendor:workorg)" in after, \
+        "the notice is gone, so the next assertion proves nothing"
+    assert "stranger (vendor:evilcorp)" not in after, \
         "the notice still names a scope that is no longer in both groups"
 
     scopes = load_scopes()
     assert {s.name: s.group_set() for s in scopes}["stranger"] == {"vendor:evilcorp"}
     conf = confinement(Policy(groups={"me": "hard"}), scopes, cwd=mine)
     assert "stranger" not in conf.eligible, "`group rm` did not survive inference"
+
+
+def test_two_clones_of_one_repo_stay_separately_addressable_end_to_end(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """The whole chain, built with `loci scan` alone -- no hand-written registry.
+
+    `loci scan x y` over two clones of one upstream repo registers (`utils`,
+    "utils") and (`utils-2`, "utils"). Every surface that then talks about them
+    has to say WHICH, and the remedy it prints has to reach the one it named:
+    the notice, doctor's two lines, `loci group rm`, and the confirmation that
+    command prints back.
+
+    The registry is deliberately persisted with `utils-2` FIRST. That is a real
+    order -- `save_scopes` writes what it is given and `upsert` sorts on a name
+    both scopes share, so which one leads is filesystem order -- and it is the
+    half in which the old one-pass `resolve` answered `utils-2` to the string
+    `utils`, making id `utils` unreachable and `loci group rm utils me` a
+    successful no-op that repeated forever.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.doctor import group_report
+    from loci.groups import Policy, confinement
+    from loci.scopes import load_scopes, save_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    x, y = tmp_path / "x", tmp_path / "y"
+    x.mkdir()
+    y.mkdir()
+    mine = _repo(x, "mine", origin="git@github.com:myname/mine.git")
+    _repo(x, "utils", origin="git@github.com:evilcorp/utils.git")
+    _repo(y, "utils", origin="git@github.com:evilcorp/utils.git")
+
+    # Two orgs, one repo each way: `infer_identity` names neither, `classify`
+    # returns `me` for everything, and both clones register as the user's own.
+    assert main(["scan", str(x), str(y)]) == 0
+    ids = {s.id for s in load_scopes()}
+    assert ids == {"mine", "utils", "utils-2"}, \
+        f"fixture lost its point: the id collision did not happen ({ids})"
+    assert len({s.name for s in load_scopes()}) == 2, \
+        "fixture lost its point: the NAMES have to collide"
+
+    for n in ("b", "c"):
+        _repo(x, n, origin=f"git@github.com:myname/{n}.git")
+    assert main(["scan", str(x), str(y)]) == 0
+    # The adverse order; see the docstring.
+    save_scopes(sorted(load_scopes(), key=lambda s: s.id != "utils-2"))
+    capsys.readouterr()
+
+    assert main(["groups", "infer"]) == 0
+    out = capsys.readouterr().out
+    assert "utils (vendor:evilcorp)" in out and "utils-2 (vendor:evilcorp)" in out, \
+        "the notice named a string that cannot tell the two clones apart"
+
+    # `loci group rm` reaches the scope the notice named, and only that one.
+    assert main(["group", "rm", "utils", "me"]) == 0
+    assert "utils: vendor:evilcorp" in capsys.readouterr().out
+    by_id = {s.id: s.group_set() for s in load_scopes()}
+    assert by_id["utils"] == {"vendor:evilcorp"}, "the edit landed on the sibling"
+    assert by_id["utils-2"] == {"me", "vendor:evilcorp"}, "both were edited"
+
+    # doctor now has one of each kind, and must not merge them on the shared
+    # name: `utils-2` is the pure-vendor clone the hard-group remedy works on.
+    lines = group_report(load_scopes(), Policy())
+    assert _listed(next(ln for ln in lines if "not yours" in ln)) == ["utils"]
+    dual = next(ln for ln in lines if "does NOT keep them out" in ln)
+    assert _listed(dual) == ["utils-2"]
+    assert "loci group rm utils-2 me" in dual
+
+    # And that handle reaches the other one, which is the whole point.
+    assert main(["group", "rm", "utils-2", "me"]) == 0
+    # The discriminating confirmation: this scope's NAME is "utils", so a
+    # confirmation printed from the name is indistinguishable from the run that
+    # edited the other clone -- success reported against a string naming both.
+    assert "utils-2: vendor:evilcorp" in capsys.readouterr().out, \
+        "the confirmation did not say which scope it edited"
+    scopes = load_scopes()
+    assert {s.id: s.group_set() for s in scopes}["utils-2"] == {"vendor:evilcorp"}
+    conf = confinement(Policy(groups={"me": "hard"}), scopes, cwd=mine)
+    assert conf.mode == "hard"
+    assert not {"utils", "utils-2"} & conf.eligible, \
+        "a remedy reported as applied left the scope in the routable set"
 
 
 def test_groups_infer_retracts_nothing_from_an_unconfident_identity(
@@ -3262,6 +3385,15 @@ def test_route_names_the_group_when_nothing_is_indexed_in_it(loci_home, capsys):
 
 
 # -- doctor: groups --------------------------------------------------------
+def _listed(line: str) -> list[str]:
+    """The scopes a `group_report` line names, as a list.
+
+    Substring checks cannot do this job here: `"utils" in line` is satisfied by
+    `utils-2`, which is the exact confusion the collision tests below are about.
+    """
+    return line.split(": ", 1)[1].split(" - ")[0].split(", ")
+
+
 def test_doctor_names_vendor_groups_still_in_the_routable_set(tmp_path):
     """A stranger's repository competing for every question is the problem this
     feature exists to solve; doctor must say so out loud.
@@ -3279,13 +3411,13 @@ def test_doctor_names_vendor_groups_still_in_the_routable_set(tmp_path):
     from loci.doctor import group_report
     from loci.groups import Policy
 
-    scopes = [Scope(id="a", name="Alpha", root=tmp_path / "a", groups=["me"]),
-              Scope(id="b", name="Odysseus", root=tmp_path / "b",
+    scopes = [Scope(id="alpha", name="Alpha", root=tmp_path / "a", groups=["me"]),
+              Scope(id="odysseus", name="Odysseus", root=tmp_path / "b",
                     groups=["vendor:stranger"])]
     vendor = next(ln for ln in group_report(scopes, Policy())
                   if ln.startswith("vendor:"))
 
-    assert vendor.startswith("vendor:stranger: Odysseus - not yours, and still "
+    assert vendor.startswith("vendor:stranger: odysseus - not yours, and still "
                              "in the routable set.")
     assert "loci group set me --mode hard" in vendor
     assert "--mode explicit" not in vendor, "advice that does not do what it says"
@@ -3319,14 +3451,14 @@ def test_doctor_does_not_call_a_scope_in_me_a_vendors_with_an_inert_remedy(
 
     not_yours = [ln for ln in lines if "not yours" in ln]
     assert len(not_yours) == 1
-    assert "Odysseus" in not_yours[0], "the genuine vendor lost its remedy"
-    assert "w1" not in not_yours[0], \
-        "doctor called the user's own work a vendor's, and prescribed for it"
+    assert _listed(not_yours[0]) == ["odysseus"], \
+        "the genuine vendor lost its remedy, or the user's own work was on it"
 
     dual = next(ln for ln in lines if ln.startswith("vendor:workorg:"))
-    assert "w1" in dual
+    assert _listed(dual) == ["w1"]
     assert "does NOT keep them out" in dual
-    assert "loci group rm" in dual
+    assert "loci group rm w1 me" in dual, \
+        "the advice must carry a handle, not a `<scope>` placeholder"
 
     # What the two lines CLAIM, checked against the code they describe. `me`
     # hard, asked from inside p1: w1 is admitted (so the first line's remedy
@@ -3336,6 +3468,38 @@ def test_doctor_does_not_call_a_scope_in_me_a_vendors_with_an_inert_remedy(
     assert conf.mode == "hard"
     assert "w1" in conf.eligible
     assert "odysseus" not in conf.eligible
+
+
+def test_doctor_partitions_vendor_members_by_id_not_by_name(tmp_path):
+    """`make_scope` takes `name` from the directory and only `_unique_id`
+    uniquifies, so `loci scan x y` over two clones of one upstream repo
+    registers (`utils`, "utils") and (`utils-2`, "utils").
+
+    Keyed on the name, one dual-labelled clone put its identically-named sibling
+    into `dual` too, and `outside` -- computed by subtracting that set -- came
+    out EMPTY. The sibling is a plain vendor scope with no `me` on it, the one
+    kind the hard-group remedy actually works on, and it silently lost the line
+    that offers it. The two ids also make the advice's handle load-bearing:
+    `loci group rm utils me` and `loci group rm utils-2 me` are different edits,
+    and a name cannot express either.
+    """
+    from loci.doctor import group_report
+    from loci.groups import Policy
+
+    scopes = [Scope(id="p1", name="p1", root=tmp_path / "p1", groups=["me"]),
+              Scope(id="utils", name="utils", root=tmp_path / "x" / "utils",
+                    groups=["me", "vendor:evilcorp"]),
+              Scope(id="utils-2", name="utils", root=tmp_path / "y" / "utils",
+                    groups=["vendor:evilcorp"])]
+    lines = group_report(scopes, Policy())
+
+    not_yours = next(ln for ln in lines if "not yours" in ln)
+    assert _listed(not_yours) == ["utils-2"], \
+        "the pure-vendor clone lost the remedy that works on it"
+
+    dual = next(ln for ln in lines if "does NOT keep them out" in ln)
+    assert _listed(dual) == ["utils"]
+    assert "loci group rm utils me" in dual
 
 
 def test_doctor_names_ungrouped_scopes(tmp_path):
@@ -3610,16 +3774,17 @@ def test_doctor_prints_the_group_report_it_was_given(loci_home, capsys):
     a, b = loci_home / "a", loci_home / "b"
     a.mkdir()
     b.mkdir()
-    save_scopes([Scope(id="a", name="Alpha", root=a, groups=["me"]),
-                 Scope(id="b", name="Odysseus", root=b,
+    save_scopes([Scope(id="alpha", name="Alpha", root=a, groups=["me"]),
+                 Scope(id="odysseus", name="Odysseus", root=b,
                        groups=["vendor:stranger"])])
-    _install_index(_index(a=("Alpha", str(a), {"widget": 40}, 500),
-                          b=("Odysseus", str(b), {"flange": 25}, 400)))
+    _install_index(_index(alpha=("Alpha", str(a), {"widget": 40}, 500),
+                          odysseus=("Odysseus", str(b), {"flange": 25}, 400)))
 
     assert main(["doctor"]) == 1
     out = capsys.readouterr().out
     assert "\ngroups\n" in out
-    assert "vendor:stranger: Odysseus" in out
+    # The ID, which is what `loci group rm` takes and what `loci scopes` lists.
+    assert "vendor:stranger: odysseus" in out
     assert "loci group set me --mode hard" in out
 
 

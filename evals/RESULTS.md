@@ -1594,8 +1594,8 @@ merely left the reachable set.
 ### Reading
 
 **The split cost `deictic + cwd` 100.0% -> 87.5%, and that is the finding.**
-*(As measured. Fixed on 2026-08-27 -- see "Follow-up" at the end. The paragraph
-below stands as the record of what the split did before that.)*
+*(As measured. Fixed on 2026-08-27 -- see "Follow-up" at the end. This section
+stands as the record of what the split did before that.)*
 Nine of seventy-two items fail, all of them new sub-scopes, and the family is
 one of only three families whose questions come from a fixed list rather than
 from the index they score, and the only one of those three that scores routing

@@ -385,10 +385,30 @@ def inherit_parent_groups(scopes: list[Scope]) -> list[Scope]:
 
 
 def resolve(scopes: list[Scope], want: str) -> Scope | None:
-    """Look up a scope by id, name or alias (case-insensitive)."""
+    """Look up a scope by id, name or alias (case-insensitive).
+
+    An exact ID match wins over every name and alias in the registry, and that
+    ordering is what makes an id a HANDLE rather than a hint. Only the id is
+    uniquified -- `make_scope` takes `name` from the directory, `_unique_id`
+    suffixes the id -- so two clones of one upstream repo register as
+    (`utils`, "utils") and (`utils-2`, "utils"). Scanning them in one pass, the
+    three-way `or` below returned whichever came first in registry order, which
+    is filesystem order: `resolve("utils")` answered `utils-2`, leaving the
+    scope whose id is literally `utils` unreachable by any string at all.
+    `loci group rm utils me` then edited the wrong scope, printed success, and
+    left the intended one exactly as it was -- forever, since the next run
+    resolved the same way.
+
+    Two passes, not one, because the fix has to be about the whole registry:
+    "prefer this scope's id to this scope's name" inside the loop still lets an
+    earlier scope's NAME beat a later scope's id.
+    """
     w = want.strip().lower()
     for s in scopes:
-        if s.id.lower() == w or s.name.lower() == w or w in {a.lower() for a in s.aliases}:
+        if s.id.lower() == w:
+            return s
+    for s in scopes:
+        if s.name.lower() == w or w in {a.lower() for a in s.aliases}:
             return s
     return None
 

@@ -109,7 +109,12 @@ def group_report(scopes: list, policy) -> list[str]:
     names = sorted({g for s in scopes for g in s.group_set()} | set(policy.groups))
     for g in names:
         mode, source = policy.mode_for(g)
-        owned = sorted(s.name for s in scopes if g in s.group_set())
+        # IDs, not names. Only the id is uniquified -- two clones of one
+        # upstream repo are (`utils`, "utils") and (`utils-2`, "utils") -- so a
+        # name is neither a stable partition key nor something the user can
+        # paste back into `loci group rm`. `loci scopes` prints the id first for
+        # the same reason.
+        owned = sorted(s.id for s in scopes if g in s.group_set())
         if not owned:
             lines.append(f"group {g!r} declares mode {mode} but has no members "
                          f"- check the name")
@@ -127,7 +132,12 @@ def group_report(scopes: list, policy) -> list[str]:
             # remedy is then inert on exactly the scopes the line is about, and
             # the line calls the user's own work "not yours". Split, because one
             # sentence cannot be true of both halves.
-            dual = sorted(s.name for s in scopes
+            #
+            # Partitioned on the ID. Keyed on the name, one dual-labelled clone
+            # took its identically-named sibling out of `outside` with it, so
+            # the sibling -- a plain vendor scope -- silently lost the remedy
+            # that does work on it.
+            dual = sorted(s.id for s in scopes
                           if g in s.group_set() and "me" in s.group_set())
             outside = [n for n in owned if n not in set(dual)]
             if outside:
@@ -137,13 +147,16 @@ def group_report(scopes: list, policy) -> list[str]:
                              f"keeps them out of every question asked from "
                              f"inside it.")
             if dual:
+                # A real id in the command, not a `<scope>` placeholder: the
+                # scopes this line is about are exactly the ones whose NAME may
+                # be shared, and `resolve` answers an id before any name.
                 lines.append(f"{g}: {', '.join(dual)} - also in `me`, so "
                              f"`loci group set me --mode hard` does NOT keep "
                              f"them out: a hard group admits its own members. "
                              f"That is right for your own work under a second "
                              f"org, and wrong for a repository a scan called "
                              f"yours before it could name your org - "
-                             f"`loci group rm <scope> me` settles which.")
+                             f"`loci group rm {dual[0]} me` settles which.")
         elif source == "declared":
             lines.append(f"{g}: mode {mode} (declared), {len(owned)} member(s)")
         elif mode != "explicit":
