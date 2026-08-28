@@ -1051,6 +1051,11 @@ top-1 is the right scope                7/16   43.8%
 right scope present in the widened set 14/16   87.5%
 ```
 
+(A second 7/16 appears later, in the `### Reading` section. The denominators are
+different -- this one is the `Delroy` family, parent plus its three indexed
+sub-scopes; that one is the four *new* scopes, three of them `Delroy`'s plus
+`_site`. They agree by coincidence.)
+
 The parent scores 4/4; each sub-scope scores 1/4. So the split is worth having
 when the user names the sub-project and costs accuracy when they do not -- and
 "do not" is the case `cwd` exists to serve.
@@ -1083,7 +1088,10 @@ on terms too rare to clear any floor.
 Diffing the inputs before the outputs, per ROADMAP rule 4: **the family is
 derived from the index it scores and cannot be compared across a change that
 alters the index's scope partition.** `deictic + cwd` is the only family here
-that is genuinely like-for-like, because its questions are fixed.
+that is genuinely like-for-like across every scope, because its questions come
+from a fixed list *and* it scores routing rather than abstention. The other two
+fixed-list families, `deictic no cwd` and `unanswerable`, are equally
+comparable but measure only whether the router declines to answer.
 
 ### `signature` and `detailed`, decomposed the same way
 
@@ -1440,40 +1448,76 @@ S3 (after the split)
 ```
 
 Five matched tokens and the highest evidence in the corpus lose to two matched
-tokens and a name collision. (Both `->` lines list two scopes because
-`concentrated_here` merges the owners of a concentrated token into the selected
-set, router.py:403-408; the ranking is what matters here.)
+tokens and a name collision. (Only the S1 `->` line lists two scopes: the S1
+cutoff is 3.0632 x 0.85 = 2.6037 and `Delroy` scores 1.1239, so it enters solely
+through the concentrated-token merge at router.py:406-409. The S3 line lists
+one. The ranking is what matters here either way.)
 
 One probe does not establish a rule, so seven more hand-written
-`G2-claude-companion` questions containing the word were scored at both stages:
+`G2-claude-companion` questions containing the word were scored at both stages,
+and then re-scored against the **unchanged S3 index with `ALIAS_BOOST = 0.0`** --
+a counterfactual, so that "the alias did it" is demonstrated rather than
+inferred from the margin:
 
 ```
-LOCI_HOME=<scratch>/home-s<n> python3 glasses_probe.py        (scratch harness)
+LOCI_HOME=<scratch>/home-s<n> python3 glasses_probe.py           (scratch harness)
+LOCI_HOME=<scratch>/home-s3  python3 glasses_counterfactual.py   (scratch harness)
 
-question                                                    S1 top-1     S3 top-1
-how does the companion daemon drive the glasses display?    G2 (3.0632)  glasses (7.2453)
-what protocol does the companion use to talk to the glasses? G2 (2.1680) glasses (6.9777)
-where is the glasses pairing handshake implemented?         G2 (1.5066)  glasses (7.9081)
-which spikes cover glasses connectivity?                    G2 (2.3724)  glasses (7.6486)
-how do the injector and hook set up glasses permissions?    G2 (2.8674)  glasses (7.4584)
-does the headless daemon need glasses hardware to run ...?  ABSTAIN      glasses (7.4114)
-what happens when glasses firmware reports an unsupported...? G2 (1.3568) glasses (7.4285)
-how is the glasses session resumed after the daemon restarts? G2 (2.1321) glasses (7.1946)
+#  question (abridged)              S1 top-1     S3 top-1        S3, alias=0     G2    glasses
+1  ...daemon drive the glasses      G2 (3.0632)  glasses(7.2453) G2-claude-comp  3.2241  1.2453
+   display?
+2  what protocol does the           G2 (2.1680)  glasses(6.9777) G2-claude-comp  2.2183  0.9777
+   companion use to talk...?
+3  where is the glasses pairing     G2 (1.5066)  glasses(7.9081) Delroy/glasses  1.4761  1.9081
+   handshake implemented?
+4  which spikes cover glasses       G2 (2.3724)  glasses(7.6486) G2-claude-comp  2.4286  1.6486
+   connectivity?
+5  how do the injector and hook     G2 (2.8674)  glasses(7.4584) G2-claude-comp  2.9466  1.4584
+   set up glasses permissions?
+6  does the headless daemon need    ABSTAIN      glasses(7.4114) ABSTAIN         2.9282  1.4114
+   glasses hardware...?
+7  what happens when glasses        G2 (1.3568)  glasses(7.4285) Delroy/glasses  1.3711  1.4285
+   firmware reports...?
+8  how is the glasses session       G2 (2.1321)  glasses(7.1946) G2-claude-comp  2.1578  1.1946
+   resumed...?
 
-reached G2-claude-companion:  S1 7/8    S3 0/8
+reached G2-claude-companion:  S1 7/8   S3 0/8
+alias-caused captures:        6/8      (probes 3 and 7 win on evidence)
 ```
 
-**Eight for eight.** `G2-claude-companion` is rank 2 in every one, its own score
-barely moved (3.0632 -> 3.2241 on the first), and `Delroy/glasses` wins each on
-`signals={'alias': 'glasses'}` alone at 6.98-7.91. The sixth is the worst case
-in the set: before the split it correctly *abstained*, and after it returns a
-confident answer from the wrong project. The same mechanism produced two of the
-six `detailed` misses; subtract the 6.0 there and `G2-claude-companion` wins
-1.9490 to 0.6574.
+**Six of the eight are caused by the alias.** Removing the 6.0 reverts five to
+`G2-claude-companion` and returns probe 6 to its abstention; probes 3 and 7 still
+land on `Delroy/glasses` without it, on their own evidence (1.9081 and 1.4285
+against G2's 1.4761 and 1.3711). An earlier draft said `Delroy/glasses` "wins
+each on the alias alone", which the last two columns disprove -- they are the
+columns that draft omitted.
 
-Scored, not asserted: every question a user might ask `G2-claude-companion` that
-happens to contain the word "glasses" is at risk, and eight of eight tried here
-were captured.
+*And on those two the gold label is contestable*, which a reader who opens the
+corpus will discover, so it is said here first. `Delroy/glasses` is itself an
+Even Realities **G2** smart-glasses app ("# Delroy Lens / An Even Realities
+**G2** smart-glasses companion", README line 1-3) and it contains
+`src/pairing/pair.ts`. So the two projects are not merely name-colliding on
+`glasses`, they collide on `G2` as well, and "where is the glasses pairing
+handshake implemented?" arguably belongs to the sub-scope. The split did not
+invent that evidence: at S1 the runner-up on that question was `Delroy` itself,
+on `pairing` (4.073), and the split moved it to the sub-project that owns it.
+Probe 7 is stronger still -- `firmware` appears in 31 files of `Delroy/glasses`
+and none of `G2-claude-companion` (it carries no routing weight either way; the
+token is not in the routing index at all).
+
+So the bounded claim, which is the defensible one: **six of eight hand-written
+questions about `G2-claude-companion` were captured by `Delroy/glasses` purely
+because the split minted `glasses` as a 6.0-point alias.** The remaining two
+were arguably routed correctly, and the split is what made them routable at all.
+
+Probe 6 is the worst case in the set and its cause is proven rather than
+inferred: with `ALIAS_BOOST` at 0 it abstains again. `route` sets
+`forced = bool(detail[top]["signals"])` (router.py:346-349), and `forced`
+suppresses the deixis guard -- so an alias hit does not merely outscore the
+right answer, it converts a correct abstention into a confident answer from the
+wrong project. router.py:371-377 names that exact failure in its own comment.
+The same mechanism produced two of the six `detailed` misses; subtract the 6.0
+there and `G2-claude-companion` wins 1.9490 to 0.6574.
 
 The generator's missing ban list made this visible; it is not the cause. The
 cause is that a sub-project's directory name becomes a corpus-wide 6.0-point
