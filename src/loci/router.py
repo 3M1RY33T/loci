@@ -133,11 +133,23 @@ CONCENTRATED_EVIDENCE = 2.6
 # Delroy/glasses 4.91 and routed to the parent.
 #
 # `scopes.scope_for_cwd` already resolved cwd to one scope by longest root, and
-# says so; this makes the router agree with it. Re-running `loci eval` on the
-# real split-stage index: deictic + cwd 87.5% -> 100.0% (72/72), and
-# byte-identical on the pre-split stage, where no scope contains another and the
+# says so; this makes the router agree with it. Measured twice, on two different
+# indexes, and the two numbers are not interchangeable:
+#
+#   - a RECONSTRUCTED split-stage index, built to isolate this change from the
+#     rest of the branch: deictic + cwd 88.9% -> 100.0% (36/36);
+#   - then `loci eval` on the real split-stage index of the development corpus
+#     (19 scopes registered, 18 indexed): deictic + cwd 100.0% (72/72), against
+#     the 87.5% (63/72) evals/RESULTS.md records for that same index before this
+#     change.
+#
+# Byte-identical on the pre-split stage, where no scope contains another and the
 # deepest containing scope is the only containing scope. No constant moved --
 # the change is what the signal MEANS, not how big it is.
+#
+# It does not fix the OTHER defect the split surfaced. A sub-project's bare
+# directory name becomes a corpus-wide alias worth 6.0, which is why marker
+# splitting is now off by default (scopes.WORKSPACE_MARKERS).
 DEIXIS = re.compile(
     r"\b(?:this|these|it|its|here)\b"
     r"|\bthe\s+(?:project|repo|repository|codebase|code\s*base|app|application|"

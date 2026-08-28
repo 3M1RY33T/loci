@@ -96,8 +96,8 @@ loci eval              # measure routing accuracy on YOUR corpus
 ```
 
 `scan` registers one scope per git repository. It also reads who owns each
-repository out of git, prints the split, and asks before registering the ones
-that are not yours; that prompt takes its default like every other, which is to
+repository out of git, prints who owns what, and asks before registering the
+ones that are not yours; that prompt takes its default like every other, which is to
 register everything.
 
 A monorepo can become one scope per package instead. `--split` on `loci scan` or
@@ -130,13 +130,19 @@ explicitly. Scopes are never merged.
 **Group.** An overlapping label on a scope: `me` and `vendor:<org>`, read from
 git provenance; `client:acme` and anything else you assert by hand; and a
 monorepo's own id, carried by every package inside it. A scope can be in
-several, and the scope set stays flat — a group changes what routing considers,
-never how scores are computed. What it does to a question is its **mode**:
-`explicit` does nothing until `--group` names it, `soft` (the default)
-multiplies every outside scope's evidence base by 0.5, and `hard` confines
-routing to members and abstains when the best answer is outside. Membership
-lives in the scope registry, mode in `groups.json`, so a re-scan — which
-rewrites the registry wholesale — cannot discard policy. Measured: `hard`
+several, and the scope set stays flat: grouping never merges scopes or nests one
+inside another.
+
+What a group does to a question is its **mode**, and the mode answers two
+different questions. Reached through your working directory, `explicit` does
+nothing, `soft` (the default) multiplies every outside scope's evidence base by
+0.5, and `hard` confines routing to members and abstains when the best answer is
+outside. Named on the command line with `--group X`, **all three modes confine
+to X's members** — the mode decides only what happens when the best answer is
+outside them: `hard` abstains and says so, `soft` and `explicit` answer with the
+best member anyway. Membership lives in the scope registry, mode in
+`groups.json`, so a re-scan — which rewrites the registry wholesale — cannot
+discard policy. Measured: `hard`
 anchored on cwd fires on questions that *name* an outside project (12 of 12) and
 not on questions carrying only its vocabulary (0 of 24), so in practice `--group`
 and project names drive it rather than where you are standing.
@@ -281,9 +287,13 @@ only if you write it. It names sub-projects at any depth, and unlike
 
 Paths are relative to the repository root and may not escape it. A malformed
 file is ignored — a scan that aborts on a stray comma is worse than one that
-misses a declaration. Nothing writes this file; you do. The only thing loci ever
-puts inside a repository is `graphify-out/graph.json`, and only when you run
-`loci graphs`.
+misses a declaration. Nothing writes this file; you do.
+
+The only thing loci ever puts inside a repository is `graphify-out/graph.json`.
+Two commands write it: `loci graphs`, which does nothing else, and `loci setup`,
+which offers it at step 2 of 5 and takes yes as the default — including with no
+terminal, where every prompt takes its default. `loci setup --no-graphs` skips
+it, and every other command reads.
 
 Written to `~/.loci` (or `$LOCI_HOME`): the scope registry, `groups.json` (the
 group policy — default mode, and any mode you set per group), routing index,

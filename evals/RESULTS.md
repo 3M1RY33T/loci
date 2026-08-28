@@ -1025,6 +1025,14 @@ loci route --cwd ~/Documents/GitHub/Delroy/glasses --explain \
  * Delroy/glasses  score=4.9106  matched=2  signals={'cwd': '.../Delroy/glasses'}
 ```
 
+> **[2026-08-27] Fixed; see "Follow-up" at the end of this document.** "Structural
+> rather than tunable" was right about the constant and stayed right -- no
+> constant moved. What changed is what the signal *means*: `CWD_BOOST` now goes
+> to the deepest containing scope alone, which is exactly the fix the last
+> paragraph of this document proposes and declines to make. On this same index,
+> `deictic + cwd` is back to 100.0% (72/72). The `glasses` alias capture below
+> is a **different** defect and is not fixed by it.
+
 ### Does a question about `glasses` reach `delroy-glasses`?
 
 Two different questions, two different answers.
@@ -1584,6 +1592,8 @@ merely left the reachable set.
 ### Reading
 
 **The split cost `deictic + cwd` 100.0% -> 87.5%, and that is the finding.**
+*(As measured. Fixed on 2026-08-27 -- see "Follow-up" at the end. The paragraph
+below stands as the record of what the split did before that.)*
 Nine of seventy-two items fail, all of them new sub-scopes, and the family is
 one of only three families whose questions come from a fixed list rather than
 from the index they score, and the only one of those three that scores routing
@@ -1678,3 +1688,121 @@ deepest containing scope only -- the answer `scope_for_cwd` already computes --
 makes the nesting pair decidable without touching any constant. That is a
 change to what the signal means, not to its size. Recorded, not fixed, and not
 fitted around.
+
+---
+
+## Follow-up, 2026-08-27: the cwd regression is fixed, the alias capture is not
+
+Everything above stands as measured. This section records what happened next, so
+that nothing above needs rewriting and no reader takes a repaired defect for a
+live one. Two defects were found in the split. One is fixed and re-measured; the
+other is not, and is why the split no longer runs by default.
+
+### 1. `deictic + cwd` is back to 100.0% (72/72)
+
+The regression was real and reproduced: `CWD_BOOST` was awarded to *every* scope
+whose root contains the working directory, so on a nesting pair the parent and
+the child both collected the identical 4.0, cwd stopped discriminating between
+them, and the tie fell to the evidence base -- which the parent always wins,
+being the larger index.
+
+`scopes.scope_for_cwd` already resolved a working directory to one scope by
+longest root. `route` simply did not use it. It does now: `CWD_BOOST` goes to the
+deepest containing scope and to no other. **No constant moved**, so the earlier
+finding that `CWD_BOOST`'s *magnitude* cannot fix this is untouched and still
+correct -- the change is to what the signal means.
+
+Measured twice, on two different indexes:
+
+| index | before | after |
+|---|---|---|
+| reconstructed split stage, built to isolate this change | 88.9% | **100.0% (36/36)** |
+| the real S3 index above, `~/Documents/GitHub`, 18 indexed scopes | 87.5% (63/72) | **100.0% (72/72)** |
+
+The reconstructed figure came first and the real-corpus run confirmed it. Both
+are recorded because they are different measurements and only the second speaks
+to the S3 table above. Byte-identical on the pre-split stage, where no scope
+contains another and "the deepest containing scope" is the only containing scope
+-- which is the control: the change is inert wherever nesting does not exist.
+
+The real-corpus run, re-executed against a freshly rebuilt S3 index (scratch
+`LOCI_HOME`, `loci scan --split ~/Documents/GitHub && loci index`, no
+`loci graphs`, `~/.loci` untouched):
+
+```
+18 scopes | random guessing would score 5.6%
+
+family                  n  correct  scopes  what it measures
+-------------------------------------------------------------------------------
+deictic + cwd          72  100.0%       -  should route to the scope you are in
+deictic, no cwd         4  100.0%       -  should abstain; nothing says which project
+unanswerable            3  100.0%       -  should abstain; no corpus can answer these
+signature              18   88.9%     1.1  are your scopes distinguishable from each other?
+detailed               36   88.9%       -  longer questions, ordinary vocabulary
+contended              12   58.3%     1.2  two scopes share the term; both should come back
+```
+
+`signature`, `detailed` and `contended` are unchanged from the S3 column above,
+to the tenth of a point. Only `deictic + cwd` moved, which is the claim: the fix
+is confined to nesting pairs.
+
+### 2. The `glasses` alias capture is unfixed, and marker splitting is now off
+
+The cwd fix does nothing for the second defect, because the second defect never
+involved cwd. `scopes._aliases_for` gives a new scope its bare directory name as
+an alias, `ALIAS_BOOST` is 6.0 against `CWD_BOOST`'s 4.0, and `glasses` is an
+ordinary English noun — so splitting `Delroy` promoted it to the strongest
+routing signal in the corpus, and the eight-probe table above shows what that
+costs a *different* project that merely uses the word: 7/8 correct before the
+split, 0/8 after, six of the eight reverting when `ALIAS_BOOST` was zeroed.
+`3M1RY33T.github.io/_site`, a Jekyll build directory, became a scope of its own
+on the same scan.
+
+This was found again in ordinary use after the cwd fix, and re-measured here
+against the two indexes above -- same code, same corpus, split the only
+difference. Three hand-written questions about `G2-claude-companion` that
+contain the word:
+
+```
+loci route --no-cwd --explain "<question>"        (LOCI_HOME=<scratch>/home-{nosplit,split})
+
+question                                              14 scopes         18 scopes
+what protocol does the companion use to talk          G2      2.1680    glasses 6.9777
+  to the glasses?
+where is the glasses pairing handshake                G2      1.5066    glasses 7.9081
+  implemented?
+how is the glasses session resumed after a            G2      1.5508    glasses 7.4089
+  disconnect?
+
+reached G2-claude-companion:  3/3 unsplit   0/3 split
+```
+
+All three split-stage rows carry `signals={'alias': 'glasses'}`, and the first
+drops from four matched tokens to one -- it is not out-scoring `G2` on evidence,
+it is being handed 6.0 for a word in the question that happens to name a
+directory. The cwd fix cannot touch this: no cwd is involved.
+
+So depth-1 `WORKSPACE_MARKERS` splitting is **off by default** as of this date.
+`loci scan --split` and `loci setup --split` opt back in; a repo-local
+`.loci.json` is honoured either way, because a user writing that file has named
+those sub-projects deliberately and can see what they will be called. Nothing was
+deleted: `subscopes`, `_unique_id`, `nested_roots`, the exclusion threading and
+the containment labels are unchanged and still tested through the opt-in. The
+follow-up that answers the alias question turns the default back on.
+
+Reproduced on the real corpus, scratch `LOCI_HOME`, `~/.loci` untouched:
+
+```
+loci scan ~/Documents/GitHub            -> 14 scope(s) registered
+loci scan --split ~/Documents/GitHub    -> 19 scope(s) registered
+
+the five --split adds, with the aliases they mint:
+  delroy-glasses               ['delroy/glasses', 'glasses']
+  delroy-extension             ['delroy/extension', 'extension']
+  delroy-n8n-nodes-delroy      [..., 'n8n-nodes-delroy']
+  delroy-n8n-runtime-adapter   [..., 'n8n-runtime-adapter']
+  3m1ry33t-github-io-site      [..., '_site']
+```
+
+14 and 19 are the S0/S1/S2 and S3 registry sizes in "The four stages" above,
+which is the check that this is the same corpus and the same split.
