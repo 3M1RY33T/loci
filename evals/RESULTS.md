@@ -933,6 +933,14 @@ bands                     OVERLAP OVERLAP OVERLAP separated
 self-classification        77.1%   77.1%   77.1%   94.0%
 ```
 
+**Read the S3 column with two corrections.** `deictic + cwd` 100.0% -> 87.5% is
+a real regression and the headline of this section: every one of the nine misses
+is a new sub-scope, and the mechanism is `CWD_BOOST` landing on both members of
+a nesting pair. The `contended` and `detailed` columns are **not comparable
+across S3** at all -- both families derive their questions from the index they
+score, and the split rewrote those questions. `signature` is comparable and is
+flat on every scope that existed before the split. Details below.
+
 S0, S1 and S2 are identical line for line, including the fitted floor to three
 decimals. Two things follow.
 
@@ -992,8 +1000,9 @@ family applies the same four evaluation-half questions to every scope, so
 
 Restricted to the fourteen scopes that existed before the split, the same family
 scores **56/56 = 100.0%** on the split index. *In this family*, the split cost
-nothing that already worked. That does not generalise to the others -- see the
-decomposition below, where `detailed` did cost pre-existing scopes.
+nothing that already worked. `signature` says the same thing where it is
+licensed to speak; `detailed` and `contended` are not comparable across the
+split at all. The decomposition below shows why for each.
 
 The mechanism is `CWD_BOOST`, and it is structural rather than tunable. A
 sub-scope's root is *inside* its parent's root, so both satisfy
@@ -1063,8 +1072,8 @@ that is genuinely like-for-like, because its questions are fixed.
 
 `deictic + cwd` was the only family decomposed old-vs-new in the first draft of
 this section, and "the split cost nothing that already worked" was then written
-as though it covered all of them. It does not. Both derived families were
-re-run, split into the fourteen pre-existing scopes and the four new ones:
+as though it covered all of them. Both derived families were re-run, split into
+the fourteen pre-existing scopes and the four new ones:
 
 ```
               S1 (pre)        S3 (pre)        S3 (new)
@@ -1072,38 +1081,132 @@ signature     13/14  92.9%    13/14  92.9%    3/4   75.0%
 detailed      26/28  92.9%    24/28  85.7%    8/8  100.0%
 ```
 
-`signature` is unchanged on the pre-existing scopes, same single miss both
-times. **`detailed` regressed on them, 92.9% -> 85.7%**, and it is not a wash of
-noise -- the misses turn over completely:
+An intermediate draft of this section reported that `detailed` line as a
+regression. **It is not one, and reporting it as one broke this section's own
+rule two paragraphs up.** Both halves of that -- whether the comparison is
+licensed at all, and what the misses actually are -- were then measured.
+
+**`signature` is comparable; `detailed` is not.** The two families draw
+different terms: `signature` uses `signature_terms(k=2)`, `detailed` uses
+`pool[4:9]` -- ranks 5 to 9 (eval.py:245-246). Only the top-2 were checked in
+that draft, which licenses `signature` and says nothing about `detailed`. Both
+ranks, all fourteen pre-existing scopes, S1 against S3:
+
+```
+identical top-2   : 14/14
+identical rank 5-9: 4/14
+
+CHANGED 3m1ry33t
+  5-9  S1 ['platforms', 'interesting', 'frontend', 'blog', 'star']
+       S3 ['href', 'platforms', 'frontend', 'star', 'span']
+CHANGED 3m1ry33t-github-io
+  5-9  S1 ['website', 'workers', 'worker', 'posts', 'statements']
+       S3 ['posts', 'portfolio', 'website', 'tensor', 'worker']
+CHANGED beacon
+  5-9  S1 ['amount', 'alphabet', 'metrics', 'bucket', 'validating']
+       S3 ['refill', 'amount', 'alphabet', 'metrics', 'bucket']
+CHANGED brewery
+  5-9  S1 ['core', 'sources', 'homebrew', 'formula', 'catalog']
+       S3 ['sources', 'core', 'homebrew', 'formula', 'catalog']
+CHANGED delroy
+  5-9  S1 ['jupyter', 'vendor', 'venv', 'share', 'harnessbench']
+       S3 ['jupyter', 'venv', 'vendor', 'harnessbench', 'computer']
+CHANGED g2-claude-companion
+  5-9  S1 ['tsconfig', 'headless', 'hook', 'permissions', 'injector']
+       S3 ['headless', 'glasses', 'hook', 'protocol', 'injector']
+CHANGED myblog
+  5-9  S1 ['relationships', 'doing', 'delroy', 'says', 'modifying']
+       S3 ['relationships', 'doing', 'says', 'modifying', 'knowledge']
+CHANGED tensor-serve
+  5-9  S1 ['reranker', 'bash', 'reranking', 'please', 'faiss']
+       S3 ['reranker', 'bash', 'faiss', 'reranking', 'please']
+CHANGED urthreads
+  5-9  S1 ['likes', 'worker', 'admin', 'moderation', 'setup']
+       S3 ['admin', 'likes', 'moderation', 'worker', 'readline']
+CHANGED zim-compress
+  5-9  S1 ['article', 'temporary', 'mmap', 'archives', 'image']
+       S3 ['article', 'temporary', 'mmap', 'archives', 'strip']
+```
+
+Ten of fourteen pre-existing scopes drew different rank-5-9 terms once four
+scopes were added, so `detailed` asks ten of them different questions at S3 than
+at S1. The rule stands as written: **a family derived from the index it scores
+cannot be compared across a change that alters the index's scope partition.**
+`deictic + cwd` remains the only like-for-like family; `signature` joins it only
+because its top-2 terms were measured not to move.
+
+**And every miss on both sides is a generator artifact, not a routing loss.**
 
 ```
 S1 pre-existing misses (2):
-  MyBlog -> Delroy: when relationships is created, ...
-  MyBlog -> Delroy: what connects relationships to doing, ...
+  MyBlog -> Delroy: when relationships is created, how do doing and delroy ...
+  MyBlog -> Delroy: what connects relationships to doing, and where do delroy ...
 
 S3 pre-existing misses (4):
-  3M1RY33T.github.io -> 3M1RY33T.github.io/_site: when posts is created, ...
-  3M1RY33T.github.io -> 3M1RY33T.github.io/_site: what connects posts to portfolio, ...
-  G2-claude-companion -> Delroy/glasses: when headless is created, ...
+  3M1RY33T.github.io -> _site: when posts is created, how do portfolio and website ...
+  3M1RY33T.github.io -> _site: what connects posts to portfolio, and where do website ...
+  G2-claude-companion -> Delroy/glasses: when headless is created, how do glasses ...
   G2-claude-companion -> Delroy/glasses: what connects headless to glasses, ...
 ```
 
-Both S1 misses were `MyBlog` losing to the un-split `Delroy`, and both are fixed
-by the split -- shrinking the parent is exactly what was supposed to happen. All
-four new misses are a pre-existing scope losing to a scope the split created:
-twice to `_site`, which is a build copy of the very scope it beat, and twice to
-`Delroy/glasses`. Net -2.
+*The two `_site` misses are unsatisfiable.* Parent and `_site` have set-equal
+postings, so `signature_terms` draws the same pool for both and the generator
+emits **byte-identical question strings** with two different gold labels:
 
-So the honest per-family verdict: the split cost nothing in `deictic + cwd` and
-nothing in `signature`; in `detailed` it fixed two pre-existing misses and
-created four.
+```
+[0] parent: when posts is created, how do portfolio and website affect the tensor that gets written?
+[0] _site : when posts is created, how do portfolio and website affect the tensor that gets written?
+[0] IDENTICAL STRING: True
+[1] parent: what connects posts to portfolio, and where do website and tensor come into that?
+[1] _site : what connects posts to portfolio, and where do website and tensor come into that?
+[1] IDENTICAL STRING: True
 
-One thing that did **not** move, contrary to what this section first assumed
-without measuring: `signature_terms` reads `S = len(index["scopes"])` and
-`len(post)` (eval.py:129, 144), both of which change for every scope when four
-are added -- yet the top-2 terms of all fourteen pre-existing scopes are
-identical at S1 and S3, term for term. The IDF shift was not large enough to
-reorder any of them.
+pool[4:9] parent: ['posts', 'portfolio', 'website', 'tensor', 'worker']
+pool[4:9] _site : ['posts', 'portfolio', 'website', 'tensor', 'worker']
+
+scope groups sharing an identical detailed question set: [['3M1RY33T.github.io', '3M1RY33T.github.io/_site']]
+```
+
+No router can score better than 50% on that pair. The parent lost both and
+`_site` scored 8/8, which is what an unsatisfiable pair looks like from the
+outside.
+
+*The other four are another project's alias.* `signature_terms` bans a scope's
+own name and aliases (eval.py:141-142) and nothing else, so a term that happens
+to be a *different* project's name is eligible to be drawn as "distinctive
+vocabulary". The question then names that project outright, and `ALIAS_BOOST`
+(6.0) does exactly what it is for:
+
+```
+S3, G2-claude-companion's own generated question:
+  "when headless is created, how do glasses and hook affect the protocol ...?"
+ * Delroy/glasses       score=6.6574  matched=1  signals={'alias': 'glasses'}
+   G2-claude-companion  score=1.9490  matched=4  signals=-
+
+S1, MyBlog's own generated question:
+  "when relationships is created, how do doing and delroy affect the says ...?"
+ * Delroy               score=7.1298  matched=6  signals={'alias': 'delroy'}
+ * MyBlog               score=3.2725  matched=4  signals=-
+```
+
+`glasses` is an alias only because the split created `Delroy/glasses`; `delroy`
+was one all along. So the split did not lose `G2-claude-companion` -- it gave a
+sub-project a name, and the generator then put that name inside another scope's
+question. Symmetrically, the two S1 `MyBlog` misses "fixed" by the split were
+never routing failures either: `delroy` simply dropped out of MyBlog's rank-5-9
+pool.
+
+**Verdict.** In `deictic + cwd` the split cost nothing that already worked
+(56/56). In `signature`, which is licensed for comparison, it cost nothing
+(13/14 both stages, same miss). In `detailed` the comparison is not licensed,
+and all six misses across both stages are artifacts of a generator that does not
+exclude other scopes' aliases and cannot tell two scopes apart when their
+vocabularies are equal. The honest figure for `detailed` is **no measurement**,
+not -2.
+
+That generator limitation is worth fixing on its own terms: `signature_terms`
+should ban every registered alias, not only the scope's own. It is out of scope
+here and is not the reason any routing number moved.
 
 ### The floor moved, and it explains none of it
 
@@ -1202,22 +1305,52 @@ cannot fire.
 output. It carries a `package.json` and its own `graphify-out/`, it is not in
 `SKIP_DIRS`, and it does not start with a dot, so the depth-1 marker rule
 registered it. Its routing vocabulary is not merely the same size as its
-parent's, it is the same vocabulary: 221 tokens each, 221 shared, Jaccard
-1.000, sets equal. It contributed three of the twelve `contended` terms
+parent's, it is the same vocabulary:
+
+```
+parent vocab 221  _site vocab 221  shared 221  jaccard 1.000
+identical vocabulary: True
+```
+
+It contributed three of the twelve `contended` terms
 (`portfolio`, `statements`, `moderating`) and beat its own parent on both
 `detailed` items. Generated directories need excluding by name the way
 `node_modules` already is.
 
-The chunk-partition invariant does hold: across all four sub-scopes, `delroy`
-shares **zero** chunk texts with any of them, the four sub-scopes share zero
-with each other (all six pairs measured), and all 1,046 chunks the parent lost
-were recovered by exactly one sub-scope. Nothing was double-counted and nothing
-left the store -- 343 of them merely left the reachable set.
+The chunk-partition invariant does hold. Parent against each sub-scope, and all
+six sub-scope pairs:
+
+```
+delroy & delroy-extension:            0 shared text(s) (sub=343)
+delroy & delroy-glasses:              0 shared text(s) (sub=838)
+delroy & delroy-n8n-nodes-delroy:     0 shared text(s) (sub=13)
+delroy & delroy-n8n-runtime-adapter:  0 shared text(s) (sub=5)
+
+delroy-extension & delroy-glasses:                0
+delroy-extension & delroy-n8n-nodes-delroy:       0
+delroy-extension & delroy-n8n-runtime-adapter:    0
+delroy-glasses & delroy-n8n-nodes-delroy:         0
+delroy-glasses & delroy-n8n-runtime-adapter:      0
+delroy-n8n-nodes-delroy & delroy-n8n-runtime-adapter: 0
+
+texts in S1 delroy but not in S3 delroy:            1046
+  of those, recovered by some sub-scope:            1046
+  NOT recovered anywhere in the delroy family:         0
+```
+
+Pairwise disjointness makes "recovered by exactly one sub-scope" true as
+written. Nothing was double-counted and nothing left the store -- 343 of them
+merely left the reachable set.
 
 ### What this measurement does not cover
 
 - `Delroy/client`, which needs a `.loci.json` in a repository this task was not
   authorised to write to.
+- What the split did to `detailed` and `contended`. Both regenerate their
+  questions from the index, and the split rewrote them: ten of fourteen
+  pre-existing scopes drew different `detailed` terms, and eight of twelve
+  `contended` terms changed owner sets. Neither has a before/after number, and
+  neither was given one.
 - Any effect of provenance labels on real questions, in a metric. `loci eval`
   is structurally blind to group policy; the `--group me` probes above are a
   spot check, not a benchmark.
@@ -1233,17 +1366,56 @@ left the store -- 343 of them merely left the reachable set.
 
 ### Reading
 
-The split does what it was built to do -- a named sub-project now reaches its
-own scope instead of a 6,469-token parent that would have won on size -- and it
-manufactures the failure the README's scale table warns about, in the one place
-the table predicted: nested scopes whose cwd signal is ambiguous by
+**The split cost `deictic + cwd` 100.0% -> 87.5%, and that is the finding.**
+Nine of seventy-two items fail, all of them new sub-scopes, and the family is
+the only fixed-question one in the benchmark -- so it is the only place the
+split can be scored at all. Every scope that existed before the split still
+routes at 100%, which makes this additive damage rather than a corruption of
+what worked, but it is damage: four of the five new scopes cannot be reached by
+standing in them.
+
+Against that, the split does what it was built to do -- a named sub-project now
+reaches its own scope instead of a 6,469-token parent that would have won on
+size. Both things are true, and the second does not pay for the first: naming a
+project is the case that already worked, and `cwd` exists for the case where the
+user names nothing.
+
+It manufactures the failure the README's scale table warns about, in the one
+place the table predicted: nested scopes whose cwd signal is ambiguous by
 construction, because a sub-scope's root is inside its parent's.
 
 `CWD_BOOST` is the constant at fault, and its *magnitude* provably cannot fix
 this: the identical 4.0 is added to both members of a nesting pair, so it
 cancels out of their comparison at every value. The tie therefore falls to the
-size-discounted evidence base, which usually favours the parent -- not always,
-since each sub-scope won one of its four questions, 3 of the 12 sub-scope items.
+size-discounted evidence base -- **not to parenthood**, and the corpus contains
+a clean demonstration of the difference. Across all four new scopes, sixteen
+`deictic + cwd` items:
+
+```
+3M1RY33T.github.io/_site     4/4
+Delroy/glasses               1/4
+Delroy/n8n-nodes-delroy      1/4
+Delroy/n8n-runtime-adapter   1/4
+new scopes overall: 7/16 = 43.8%
+```
+
+The child wins every time in the one pair whose vocabularies are set-equal, and
+loses three times in four where the parent is 16x larger. `_site` is not an
+exception to the thesis, it is the control for it: with nothing to separate the
+evidence bases, the pair is decided by the 0.15 recency tiebreak, i.e. by which
+directory git touched last.
+
+```
+loci route --cwd .../3M1RY33T.github.io/_site --explain "How do I run the tests?"
+ * 3M1RY33T.github.io/_site score=4.7461  matched=1  signals={'cwd': '.../_site'}
+ * 3M1RY33T.github.io       score=4.6843  matched=1  signals={'cwd': '...'}
+```
+
+The boost is also asymmetric, which is the same defect from the other side.
+Standing in the *parent* gives the child nothing, because `root in
+cwd_path.parents` is false in that direction -- so the parent scores 4.6843
+alone and wins 4/4 as well. Both members of the pair win when you stand in them,
+for reasons that have nothing to do with which one you are in.
 
 `SIZE_PRIOR` is the one knob that could in principle flip a parent/child tie,
 and the Phase 3 sweep already closed both directions (router.py:88-90): at 0.30
