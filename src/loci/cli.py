@@ -197,25 +197,52 @@ def cmd_groups(args) -> int:
 
 
 def cmd_groups_infer(args) -> int:
-    from .provenance import classify, infer_identity
-    from .scopes import load_scopes, save_scopes
+    """Re-read provenance from git and rewrite the provenance label.
+
+    Identity comes from REPOSITORY roots only, exactly as `accept_by_group`
+    reads it. git resolves `origin` by walking upward, so each sub-scope of a
+    monorepo votes again for its parent's org and one foreign monorepo outvotes
+    the corpus -- and a wrong identity does not degrade gracefully, it inverts
+    every classification at once. This command is the one `doctor` tells users
+    to run, so it read the registry's scope roots and disagreed with the scan
+    that produced them.
+
+    The provenance label REPLACES, and only provenance is touched.
+    `classify` answers one question -- whose repository is this -- from one
+    repository's own git, and answers it afresh on every run. A registry holding
+    both `me` and `vendor:big` for one scope is not two facts, it is one
+    question answered twice with contradictory answers, and a hard group over
+    either one then admits the other's members. Union also made this command
+    unable to repair itself: correcting the identity above and re-running only
+    ever ADDED the right label beside the wrong one, leaving recovery manual and
+    per scope.
+
+    What the user asserted survives, because `is_provenance` is exactly the
+    discrimination: `client:*` is never inferrable and structural containment
+    labels are recomputed by `loci scan`, so neither is in the replaced set.
+    A provenance label asserted by hand with `loci group add` is not durable
+    either -- like a containment label, it is recomputed rather than remembered.
+    """
+    from .provenance import classify, infer_identity, is_provenance
+    from .scopes import load_scopes, repositories, save_scopes
 
     scopes = load_scopes()
     if not scopes:
         print("no scopes registered. Try: loci scan ~/code", file=sys.stderr)
         return 1
-    identity = infer_identity([s.root for s in scopes])
+    identity = infer_identity([s.root for s in repositories(scopes)])
     print(f"  {identity.describe()}")
     changed = 0
     for s in scopes:
         g = classify(s.root, identity)
         current = s.group_set()
-        if g not in current:
-            # Inference ADDS a provenance label; it never removes what the user
-            # asserted, including the `client:*` groups it cannot see.
-            s.groups = sorted(current | {g})
-            changed += 1
-            print(f"  + {s.name:<24} {g}")
+        stale = {p for p in current if is_provenance(p)} - {g}
+        if g in current and not stale:
+            continue
+        s.groups = sorted((current - stale) | {g})
+        changed += 1
+        was = f"  (was {', '.join(sorted(stale))})" if stale else ""
+        print(f"  + {s.name:<24} {g}{was}")
     save_scopes(scopes)
     print(f"\n{changed} scope(s) labelled -> {home() / 'scopes.json'}")
     return 0

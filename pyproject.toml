@@ -42,8 +42,13 @@ dependencies = [
 graphify = ["graphifyy>=0.9.9"]
 embeddings = ["sentence-transformers>=3.0"]
 rerank = ["sentence-transformers>=3.0"]
-mcp = ["mcp>=1.0"]
-all = ["graphifyy>=0.9.9", "sentence-transformers>=3.0", "mcp>=1.0"]
+# Upper-bounded on purpose. mcp 2.0 removed the low-level `@server.list_tools()`
+# and `@server.call_tool()` decorators that mcp_server.py is built on, leaving
+# only add_request_handler or a FastMCP rewrite. An unbounded `mcp>=1.0` resolves
+# to 2.x and the server dies at import with AttributeError -- a crash the CLI
+# never sees, because nothing else in loci imports mcp.
+mcp = ["mcp>=1.0,<2"]
+all = ["graphifyy>=0.9.9", "sentence-transformers>=3.0", "mcp>=1.0,<2"]
 dev = ["pytest>=8.0"]
 
 [project.urls]

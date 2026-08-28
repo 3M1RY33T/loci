@@ -2736,6 +2736,79 @@ def test_groups_infer_adds_a_label_without_erasing_what_the_user_asserted(
     assert "0 scope(s) labelled" in capsys.readouterr().out, "not idempotent"
 
 
+def test_groups_infer_does_not_let_one_monorepo_outvote_the_corpus(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """The same inversion `loci scan` was fixed against, in the command `doctor`
+    tells users to run.
+
+    git resolves `origin` by walking upward, so each of a monorepo's four
+    sub-scopes reports the parent's org again. Counting REGISTRY scopes rather
+    than repositories is 5 votes for `big` against 3 for `acme`, and a wrong
+    identity inverts every classification at once: `scan` files the stranger's
+    monorepo under `vendor:big` and `groups infer`, run straight afterwards on
+    the very registry `scan` wrote, files the user's own three repositories
+    under `vendor:acme`.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    mono = _repo(corpus, "mono", origin="git@github.com:big/mono.git")
+    for sub in ("a", "b", "c", "d"):
+        (mono / sub).mkdir()
+        (mono / sub / "package.json").write_text("{}", encoding="utf-8")
+    for name in ("one", "two", "three"):
+        _repo(corpus, name, origin=f"https://github.com/acme/{name}.git")
+
+    assert main(["scan", str(corpus)]) == 0
+    before = {s.name: s.group_set() for s in load_scopes()}
+    assert before["one"] == {"me"}, "fixture lost its point"
+    capsys.readouterr()
+
+    assert main(["groups", "infer"]) == 0
+    out = capsys.readouterr().out
+    assert "you are acme" in out, "inference disagreed with the scan that registered these"
+
+    after = {s.name: s.group_set() for s in load_scopes()}
+    assert after == before, "inference rewrote labels the scan got right"
+    assert after["one"] == {"me"}
+    assert after["mono/a"] == {"mono", "vendor:big"}
+
+
+def test_groups_infer_replaces_a_stale_provenance_label(
+        loci_home, hermetic_git, capsys):
+    """`classify` answers ONE question from one repository's own git, and answers
+    it afresh every run. Union left `me` and `vendor:big` side by side on one
+    scope -- one question answered twice, contradictorily -- and a hard group
+    over either then admits the other's members. It also made the command unable
+    to repair a registry it had corrupted: re-running only added.
+
+    What the user asserted is not provenance and must survive.
+    """
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    repo = _repo(loci_home, "mine", origin="git@github.com:me/mine.git")
+    save_scopes([Scope(id="mine", name="Mine", root=repo,
+                       groups=["client:acme", "vendor:big"])])
+
+    assert main(["groups", "infer"]) == 0
+    assert load_scopes()[0].group_set() == {"client:acme", "me"}, \
+        "the contradicting provenance label survived, or the assertion did not"
+    assert "(was vendor:big)" in capsys.readouterr().out, \
+        "a replacement was reported as a bare addition"
+
+    assert main(["groups", "infer"]) == 0
+    assert "0 scope(s) labelled" in capsys.readouterr().out, "not idempotent"
+
+
 def test_ask_passes_its_group_through_to_confinement(loci_home, capsys):
     """Nothing else proves the flag is WIRED: `--group` parsed and then dropped
     answers from the whole corpus, and every rejection test above still passes
