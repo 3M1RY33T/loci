@@ -936,10 +936,12 @@ self-classification        77.1%   77.1%   77.1%   94.0%
 **Read the S3 column with two corrections.** `deictic + cwd` 100.0% -> 87.5% is
 a real regression and the headline of this section: every one of the nine misses
 is a new sub-scope, and the mechanism is `CWD_BOOST` landing on both members of
-a nesting pair. The `contended` and `detailed` columns are **not comparable
-across S3** at all -- both families derive their questions from the index they
-score, and the split rewrote those questions. `signature` is comparable and is
-flat on every scope that existed before the split. Details below.
+a nesting pair. The `contended` and `detailed` columns are **not comparable as
+printed**: both families derive their questions from the index they score, and
+the split rewrote most of them. Scored on the subset whose questions survived
+unchanged, both are flat -- `detailed` 14/14 -> 14/14 over seven scopes,
+`contended` 4/4 -> 4/4 over four terms. `signature` is flat on every scope that
+existed before the split. Details below.
 
 S0, S1 and S2 are identical line for line, including the fitted floor to three
 decimals. Two things follow.
@@ -1000,9 +1002,9 @@ family applies the same four evaluation-half questions to every scope, so
 
 Restricted to the fourteen scopes that existed before the split, the same family
 scores **56/56 = 100.0%** on the split index. *In this family*, the split cost
-nothing that already worked. `signature` says the same thing where it is
-licensed to speak; `detailed` and `contended` are not comparable across the
-split at all. The decomposition below shows why for each.
+nothing that already worked. The other three families each say the same thing
+where they are licensed to speak, and are silent where the split rewrote their
+questions. The decomposition below separates the two for each.
 
 The mechanism is `CWD_BOOST`, and it is structural rather than tunable. A
 sub-scope's root is *inside* its parent's root, so both satisfy
@@ -1093,6 +1095,8 @@ that draft, which licenses `signature` and says nothing about `detailed`. Both
 ranks, all fourteen pre-existing scopes, S1 against S3:
 
 ```
+python3 termstab.py <stage>.json ; python3 termdiff.py s1.json s3.json   (scratch harness)
+
 identical top-2   : 14/14
 identical rank 5-9: 4/14
 
@@ -1139,14 +1143,14 @@ because its top-2 terms were measured not to move.
 
 ```
 S1 pre-existing misses (2):
-  MyBlog -> Delroy: when relationships is created, how do doing and delroy ...
-  MyBlog -> Delroy: what connects relationships to doing, and where do delroy ...
+  MyBlog -> Delroy: when relationships is created, how do doing and delroy affect the says that gets written?
+  MyBlog -> Delroy: what connects relationships to doing, and where do delroy and says come into that?
 
-S3 pre-existing misses (4):
-  3M1RY33T.github.io -> _site: when posts is created, how do portfolio and website ...
-  3M1RY33T.github.io -> _site: what connects posts to portfolio, and where do website ...
-  G2-claude-companion -> Delroy/glasses: when headless is created, how do glasses ...
-  G2-claude-companion -> Delroy/glasses: what connects headless to glasses, ...
+S3 pre-existing misses (4), as `loci eval --misses` prints them:
+  3M1RY33T.github.io -> 3M1RY33T.github.io/_site: when posts is created, how do portfolio and website affect the tensor that gets written?
+  3M1RY33T.github.io -> 3M1RY33T.github.io/_site: what connects posts to portfolio, and where do website and tensor come into that?
+  G2-claude-companion -> Delroy/glasses: when headless is created, how do glasses and hook affect the protocol that gets written?
+  G2-claude-companion -> Delroy/glasses: what connects headless to glasses, and where do hook and protocol come into that?
 ```
 
 *The two `_site` misses are unsatisfiable.* Parent and `_site` have set-equal
@@ -1154,6 +1158,8 @@ postings, so `signature_terms` draws the same pool for both and the generator
 emits **byte-identical question strings** with two different gold labels:
 
 ```
+python3 detailed_qs.py                                        (scratch harness)
+
 [0] parent: when posts is created, how do portfolio and website affect the tensor that gets written?
 [0] _site : when posts is created, how do portfolio and website affect the tensor that gets written?
 [0] IDENTICAL STRING: True
@@ -1172,7 +1178,7 @@ No router can score better than 50% on that pair. The parent lost both and
 outside.
 
 *The other four are another project's alias.* `signature_terms` bans a scope's
-own name and aliases (eval.py:141-142) and nothing else, so a term that happens
+own name and aliases (built at eval.py:132-133) and nothing else, so a term that happens
 to be a *different* project's name is eligible to be drawn as "distinctive
 vocabulary". The question then names that project outright, and `ALIAS_BOOST`
 (6.0) does exactly what it is for:
@@ -1196,17 +1202,87 @@ question. Symmetrically, the two S1 `MyBlog` misses "fixed" by the split were
 never routing failures either: `delroy` simply dropped out of MyBlog's rank-5-9
 pool.
 
-**Verdict.** In `deictic + cwd` the split cost nothing that already worked
-(56/56). In `signature`, which is licensed for comparison, it cost nothing
-(13/14 both stages, same miss). In `detailed` the comparison is not licensed,
-and all six misses across both stages are artifacts of a generator that does not
-exclude other scopes' aliases and cannot tell two scopes apart when their
-vocabularies are equal. The honest figure for `detailed` is **no measurement**,
-not -2.
+**`detailed` does have a licensed subset, and it is flat.** "Not comparable"
+was applied to the whole family when it is only true of half of it -- the same
+escape the `contended` paragraph above refuses when it scores the four terms
+that survive both stages. Seven of the fourteen pre-existing scopes ask a
+*routing-identical* `detailed` question at S1 and S3:
 
-That generator limitation is worth fixing on its own terms: `signature_terms`
-should ban every registered alias, not only the scope's own. It is out of scope
-here and is not the reason any routing number moved.
+```
+python3 licensed_diff.py s1-det.json s3-det.json     (scratch harness)
+
+scope                    identical string  same 4 terms  S1        S3
+brewery                  False             True          ..        ..
+hlep-davay               True              True          ..        ..
+loci                     True              True          ..        ..
+odysseus                 True              True          ..        ..
+tsrc                     True              True          ..        ..
+urthreads                False             True          ..        ..
+zim-compress             True              True          ..        ..
+
+LICENSED SUBSET: 7 scopes, 14 items -> S1 14/14   S3 14/14
+```
+
+Four of the seven kept their rank-5-9 terms outright. `zim-compress` differs
+only at rank 9 and the template formats `a,b,c,d` from `terms[0:4]`
+(eval.py:250), so `terms[4]` is never used and the string is byte-identical.
+`brewery` and `urthreads` draw the same four terms in a different order; `route`
+scores a token multiset, and the one order-sensitive test is `_alias_hit`'s
+contiguous run, which none of this corpus's multi-token aliases (`g2 claude
+companion`, `hlep davay`, `tensor serve`, `zim compress`, and three sub-scope
+names) can match inside those four tokens. Both stages were scored directly
+rather than argued: `..` and `..`.
+
+**Same question, changed index, 14/14 -> 14/14.** That is the like-for-like the
+split was to be scored on, and it says the split cost `detailed` nothing where
+`detailed` can speak. Every one of the six misses falls on one of the other
+seven scopes -- the ones whose questions the split rewrote.
+
+**Verdict.** In `deictic + cwd` the split cost nothing that already worked
+(56/56). In `signature` it cost nothing on pre-existing scopes (13/14 both
+stages, the same single miss). In `detailed` it cost nothing on the seven scopes
+whose questions did not change (14/14 both stages); on the other seven there is
+no measurement, because the questions are not the same questions.
+
+**The generator defect is not a footnote, and it did move numbers.** An earlier
+draft of this paragraph said it "is not the reason any routing number moved".
+That is false, and the check that would have caught it was not run. Recording
+`signature`'s misses in full:
+
+```
+LOCI_HOME=<scratch>/home-s<n> python3 sigmiss.py              (scratch harness)
+
+S1 signature (13/14), the one miss:
+  3M1RY33T.github.io -> urthreads: what happens to dashboard during urthreads processing?
+
+S3 signature (16/18), both misses:
+  3M1RY33T.github.io       -> urthreads: what happens to dashboard during urthreads processing?
+  3M1RY33T.github.io/_site -> urthreads: what happens to dashboard during urthreads processing?
+
+identical signature questions across scopes: [['3M1RY33T.github.io', '3M1RY33T.github.io/_site']]
+```
+
+Both are the same two defects again. The question contains `urthreads`, which is
+`urthreads`'s own alias:
+
+```
+ * urthreads              score=7.7517  matched=2  signals={'alias': 'urthreads'}
+   3M1RY33T.github.io/_site score=2.4942  matched=2  signals=-
+   3M1RY33T.github.io     score=2.4324  matched=2  signals=-
+```
+
+Subtract the 6.0 and `urthreads` scores 1.7517 against the parent's 2.4324 --
+the alias is decisive there too. And the second S3 miss exists only because
+parent and `_site` collide onto one string, the `detailed` collision repeated.
+So `signature`'s pre-existing figure is genuinely flat, but its single miss was
+never a routing failure at either stage, and its new-scope miss is a collision.
+
+The leak is wider than `signature_terms`, which at least bans the scope's own
+name and aliases (eval.py:132-133): `contended_terms` (eval.py:150-168) has no
+ban list at all. Only `deictic + cwd`, `deictic no cwd` and `unanswerable` draw
+from fixed lists and are immune. The fix -- ban every *registered* alias, not
+only the scope's own -- is out of scope here, and its consequences for the
+router are a defect in their own right, recorded below.
 
 ### The floor moved, and it explains none of it
 
@@ -1264,7 +1340,7 @@ repository -- all routed to whatever scope the user happened to be standing in.
 Hard mode is `--group`-driven and alias-driven in practice, exactly as the
 review claimed. It is not useless; it is not cwd-anchored protection.
 
-### Two defects the split surfaced
+### Three defects the split surfaced
 
 **`Delroy/extension` is registered, stored, and unreachable.** Nineteen scopes
 register; eighteen index. `extension/` contains no markdown of any kind, so its
@@ -1308,6 +1384,8 @@ registered it. Its routing vocabulary is not merely the same size as its
 parent's, it is the same vocabulary:
 
 ```
+LOCI_HOME=<scratch>/home-s3 python3 -c 'from loci.index import load_index ...'
+
 parent vocab 221  _site vocab 221  shared 221  jaccard 1.000
 identical vocabulary: True
 ```
@@ -1317,10 +1395,48 @@ It contributed three of the twelve `contended` terms
 `detailed` items. Generated directories need excluding by name the way
 `node_modules` already is.
 
+**The split minted `glasses` as a corpus-wide alias, and it now outranks real
+evidence.** `_aliases_for` (scopes.py:33-35) promotes `root.name` to an alias,
+so splitting `Delroy` gave `Delroy/glasses` the alias `glasses` -- a common
+English noun -- worth `ALIAS_BOOST` 6.0, matched by `_alias_hit` as a contiguous
+token run anywhere in a question. This is not confined to the benchmark's
+generated questions. A hand-written question about the *other* project that
+works on glasses:
+
+```
+loci route --no-cwd --explain "how does the companion daemon drive the glasses display?"
+
+S1 (before the split)
+-> G2-claude-companion, Delroy
+ * G2-claude-companion  score=3.0632  matched=5  signals=-
+      [('daemon', 11.738), ('glasses', 9.619), ('drive', 6.934), ...]
+ * Delroy               score=1.1239  matched=5  signals=-
+
+S3 (after the split)
+-> Delroy/glasses
+ * Delroy/glasses       score=7.2453  matched=2  signals={'alias': 'glasses'}
+      [('glasses', 10.476), ('display', 3.282)]
+   G2-claude-companion  score=3.2241  matched=5  signals=-
+```
+
+Five matched tokens and the highest evidence in the corpus lose to two matched
+tokens and a name collision. The same mechanism produced two of the six
+`detailed` misses; subtract the 6.0 there and `G2-claude-companion` wins 1.9490
+to 0.6574, so the alias is entirely decisive. **Any real question to
+`G2-claude-companion` containing the word "glasses" now routes to
+`Delroy/glasses`.**
+
+The generator's missing ban list made this visible; it is not the cause. The
+cause is that a sub-project's directory name becomes a corpus-wide 6.0-point
+alias with no check on whether it is a distinctive name or an ordinary word.
+Splitting a monorepo is exactly what mints them, four at a time.
+
 The chunk-partition invariant does hold. Parent against each sub-scope, and all
 six sub-scope pairs:
 
 ```
+LOCI_HOME=<scratch>/home-s3 python3 -c 'from loci.index import load_episodes ...'
+
 delroy & delroy-extension:            0 shared text(s) (sub=343)
 delroy & delroy-glasses:              0 shared text(s) (sub=838)
 delroy & delroy-n8n-nodes-delroy:     0 shared text(s) (sub=13)
@@ -1346,11 +1462,11 @@ merely left the reachable set.
 
 - `Delroy/client`, which needs a `.loci.json` in a repository this task was not
   authorised to write to.
-- What the split did to `detailed` and `contended`. Both regenerate their
-  questions from the index, and the split rewrote them: ten of fourteen
-  pre-existing scopes drew different `detailed` terms, and eight of twelve
-  `contended` terms changed owner sets. Neither has a before/after number, and
-  neither was given one.
+- What the split did to `detailed` and `contended` **on the scopes whose
+  questions it rewrote**. Both families regenerate their questions from the
+  index. Where the question survived unchanged both were scored -- `detailed`
+  14/14 -> 14/14 on seven scopes, `contended` 4/4 -> 4/4 on four terms -- and
+  where it did not, there is no before/after number and none was invented.
 - Any effect of provenance labels on real questions, in a metric. `loci eval`
   is structurally blind to group policy; the `--group me` probes above are a
   spot check, not a benchmark.
@@ -1368,11 +1484,12 @@ merely left the reachable set.
 
 **The split cost `deictic + cwd` 100.0% -> 87.5%, and that is the finding.**
 Nine of seventy-two items fail, all of them new sub-scopes, and the family is
-the only fixed-question one in the benchmark -- so it is the only place the
-split can be scored at all. Every scope that existed before the split still
-routes at 100%, which makes this additive damage rather than a corruption of
-what worked, but it is damage: four of the five new scopes cannot be reached by
-standing in them.
+the only family whose questions are fixed rather than drawn from the index it
+scores. Every scope that existed before the split still routes at 100%, which
+makes this additive damage rather than a corruption of what worked -- but it is
+damage: standing inside a `Delroy` sub-project reaches it 1 time in 4, and the
+fifth new scope, `Delroy/extension`, never entered the routing index at all and
+so is absent from the 72-item denominator rather than scored badly in it.
 
 Against that, the split does what it was built to do -- a named sub-project now
 reaches its own scope instead of a 6,469-token parent that would have won on
@@ -1392,6 +1509,8 @@ a clean demonstration of the difference. Across all four new scopes, sixteen
 `deictic + cwd` items:
 
 ```
+LOCI_HOME=<scratch>/home-s3 python3 newscopes.py              (scratch harness)
+
 3M1RY33T.github.io/_site     4/4
 Delroy/glasses               1/4
 Delroy/n8n-nodes-delroy      1/4
@@ -1402,14 +1521,38 @@ new scopes overall: 7/16 = 43.8%
 The child wins every time in the one pair whose vocabularies are set-equal, and
 loses three times in four where the parent is 16x larger. `_site` is not an
 exception to the thesis, it is the control for it: with nothing to separate the
-evidence bases, the pair is decided by the 0.15 recency tiebreak, i.e. by which
-directory git touched last.
+evidence bases, the pair falls to the 0.15 recency tiebreak.
 
 ```
 loci route --cwd .../3M1RY33T.github.io/_site --explain "How do I run the tests?"
  * 3M1RY33T.github.io/_site score=4.7461  matched=1  signals={'cwd': '.../_site'}
  * 3M1RY33T.github.io       score=4.6843  matched=1  signals={'cwd': '...'}
 ```
+
+**And that tiebreak is not measuring recency.** A sub-scope directory has no
+`.git` of its own -- verified for all five here -- so `_git_updated_at` returns
+`""` (scopes.py:38-40) and `make_scope` falls back to `datetime.now()`
+(scopes.py:133). `updated_at` is not in `PRESERVED_FIELDS` (scopes.py:232), so
+every scan re-stamps it. The five sub-scopes are therefore the five freshest
+scopes in the registry *by construction*, permanently:
+
+```
+myblog                       2026-08-26T19:12:36-04:00
+delroy                       2026-08-27T00:45:18-04:00
+loci                         2026-08-27T20:42:53-04:00
+delroy-extension             2026-08-28T00:44:56.415189+00:00   <- scan time
+delroy-glasses               2026-08-28T00:44:56.415343+00:00   <- scan time
+delroy-n8n-nodes-delroy      2026-08-28T00:44:56.415385+00:00   <- scan time
+delroy-n8n-runtime-adapter   2026-08-28T00:44:56.415418+00:00   <- scan time
+3m1ry33t-github-io-site      2026-08-28T00:44:56.415470+00:00   <- scan time
+```
+
+`_site` would win that tiebreak even if its parent had been committed to five
+minutes earlier. The three Delroy sub-scopes lose anyway only because their
+evidence gap (5.1733 - 4.9106 = 0.2627) exceeds the 0.15 the boost can ever
+supply. So the nesting pair is decided by an evidence base when the gap is wide
+enough and by a timestamp that means nothing when it is not -- never by
+containment, which is the one fact that actually answers the question.
 
 The boost is also asymmetric, which is the same defect from the other side.
 Standing in the *parent* gives the child nothing, because `root in
