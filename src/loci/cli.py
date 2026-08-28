@@ -258,6 +258,26 @@ def cmd_groups_infer(args) -> int:
         print(f"  + {s.name:<24} {g}{was}")
     save_scopes(scopes)
     print(f"\n{changed} scope(s) labelled -> {home() / 'scopes.json'}")
+
+    # Every run, not only the runs that changed something. Not retracting `me`
+    # costs one thing, and this is it: a scope a scan called yours before it
+    # could name your org keeps `me` forever, and `me --mode hard` then ADMITS
+    # it, because a hard group admits its own members. git cannot tell "my work
+    # under my employer's org" from "a stranger's repository mislabelled once",
+    # so the command does not guess -- it names both and hands over the one
+    # edit that decides. Silence here would leave the escape hatch undiscovered.
+    dual = [s for s in scopes if "me" in s.group_set()
+            and any(p.startswith("vendor:") for p in s.group_set())]
+    if dual:
+        listed = ", ".join(f"{s.name} ({v})" for s in dual
+                           for v in sorted(p for p in s.group_set()
+                                           if p.startswith("vendor:")))
+        print(f"\n{len(dual)} scope(s) are in `me` AND a vendor group: {listed}")
+        print("  `me` is never retracted here -- your own work under a second "
+              "org is still yours. But `loci group set me --mode hard` admits "
+              "these, so if one is a stranger's, `loci group rm <scope> me` "
+              "settles it; inference will not put `me` back while it can name "
+              "your org.")
     return 0
 
 

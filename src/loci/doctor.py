@@ -90,9 +90,10 @@ def check(index: dict, store: dict, registry: list | None = None) -> list[ScopeH
 def group_report(scopes: list, policy) -> list[str]:
     """Group coverage, as renderable lines.
 
-    Four things worth naming: a declared mode with no members (almost always a
+    Five things worth naming: a declared mode with no members (almost always a
     typo in a group name), vendor scopes still competing in the routable set,
-    the confinement nobody chose, and scopes in no group at all.
+    vendor scopes the hard-group remedy cannot reach because they are ALSO in
+    `me`, the confinement nobody chose, and scopes in no group at all.
 
     The third is the one no other surface reports. `discover` writes a
     containment label onto every sub-project of a monorepo, `DEFAULT_MODE` is
@@ -119,11 +120,30 @@ def group_report(scopes: list, policy) -> list[str]:
             # `explicit` is the mode that confines least. What takes a vendor
             # out of the routable set is the asking scope's own group being
             # hard. Measured: with `vendor:x` explicit the vendor still ranks;
-            # with `me` hard it is "excluded by group me".
-            lines.append(f"{g}: {', '.join(owned)} - not yours, and still in "
-                         f"the routable set. `loci group set me --mode hard` "
-                         f"(or whichever group your own work is in) keeps them "
-                         f"out of every question asked from inside it.")
+            # with `me` hard it is "excluded by group me" -- but only for a
+            # scope that is NOT itself in `me`. `groups infer` never retracts
+            # `me`, so a scope can carry both, and `confinement` resolves a hard
+            # `me` to `members(["me"])`, which is a set this scope is IN. The
+            # remedy is then inert on exactly the scopes the line is about, and
+            # the line calls the user's own work "not yours". Split, because one
+            # sentence cannot be true of both halves.
+            dual = sorted(s.name for s in scopes
+                          if g in s.group_set() and "me" in s.group_set())
+            outside = [n for n in owned if n not in set(dual)]
+            if outside:
+                lines.append(f"{g}: {', '.join(outside)} - not yours, and still "
+                             f"in the routable set. `loci group set me --mode "
+                             f"hard` (or whichever group your own work is in) "
+                             f"keeps them out of every question asked from "
+                             f"inside it.")
+            if dual:
+                lines.append(f"{g}: {', '.join(dual)} - also in `me`, so "
+                             f"`loci group set me --mode hard` does NOT keep "
+                             f"them out: a hard group admits its own members. "
+                             f"That is right for your own work under a second "
+                             f"org, and wrong for a repository a scan called "
+                             f"yours before it could name your org - "
+                             f"`loci group rm <scope> me` settles which.")
         elif source == "declared":
             lines.append(f"{g}: mode {mode} (declared), {len(owned)} member(s)")
         elif mode != "explicit":

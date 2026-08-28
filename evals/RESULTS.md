@@ -938,7 +938,9 @@ self-classification        77.1%   77.1%   77.1%   94.0%
 **Read the S3 column with two corrections.** `deictic + cwd` 100.0% -> 87.5% is
 a real regression and the headline of this section: every one of the nine misses
 is a new sub-scope, and the mechanism is `CWD_BOOST` landing on both members of
-a nesting pair. The `contended` and `detailed` columns are **not comparable as
+a nesting pair. *(Fixed 2026-08-27. Re-run on this same index, `deictic + cwd` is
+back to 100.0% (72/72) and the other five families are unmoved -- see "Follow-up"
+at the end. The 87.5% stands as what was measured here, not as a live defect.)* The `contended` and `detailed` columns are **not comparable as
 printed**: both families derive their questions from the index they score, and
 the split rewrote most of them. Scored on the subset whose questions survived
 unchanged, both are flat -- `detailed` 14/14 -> 14/14 over seven scopes,

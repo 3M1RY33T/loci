@@ -312,10 +312,14 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
           mode: str | None = None) -> RouteResult:
     """Route a question to scope(s).
 
-    `eligible` and `demoted` come from a group's mode. They filter SELECTION;
-    they never change scoring, and `S` below stays the full corpus count --
-    shrinking it would inflate scope-IDF for survivors and move every
-    calibrated threshold silently.
+    `eligible` and `demoted` both come from a group's mode and do DIFFERENT
+    things. `eligible` filters selection and never touches a score. `demoted`
+    changes scoring: `base *= group_penalty` below, applied before the boosts so
+    that it cannot invert a cwd or alias signal.
+
+    Neither changes the scoring MODEL. `S` below stays the full corpus count --
+    shrinking it would inflate scope-IDF for survivors and move every calibrated
+    threshold silently.
 
     `group` and `mode` are carried through for reporting only; the router does
     not resolve policy.

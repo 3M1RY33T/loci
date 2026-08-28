@@ -3071,6 +3071,83 @@ def test_groups_infer_never_strips_me_from_work_under_a_second_org(
     assert "0 scope(s) labelled" in capsys.readouterr().out, "not idempotent"
 
 
+def test_groups_infer_names_the_scopes_it_left_in_both_groups(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """What not retracting `me` costs, and the escape hatch that pays it.
+
+    Before this branch, a stranger's repository that an early scan had called
+    yours was repaired by the next `groups infer`: `+ stranger vendor:evilcorp
+    (was me)`. It no longer is -- `me` stays, and `loci group set me --mode
+    hard` then ADMITS the stranger, because a hard group admits its own members.
+    git cannot tell that case from your own work under an employer's org, so the
+    command does not guess; it must at least SAY so and name the one edit that
+    decides, or the escape hatch is undiscoverable.
+
+    Reproduced end to end, including that the edit sticks: an early scan with
+    tied orgs labels everything `me`, the corpus grows until `myname` dominates,
+    and inference then leaves `stranger` in both groups.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.groups import Policy, confinement
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    mine = _repo(corpus, "a", origin="git@github.com:myname/a.git")
+    _repo(corpus, "stranger", origin="git@github.com:evilcorp/s.git")
+
+    # One org each: `infer_identity` refuses to name one, `classify` returns
+    # `me` for everything, and the stranger is registered as the user's own.
+    assert main(["scan", str(corpus)]) == 0
+    assert {s.name: s.group_set() for s in load_scopes()}["stranger"] == {"me"}, \
+        "fixture lost its point: the stranger has to arrive mislabelled"
+
+    for n in ("b", "c"):
+        _repo(corpus, n, origin=f"git@github.com:myname/{n}.git")
+    assert main(["scan", str(corpus)]) == 0
+    capsys.readouterr()
+
+    assert main(["groups", "infer"]) == 0
+    out = capsys.readouterr().out
+    assert "you are myname" in out
+    assert "stranger (vendor:evilcorp)" in out, \
+        "the scope left in both groups was not named, nor its vendor group"
+    assert "loci group rm" in out, "the one edit that decides was not offered"
+
+    # Standing state, not a change report: printed on a run that changed nothing.
+    assert main(["groups", "infer"]) == 0
+    again = capsys.readouterr().out
+    assert "0 scope(s) labelled" in again
+    assert "stranger (vendor:evilcorp)" in again, \
+        "the notice is tied to `changed`, so it vanishes exactly when it is the "\
+        "only thing left to say"
+
+    # The defect the notice exists to disclose, stated as behaviour.
+    scopes = load_scopes()
+    assert {s.name: s.group_set() for s in scopes}["stranger"] \
+        == {"me", "vendor:evilcorp"}
+    conf = confinement(Policy(groups={"me": "hard"}), scopes, cwd=mine)
+    assert "stranger" in conf.eligible, "fixture lost its point"
+
+    # And the offered edit works, and survives the command that suggested it.
+    assert main(["group", "rm", "stranger", "me"]) == 0
+    assert main(["groups", "infer"]) == 0
+    after = capsys.readouterr().out
+    assert "stranger" not in after.split("you are myname")[1], \
+        "the notice still names a scope that is no longer in both groups"
+
+    scopes = load_scopes()
+    assert {s.name: s.group_set() for s in scopes}["stranger"] == {"vendor:evilcorp"}
+    conf = confinement(Policy(groups={"me": "hard"}), scopes, cwd=mine)
+    assert "stranger" not in conf.eligible, "`group rm` did not survive inference"
+
+
 def test_groups_infer_retracts_nothing_from_an_unconfident_identity(
         tmp_path, monkeypatch, hermetic_git, capsys):
     """`provenance.classify` already refuses to ACCUSE from an identity the
@@ -3212,6 +3289,53 @@ def test_doctor_names_vendor_groups_still_in_the_routable_set(tmp_path):
                              "in the routable set.")
     assert "loci group set me --mode hard" in vendor
     assert "--mode explicit" not in vendor, "advice that does not do what it says"
+
+
+def test_doctor_does_not_call_a_scope_in_me_a_vendors_with_an_inert_remedy(
+        tmp_path):
+    """`groups infer` never retracts `me`, so a repository of yours under an
+    employer's org carries `me` AND `vendor:workorg`. The vendor line then told
+    the user their own work was "not yours", and handed them a remedy that does
+    nothing to it: `confinement` resolves a hard `me` to `members(["me"])`, and
+    this scope is IN that set.
+
+    Both halves are checked, and the second is checked against `confinement`
+    rather than against the sentence -- the failure was a true-sounding line, so
+    a test that only reads lines could not have caught it. Odysseus is here to
+    keep the split discriminating: reporting every vendor member on the new line
+    would satisfy every assertion about w1 while destroying the original one.
+    """
+    from loci.doctor import group_report
+    from loci.groups import Policy, confinement
+
+    p1 = tmp_path / "p1"
+    scopes = [Scope(id="p1", name="p1", root=p1, groups=["me"]),
+              Scope(id="w1", name="w1", root=tmp_path / "w1",
+                    groups=["me", "vendor:workorg"]),
+              Scope(id="odysseus", name="Odysseus", root=tmp_path / "o",
+                    groups=["vendor:stranger"])]
+    p1.mkdir()
+    lines = group_report(scopes, Policy())
+
+    not_yours = [ln for ln in lines if "not yours" in ln]
+    assert len(not_yours) == 1
+    assert "Odysseus" in not_yours[0], "the genuine vendor lost its remedy"
+    assert "w1" not in not_yours[0], \
+        "doctor called the user's own work a vendor's, and prescribed for it"
+
+    dual = next(ln for ln in lines if ln.startswith("vendor:workorg:"))
+    assert "w1" in dual
+    assert "does NOT keep them out" in dual
+    assert "loci group rm" in dual
+
+    # What the two lines CLAIM, checked against the code they describe. `me`
+    # hard, asked from inside p1: w1 is admitted (so the first line's remedy
+    # would have been inert on it) and Odysseus is not (so the first line is
+    # true of Odysseus).
+    conf = confinement(Policy(groups={"me": "hard"}), scopes, cwd=p1)
+    assert conf.mode == "hard"
+    assert "w1" in conf.eligible
+    assert "odysseus" not in conf.eligible
 
 
 def test_doctor_names_ungrouped_scopes(tmp_path):
