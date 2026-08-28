@@ -847,6 +847,45 @@ def test_deictic_questions_abstain_without_a_working_directory(tmp_path):
     assert not r.abstain and r.selected[0] == "b"
 
 
+def test_only_the_deepest_containing_scope_takes_the_cwd_boost(tmp_path):
+    """CWD_BOOST went to EVERY scope whose root contains cwd. On a flat corpus
+    that is the same thing; on a split monorepo it is not -- parent and child
+    both took the identical 4.0, so cwd stopped discriminating between them at
+    all and the parent won on vocabulary, which it always does: it is the larger
+    index. Measured from inside `Delroy/glasses`, a deictic question scored
+    Delroy 5.17 against Delroy/glasses 4.91 and answered from the parent.
+
+    The evidence here is deliberately in the band measured on the real corpus
+    (0.1-1.5): the point is that a 4.0 held by both sides decides nothing, not
+    that vocabulary is weak.
+    """
+    import loci.router as R
+
+    parent = tmp_path / "mono"
+    child = parent / "glasses"
+    child.mkdir(parents=True)
+    idx = _index(
+        mono=("Delroy", str(parent),
+              {"deployed": 40, "widget": 30, "sprocket": 20}, 50000),
+        glasses=("Delroy/glasses", str(child), {"lens": 3}, 40),
+    )
+    r = route("how is this deployed?", idx, cwd=child)
+
+    assert r.detail["glasses"]["signals"].get("cwd") == str(child)
+    assert "cwd" not in r.detail["mono"]["signals"], \
+        "the container took the boost too, so cwd separated nothing"
+    assert not r.abstain and r.selected == ["glasses"]
+    assert r.detail["mono"]["score"] < R.CWD_BOOST, \
+        "the parent is only ahead because it was boosted, not on evidence"
+
+    # The rule is `scope_for_cwd`'s, which resolves cwd to the deepest scope and
+    # documents that it does. Router and registry must not disagree about which
+    # scope you are standing in.
+    registry = [Scope(id="mono", name="Delroy", root=parent),
+                Scope(id="glasses", name="Delroy/glasses", root=child)]
+    assert scope_for_cwd(registry, child).id == "glasses"
+
+
 def test_naming_the_project_defeats_deixis():
     idx = _index(a=("Alpha", "/a", {"entry": 40}, 500),
                  b=("Beta", "/b", {"entry": 5}, 100))

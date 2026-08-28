@@ -123,6 +123,21 @@ CONCENTRATED_EVIDENCE = 2.6
 # pattern missed both. False positives are cheap: deixis only forces abstention
 # when neither cwd nor an alias has already identified the subject, so a
 # question that says "it" *and* names a project is unaffected.
+#
+# CWD_BOOST goes to the DEEPEST containing scope and to no other. It used to go
+# to every scope whose root contains cwd, which on a flat corpus is the same
+# thing and on a split monorepo is not: parent and child both took the identical
+# 4.0, so cwd stopped discriminating between them entirely and the parent won on
+# vocabulary, which it always does -- it is the larger index. Measured from
+# inside `Delroy/glasses`, a deictic question scored Delroy 5.17 against
+# Delroy/glasses 4.91 and routed to the parent.
+#
+# `scopes.scope_for_cwd` already resolved cwd to one scope by longest root, and
+# says so; this makes the router agree with it. Re-running `loci eval` on the
+# real split-stage index: deictic + cwd 87.5% -> 100.0% (72/72), and
+# byte-identical on the pre-split stage, where no scope contains another and the
+# deepest containing scope is the only containing scope. No constant moved --
+# the change is what the signal MEANS, not how big it is.
 DEIXIS = re.compile(
     r"\b(?:this|these|it|its|here)\b"
     r"|\bthe\s+(?:project|repo|repository|codebase|code\s*base|app|application|"
@@ -267,6 +282,18 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     recency = _recency_rank(scopes)
     cwd_path = Path(cwd).expanduser().resolve() if cwd else None
 
+    # The DEEPEST containing scope, and only it, takes CWD_BOOST. Resolved once
+    # here rather than per scope below, on the same rule `scopes.scope_for_cwd`
+    # already uses -- longest root wins -- so the router and the registry cannot
+    # disagree about which scope you are standing in.
+    cwd_owner: tuple[str, Path] | None = None
+    if cwd_path is not None:
+        for sid, meta in scopes.items():
+            root = Path(meta["root"])
+            if cwd_path == root or root in cwd_path.parents:
+                if cwd_owner is None or len(str(root)) > len(str(cwd_owner[1])):
+                    cwd_owner = (sid, root)
+
     scores: dict[str, float] = {}
     detail: dict[str, dict] = {}
 
@@ -315,11 +342,9 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         if alias:
             base += ALIAS_BOOST
             signals["alias"] = alias
-        if cwd_path is not None:
-            root = Path(meta["root"])
-            if cwd_path == root or root in cwd_path.parents:
-                base += CWD_BOOST
-                signals["cwd"] = str(root)
+        if cwd_owner is not None and sid == cwd_owner[0]:
+            base += CWD_BOOST
+            signals["cwd"] = str(cwd_owner[1])
         base += RECENCY_BOOST * recency.get(sid, 0.0)
 
         scores[sid] = base
