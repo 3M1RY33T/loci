@@ -1450,7 +1450,7 @@ S3 (after the split)
 Five matched tokens and the highest evidence in the corpus lose to two matched
 tokens and a name collision. (Only the S1 `->` line lists two scopes: the S1
 cutoff is 3.0632 x 0.85 = 2.6037 and `Delroy` scores 1.1239, so it enters solely
-through the concentrated-token merge at router.py:406-409. The S3 line lists
+through the concentrated-token merge at router.py:466-471. The S3 line lists
 one. The ranking is what matters here either way.)
 
 One probe does not establish a rule, so seven more hand-written
@@ -1512,10 +1512,18 @@ were arguably routed correctly, and the split is what made them routable at all.
 
 Probe 6 is the worst case in the set and its cause is proven rather than
 inferred: with `ALIAS_BOOST` at 0 it abstains again. `route` sets
-`forced = bool(detail[top]["signals"])` (router.py:346-349), and `forced`
-suppresses the deixis guard -- so an alias hit does not merely outscore the
-right answer, it converts a correct abstention into a confident answer from the
-wrong project. router.py:371-377 names that exact failure in its own comment.
+`forced = _signalled(top_d)` (router.py:424), and `forced` suppresses the deixis
+guard -- so an alias hit does not merely outscore the right answer, it converts
+a correct abstention into a confident answer from the wrong project.
+router.py:432-438 names the same failure shape under hard groups, in its own
+comment.
+
+(Both citations were wrong when first written and are corrected here. The line
+range read 346-349, which is a blank line and a comment; the assignment was at
+350. The quote was `forced = bool(detail[top]["signals"])`, silently dropping
+the `top and` guard the source carried. The code has since moved behind the
+`_signalled` helper -- one predicate for two call sites, no change in
+behaviour -- and both citations name that final state.)
 The same mechanism produced two of the six `detailed` misses; subtract the 6.0
 there and `G2-claude-companion` wins 1.9490 to 0.6574.
 
