@@ -2881,12 +2881,14 @@ def test_groups_infer_does_not_let_one_monorepo_outvote_the_corpus(
 def test_groups_infer_replaces_a_stale_provenance_label(
         loci_home, hermetic_git, capsys):
     """`classify` answers ONE question from one repository's own git, and answers
-    it afresh every run. Union left `me` and `vendor:big` side by side on one
-    scope -- one question answered twice, contradictorily -- and a hard group
-    over either then admits the other's members. It also made the command unable
-    to repair a registry it had corrupted: re-running only added.
+    it afresh every run. Here it answers `me` -- the remote org IS the identity
+    -- so the stored `vendor:big` is that same question answered contradictorily,
+    and a hard group over either then admits the other's members. Pure union also
+    made the command unable to repair a registry it had corrupted: re-running
+    only added.
 
-    What the user asserted is not provenance and must survive.
+    What the user asserted is not provenance and must survive. So does `me` when
+    the fresh reading is a vendor's -- the test below.
     """
     from loci.cli import main
     from loci.scopes import load_scopes, save_scopes
@@ -2903,6 +2905,104 @@ def test_groups_infer_replaces_a_stale_provenance_label(
 
     assert main(["groups", "infer"]) == 0
     assert "0 scope(s) labelled" in capsys.readouterr().out, "not idempotent"
+
+
+def test_groups_infer_never_strips_me_from_work_under_a_second_org(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """A personal GitHub account plus an employer's is an ordinary corpus, and
+    `infer_identity` reports exactly ONE dominant org, so half of the user's own
+    work classifies as a vendor's however plainly it is theirs.
+
+    Reproduced the way it happens: `loci scan ~/work` first, whose identity is
+    inferred from that scan alone and is therefore `workorg`, so the three work
+    repositories are correctly labelled `me`. `loci scan ~/personal` then adds
+    five more and a stranger's, and `groups infer` -- which reads the whole
+    registry -- flips the identity to `myname`. Retracting `me` there deletes
+    the user's own work from their own group: `loci group set me --mode hard`
+    confines to the personal half, and it takes `loci group add w1 me` three
+    times to undo, each one destroyed by the next run of this command.
+    """
+    import builtins
+
+    import loci.paths as P
+    from loci.cli import main
+    from loci.groups import members
+    from loci.scopes import load_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a: pytest.fail("scan prompted with no terminal"))
+    work, personal = tmp_path / "work", tmp_path / "personal"
+    work.mkdir()
+    personal.mkdir()
+    for n in ("w1", "w2", "w3"):
+        _repo(work, n, origin=f"git@github.com:workorg/{n}.git")
+    for n in ("p1", "p2", "p3", "p4", "p5"):
+        _repo(personal, n, origin=f"git@github.com:myname/{n}.git")
+    _repo(personal, "borrowed", origin="git@github.com:stranger/borrowed.git")
+
+    assert main(["scan", str(work)]) == 0
+    assert main(["scan", str(personal)]) == 0
+    before = {s.name: s.group_set() for s in load_scopes()}
+    assert before["w1"] == {"me"}, \
+        "fixture lost its point: the work scan must have called these yours"
+    assert before["borrowed"] == {"vendor:stranger"}
+    capsys.readouterr()
+
+    assert main(["groups", "infer"]) == 0
+    assert "you are myname" in capsys.readouterr().out, \
+        "fixture lost its point: the identity has to FLIP for this to bite"
+
+    after = load_scopes()
+    by_name = {s.name: s.group_set() for s in after}
+    # The fresh reading is recorded -- w1's remote really is workorg's -- but it
+    # is recorded BESIDE `me`, not instead of it. Equality, not a subset check:
+    # a subset check passes for the bug this pins.
+    assert by_name["w1"] == {"me", "vendor:workorg"}
+    assert by_name["w2"] == {"me", "vendor:workorg"}
+    assert by_name["w3"] == {"me", "vendor:workorg"}
+    assert by_name["p1"] == {"me"}, "the personal half was disturbed"
+    assert by_name["borrowed"] == {"vendor:stranger"}
+
+    # The outcome the label exists for, rather than the label: `me --mode hard`
+    # has to still reach the user's own work.
+    assert members(["me"], after) == {"w1", "w2", "w3", "p1", "p2", "p3", "p4", "p5"}
+
+    assert main(["groups", "infer"]) == 0
+    assert "0 scope(s) labelled" in capsys.readouterr().out, "not idempotent"
+
+
+def test_groups_infer_retracts_nothing_from_an_unconfident_identity(
+        tmp_path, monkeypatch, hermetic_git, capsys):
+    """`provenance.classify` already refuses to ACCUSE from an identity the
+    module has disowned; withdrawing an accusation from one is the same error
+    turned around. `classify` returns `me` for every scope in that state, so
+    without the guard a corpus that merely lost its dominant org would have every
+    `vendor:` label stripped at once and be told the vendors are all the user's.
+
+    Two repositories under two orgs tie, and `infer_identity` names neither.
+    """
+    import loci.paths as P
+    from loci.cli import main
+    from loci.scopes import load_scopes, save_scopes
+
+    monkeypatch.setenv(P.ENV_HOME, str(tmp_path / "home"))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    a = _repo(corpus, "a", origin="git@github.com:alpha/a.git")
+    b = _repo(corpus, "b", origin="git@github.com:beta/b.git")
+    save_scopes([Scope(id="a", name="A", root=a, groups=["vendor:alpha"]),
+                 Scope(id="b", name="B", root=b, groups=["vendor:beta"])])
+
+    assert main(["groups", "infer"]) == 0
+    out = capsys.readouterr().out
+    assert "no dominant remote org" in out, \
+        "fixture lost its point: the identity has to be UNCONFIDENT"
+    assert "(was " not in out, "a retraction was reported from a disowned identity"
+
+    by_name = {s.name: s.group_set() for s in load_scopes()}
+    assert by_name["A"] == {"me", "vendor:alpha"}
+    assert by_name["B"] == {"me", "vendor:beta"}
 
 
 def test_ask_passes_its_group_through_to_confinement(loci_home, capsys):

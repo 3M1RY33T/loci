@@ -207,23 +207,27 @@ def cmd_groups_infer(args) -> int:
     to run, so it read the registry's scope roots and disagreed with the scan
     that produced them.
 
-    The provenance label REPLACES, and only provenance is touched.
+    The new label is ADDED; a contradicted `vendor:` label is retracted with it.
     `classify` answers one question -- whose repository is this -- from one
-    repository's own git, and answers it afresh on every run. A registry holding
-    both `me` and `vendor:big` for one scope is not two facts, it is one
-    question answered twice with contradictory answers, and a hard group over
-    either one then admits the other's members. Union also made this command
-    unable to repair itself: correcting the identity above and re-running only
-    ever ADDED the right label beside the wrong one, leaving recovery manual and
-    per scope.
+    repository's own git, and answers it afresh on every run, so a registry
+    holding `vendor:big` and `vendor:acme` for one scope is not two facts but
+    one question answered twice. Pure union also made this command unable to
+    repair itself: correcting the identity above and re-running only ever ADDED
+    the right label beside the wrong one, leaving recovery manual and per scope.
 
-    What the user asserted survives, because `is_provenance` is exactly the
-    discrimination: `client:*` is never inferrable and structural containment
-    labels are recomputed by `loci scan`, so neither is in the replaced set.
-    A provenance label asserted by hand with `loci group add` is not durable
-    either -- like a containment label, it is recomputed rather than remembered.
+    `me` is not retracted, and `is_retractable` argues that out: the identity is
+    a single dominant org, so the user's own work under a second one classifies
+    as `vendor:` and stripping `me` there deletes their repositories from their
+    own group. Nothing is retracted at all from an unconfident identity, which
+    is `classify`'s guard for `classify`'s reason.
+
+    What the user asserted survives either way: `client:*` is never inferrable
+    and structural containment labels are recomputed by `loci scan`, so neither
+    is ever in the retracted set. A `vendor:` label asserted by hand with
+    `loci group add` is not durable -- like a containment label, it is recomputed
+    rather than remembered.
     """
-    from .provenance import classify, infer_identity, is_provenance
+    from .provenance import classify, infer_identity, is_retractable
     from .scopes import load_scopes, repositories, save_scopes
 
     scopes = load_scopes()
@@ -236,7 +240,7 @@ def cmd_groups_infer(args) -> int:
     for s in scopes:
         g = classify(s.root, identity)
         current = s.group_set()
-        stale = {p for p in current if is_provenance(p)} - {g}
+        stale = {p for p in current if is_retractable(p, identity)} - {g}
         if g in current and not stale:
             continue
         s.groups = sorted((current - stale) | {g})

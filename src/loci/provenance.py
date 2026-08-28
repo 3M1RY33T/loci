@@ -118,6 +118,33 @@ def is_provenance(group: str) -> bool:
     return group == "me" or group.startswith("vendor:")
 
 
+def is_retractable(group: str, identity: Identity) -> bool:
+    """True when inference is entitled to REMOVE `group` from a scope.
+
+    Narrower than `is_provenance`, and the two are not interchangeable.
+    `is_provenance` names the labels inference OWNS; this names the ones it may
+    take away, which is only `vendor:*`, and only from a confident identity.
+
+    `me` is not retractable. `infer_identity` reports the ONE org that dominates
+    the corpus, so a second org the user also commits to -- an employer's, next
+    to a personal account's -- classifies as `vendor:` however plainly the work
+    is theirs. Retracting `me` there deletes the user's own repositories from
+    their own group: `loci group set me --mode hard` then confines to the
+    personal half, and `loci group add w1 me` is undone by the next run of this
+    command, silently, while `loci group rm` refuses the symmetric edit and says
+    why. A scope in both `me` and `vendor:workorg` is not a contradiction, it is
+    the two-org corpus stated accurately.
+
+    The confidence guard is `classify`'s, for the same reason `classify` has it:
+    an unconfident identity is not evidence for an accusation, and it is even
+    less evidence for withdrawing one. `classify` returns `me` for everything in
+    that state, so without this guard a corpus that merely lost its dominant org
+    -- one repository added, a remote renamed -- would have every `vendor:` label
+    stripped and be told the vendors are all the user's.
+    """
+    return identity.confident and group.startswith("vendor:")
+
+
 def classify(root: Path, identity: Identity) -> str:
     """The provenance group for one repository.
 

@@ -334,9 +334,11 @@ def inherit_parent_groups(scopes: list[Scope]) -> list[Scope]:
     inheritance to supply; a scope missing one is what `loci groups infer` is
     for, and that reads git too rather than guessing from a container.
 
-    Additive, like `groups infer`: it never removes, and a label inherited once
-    survives the parent losing it. Membership is a claim, and the user removes
-    their own claims with `loci group rm`.
+    Purely additive, which `groups infer` no longer is: that command retracts a
+    `vendor:` label its fresh reading of git contradicts. Nothing here reads git,
+    so there is nothing to contradict -- a label inherited once survives the
+    parent losing it. Membership is a claim, and the user removes their own
+    claims with `loci group rm`.
     """
     by_id = {s.id: s for s in scopes}
     # Snapshotted so the result does not depend on registry order: a sub-scope
