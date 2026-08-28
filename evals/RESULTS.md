@@ -946,12 +946,29 @@ passes no `eligible`, no `demoted`, no `strict_group`. Group policy reaches
 routing only through `groups.confinement`, which `loci route` and `loci ask`
 call and `loci eval` does not. Labelling `odysseus` as
 `vendor:pewdiepie-archdaemon` and `beacon` as `vendor:unknown` therefore cannot
-move a single `loci eval` figure, whatever it does to real questions. Re-running
-the same families through a wrapper that *does* resolve confinement per question
-reproduces the table above exactly -- under the default `soft` mode and under
-`loci group set me --mode hard` alike. The reason is the shape of the question
-set: confinement is anchored on cwd, only `deictic + cwd` supplies a cwd, and
-that family was already at ceiling.
+move a single `loci eval` figure, whatever it does to real questions.
+
+That argument is the load-bearing one, and it is checkable against
+`eval.py`/`cli.py` by anyone. It is corroborated by a throwaway wrapper that
+re-ran the same families with confinement resolved per question, which
+reproduced the table exactly under the default `soft` mode and under
+`loci group set me --mode hard` alike -- but a wrapper that silently failed to
+*apply* confinement would produce that same null, so the run was instrumented to
+count what it actually passed and to re-route each question unconfined as a
+control:
+
+```
+soft:  route calls 145 | with cwd 72 | eligible 0  | demoted 72 | strict 0
+hard:  route calls 145 | with cwd 72 | eligible 64 | demoted 8  | strict 64
+both:  calls where confinement was non-empty                    72
+       calls where the confined result DIFFERED from unconfined  0
+```
+
+Confinement reached `route` on every one of the 72 cwd-bearing calls and changed
+nothing. The reason is the shape of the question set: confinement is anchored on
+cwd, only `deictic + cwd` supplies a cwd, and that family was already at
+ceiling. The wrapper itself is a scratch script and is not in this repository;
+the claim rests on the mechanism, with the run as corroboration.
 
 ### The split hurt, and here is exactly where
 
@@ -969,14 +986,23 @@ Delroy/n8n-runtime-adapter: What is the entry point and how does it start up?
 Delroy/n8n-runtime-adapter: What are the known risks, gaps or limitations here?
 ```
 
+The denominator moved with the corpus: four new scopes were indexed, and the
+family applies the same four evaluation-half questions to every scope, so
+56 -> 72. Sixteen pairs were added and nine of them fail.
+
 Restricted to the fourteen scopes that existed before the split, the same family
-scores **56/56 = 100.0%** on the split index. The split cost nothing that
-already worked; it added twelve scope-question pairs it cannot answer.
+scores **56/56 = 100.0%** on the split index. *In this family*, the split cost
+nothing that already worked. That does not generalise to the others -- see the
+decomposition below, where `detailed` did cost pre-existing scopes.
 
 The mechanism is `CWD_BOOST`, and it is structural rather than tunable. A
 sub-scope's root is *inside* its parent's root, so both satisfy
 `root in cwd_path.parents` and both collect `CWD_BOOST` (4.0). The tie is then
-broken by evidence base, and the parent has thirty times the vocabulary:
+broken by the evidence base, and the parent's is larger -- `Delroy` carries
+6,404 routing tokens against `Delroy/glasses`'s 396, a 16x vocabulary. The
+decisive margin is much smaller than that, because `SIZE_PRIOR = 0.15` already
+discounts the parent: subtracting the shared 4.0 leaves **1.1733 vs 0.9106**,
+a factor of 1.29.
 
 ```
 loci route --cwd ~/Documents/GitHub/Delroy/glasses --explain \
@@ -997,8 +1023,12 @@ and the sub-scope owns the alias:
 loci route --no-cwd --explain "how does the glasses app talk to the runtime?"
 -> Delroy/glasses
  * Delroy/glasses  score=7.6255  matched=2  signals={'alias': 'glasses'}
+   G2-claude-companion score=1.3585  matched=2  signals=-
    Delroy          score=1.2839  matched=4  signals=-
 ```
+
+(`Delroy` is third there, not runner-up. An earlier draft of this section cut
+the middle line.)
 
 **Deictic, from inside `glasses/` -- mostly no.** Over the four evaluation-half
 taxonomy questions applied to the parent and its three indexed sub-scopes:
@@ -1029,8 +1059,51 @@ derived from the index it scores and cannot be compared across a change that
 alters the index's scope partition.** `deictic + cwd` is the only family here
 that is genuinely like-for-like, because its questions are fixed.
 
-`signature` and `detailed` carry a weaker form of the same caveat: their terms
-are per scope, stable except for the two scopes that were partitioned.
+### `signature` and `detailed`, decomposed the same way
+
+`deictic + cwd` was the only family decomposed old-vs-new in the first draft of
+this section, and "the split cost nothing that already worked" was then written
+as though it covered all of them. It does not. Both derived families were
+re-run, split into the fourteen pre-existing scopes and the four new ones:
+
+```
+              S1 (pre)        S3 (pre)        S3 (new)
+signature     13/14  92.9%    13/14  92.9%    3/4   75.0%
+detailed      26/28  92.9%    24/28  85.7%    8/8  100.0%
+```
+
+`signature` is unchanged on the pre-existing scopes, same single miss both
+times. **`detailed` regressed on them, 92.9% -> 85.7%**, and it is not a wash of
+noise -- the misses turn over completely:
+
+```
+S1 pre-existing misses (2):
+  MyBlog -> Delroy: when relationships is created, ...
+  MyBlog -> Delroy: what connects relationships to doing, ...
+
+S3 pre-existing misses (4):
+  3M1RY33T.github.io -> 3M1RY33T.github.io/_site: when posts is created, ...
+  3M1RY33T.github.io -> 3M1RY33T.github.io/_site: what connects posts to portfolio, ...
+  G2-claude-companion -> Delroy/glasses: when headless is created, ...
+  G2-claude-companion -> Delroy/glasses: what connects headless to glasses, ...
+```
+
+Both S1 misses were `MyBlog` losing to the un-split `Delroy`, and both are fixed
+by the split -- shrinking the parent is exactly what was supposed to happen. All
+four new misses are a pre-existing scope losing to a scope the split created:
+twice to `_site`, which is a build copy of the very scope it beat, and twice to
+`Delroy/glasses`. Net -2.
+
+So the honest per-family verdict: the split cost nothing in `deictic + cwd` and
+nothing in `signature`; in `detailed` it fixed two pre-existing misses and
+created four.
+
+One thing that did **not** move, contrary to what this section first assumed
+without measuring: `signature_terms` reads `S = len(index["scopes"])` and
+`len(post)` (eval.py:129, 144), both of which change for every scope when four
+are added -- yet the top-2 terms of all fourteen pre-existing scopes are
+identical at S1 and S3, term for term. The IDF shift was not large enough to
+reorder any of them.
 
 ### The floor moved, and it explains none of it
 
@@ -1112,17 +1185,34 @@ unknown scope`. Before the split those 343 chunks were reachable through
 `Delroy`. Sub-projects with no README and no graph are the shape this bites, and
 splitting a monorepo manufactures them.
 
+**Three mitigations, which change how bad that is.** The loss is not silent:
+`loci index` prints `- Delroy/extension  nothing indexable, skipped`, and
+`loci doctor` reports the registered-but-unindexed scope by design. And it is
+not permanent -- the scope has no structure graph, and building one gives it
+`nodes`, which populates `counts` and makes it routable without touching the
+docstring fallback at all. `index.py:50` says so in as many words: "The fix for
+a cold scope is `loci graphs`, not this." **`loci graphs` is exactly what this
+measurement's constraints forbade** (it writes `graphify-out/` into every
+repository it scans, and the corpus is read-only here). So `Delroy/extension`
+is unreachable *in this configuration*, not unreachable in principle. What
+remains a real defect is the comment's promise, which describes a fallback that
+cannot fire.
+
 **`_site` became a scope.** `3M1RY33T.github.io/_site` is a Jekyll build
-output. It carries a `package.json`, it is not in `SKIP_DIRS`, and it does not
-start with a dot, so the depth-1 marker rule registered it. It indexed 221
-tokens that duplicate its parent's 221 and contributed two of the twelve
-`contended` terms. Generated directories need excluding by name the way
+output. It carries a `package.json` and its own `graphify-out/`, it is not in
+`SKIP_DIRS`, and it does not start with a dot, so the depth-1 marker rule
+registered it. Its routing vocabulary is not merely the same size as its
+parent's, it is the same vocabulary: 221 tokens each, 221 shared, Jaccard
+1.000, sets equal. It contributed three of the twelve `contended` terms
+(`portfolio`, `statements`, `moderating`) and beat its own parent on both
+`detailed` items. Generated directories need excluding by name the way
 `node_modules` already is.
 
 The chunk-partition invariant does hold: across all four sub-scopes, `delroy`
-shares **zero** chunk texts with any of them, and all 1,046 chunks the parent
-lost were recovered by exactly one sub-scope. Nothing was double-counted and
-nothing left the store -- 343 of them merely left the reachable set.
+shares **zero** chunk texts with any of them, the four sub-scopes share zero
+with each other (all six pairs measured), and all 1,046 chunks the parent lost
+were recovered by exactly one sub-scope. Nothing was double-counted and nothing
+left the store -- 343 of them merely left the reachable set.
 
 ### What this measurement does not cover
 
@@ -1133,9 +1223,13 @@ nothing left the store -- 343 of them merely left the reachable set.
   spot check, not a benchmark.
 - Semantic ranking. No embeddings were built, so `semantic_floor` is the 0.57
   default at every stage and `loci ask`'s episode ranking was not exercised.
-- Missing structure graphs were left missing rather than built. `MyBlog`,
-  `tensor-serve`, `Delroy/n8n-nodes-delroy` and `Delroy/n8n-runtime-adapter`
-  route on prose alone; `Delroy/extension` routes on nothing.
+- Missing structure graphs were left missing rather than built, because
+  `loci graphs` writes `graphify-out/` into every repository it scans and the
+  corpus is read-only here. `MyBlog`, `tensor-serve`,
+  `Delroy/n8n-nodes-delroy` and `Delroy/n8n-runtime-adapter` route on prose
+  alone; `Delroy/extension` routes on nothing. Whether a graph would restore
+  `Delroy/extension` to the routable set -- `index.py:50` says it should -- is
+  therefore untested here.
 
 ### Reading
 
@@ -1145,9 +1239,23 @@ manufactures the failure the README's scale table warns about, in the one place
 the table predicted: nested scopes whose cwd signal is ambiguous by
 construction, because a sub-scope's root is inside its parent's.
 
-`CWD_BOOST` is the constant at fault and it cannot be tuned out of this. Any
-value large enough to make cwd the dominant signal is added to *both* scopes in
-a nesting pair, so the tie always falls to whichever has more vocabulary, which
-is always the parent. Fixing it needs the boost to prefer the *most specific*
-containing scope rather than every containing scope -- a change to what the
-signal means, not to its size. Recorded, not fixed, and not fitted around.
+`CWD_BOOST` is the constant at fault, and its *magnitude* provably cannot fix
+this: the identical 4.0 is added to both members of a nesting pair, so it
+cancels out of their comparison at every value. The tie therefore falls to the
+size-discounted evidence base, which usually favours the parent -- not always,
+since each sub-scope won one of its four questions, 3 of the 12 sub-scope items.
+
+`SIZE_PRIOR` is the one knob that could in principle flip a parent/child tie,
+and the Phase 3 sweep already closed both directions (router.py:88-90): at 0.30
+top-1 falls 85.7% -> 71.4%, at 0.45 it is "catastrophic", and at 0.05 cwd
+routing itself falls 100% -> 94%/89%. 0.15 was optimal on both corpus shapes
+tested. Tuning is not the road.
+
+The fix is available inside the current design and is not a new mechanism.
+`scope_for_cwd` already resolves a working directory to the *deepest* scope
+containing it; `route` simply does not use it, and instead tests
+`root in cwd_path.parents` independently per scope. Giving `CWD_BOOST` to the
+deepest containing scope only -- the answer `scope_for_cwd` already computes --
+makes the nesting pair decidable without touching any constant. That is a
+change to what the signal means, not to its size. Recorded, not fixed, and not
+fitted around.
