@@ -95,6 +95,28 @@ loci ask "which projects use wrangler and D1?"
 loci eval              # measure routing accuracy on YOUR corpus
 ```
 
+Each step writes what the next one reads, which is what makes the order fixed
+rather than preferred:
+
+```mermaid
+flowchart TD
+    scan["loci scan ~/code<br/>writes ~/.loci/scopes.json"]
+    graphs["loci graphs<br/>writes graphify-out/graph.json, one per scope"]
+    index["loci index<br/>writes ~/.loci/episodes.json, scope_index.json, rankers/"]
+    embed["loci embed<br/>writes ~/.loci/embeddings.npz"]
+    calibrate["loci calibrate<br/>writes ~/.loci/calibration.json"]
+    doctor["loci doctor<br/>writes nothing at all"]
+
+    scan -->|"there is nothing to graph or index until a scope exists"| graphs
+    graphs -->|"the index is built FROM graph.json; index first<br/>and every project routes on prose alone"| index
+    index -->|"embed encodes episode chunks, and they do not<br/>exist until index has written the store"| embed
+    embed -->|"calibrate fits a per-scope semantic floor from<br/>those vectors; with none it keeps a default"| calibrate
+    calibrate -->|"and then reports whatever is still missing"| doctor
+```
+
+Running it out of order does not fail loudly. It produces an install that works
+and quietly retrieves worse, which is the failure `doctor` exists to name.
+
 `scan` registers one scope per git repository. It also reads who owns each
 repository out of git, prints who owns what, and asks before registering the
 ones that are not yours; that prompt takes its default like every other, which is to
@@ -129,9 +151,10 @@ explicitly. Scopes are never merged.
 
 **Group.** An overlapping label on a scope: `me` and `vendor:<org>`, read from
 git provenance; `client:acme` and anything else you assert by hand; and a
-monorepo's own id, carried by every package inside it. A scope can be in
-several, and the scope set stays flat: grouping never merges scopes or nests one
-inside another.
+monorepo's own id, carried by every package inside it *and* by the monorepo
+itself, so `--group <monorepo>` reaches the code no package claimed. A scope can
+be in several, and the scope set stays flat: grouping never merges scopes or
+nests one inside another.
 
 What a group does to a question is its **mode**, and the mode answers two
 different questions. Reached through your working directory, `explicit` does
@@ -156,11 +179,204 @@ docstrings and comment blocks, and any notes you point it at. Stored verbatim,
 chunked on heading boundaries, redacted before it is written.
 
 **Router.** Decides which scopes a question belongs to, deterministically, with
-no model call. Signals in order of strength: working directory, an explicit
-project name, vocabulary evidence, recency.
+no model call. Signals in order of weight: an explicit project name (6.0), the
+working directory (4.0), vocabulary evidence (measured 0.1–1.5), recency (0.15).
+Weight is not usefulness — cwd is the signal that carries most real questions,
+because most real questions name no project at all.
 
 **Abstention.** A first-class outcome. `ABSTAIN` means *ask the user*, not *pick
 the biggest*. Both layers can refuse.
+
+---
+
+## Architecture
+
+### The query path
+
+The diagram at the top of this file is the elevator version. In full:
+
+```
+loci ask "why was the session cookie dropped on localhost?"
+  │
+  │   --scope NAME jumps straight past routing to the fan-out, and drops the
+  │   episode gate with it: that gate exists to stop an answer arriving from
+  │   the wrong scope, and you have just named the right one.
+  ▼
+confinement                                                       groups.py
+  │   reads the registry and groups.json. Never the index, never a model.
+  │     --group X  ─▶  eligible = members of X, in ALL THREE modes
+  │     else cwd   ─▶  the strictest group of the scope you are standing in
+  ▼
+route                                                             router.py
+  │   reads scope_index.json: token ─▶ {scope: node_df}. One dict lookup per
+  │   query token. Deterministic, sub-millisecond, no model call.
+  │
+  ├──▶ ABSTAIN — deictic, no_evidence or out_of_group. Names the cause, lists
+  │             the candidates, names the flag that fixes it, and queries
+  │             nothing. An outcome, not an error.
+  ▼
+selected scopes, at most 3        one thread each; neither store is ever
+  │                               queried across a scope boundary
+  ├─── scope ─── scope ─── scope
+  │      │
+  │      │  expand the question against THIS scope's postings — a dict
+  │      │  lookup, so a token the scope does not have cannot be invented —
+  │      │  then append the tokens of its nearest embedded symbol labels
+  │      │
+  │      ├─ structure store   graphify query --graph <this scope's graph>
+  │      │                    what calls what, with file:line citations
+  │      │
+  │      └─ episode store     BM25 + char 3–5 gram + embeddings, fused
+  │                           gated: lexically grounded OR semantically
+  │                           confident, so it can return nothing, and does
+  ▼
+merged, cited answer — one block per scope, and `no evidence in this scope`
+wherever both of a scope's stores came back empty
+```
+
+Both stages refuse independently: the router can decline to pick a scope at
+all, and a scope it did pick can still hand back nothing.
+
+### The routing decision
+
+Everything above the fan-out is one function. It scores every scope in the
+corpus, then asks three refusal questions in a fixed order. An alias or cwd
+signal skips the last two, but not the first.
+
+```mermaid
+flowchart TD
+    Q["question, plus cwd and --group when given"]
+    CONF{"which group confines this question?"}
+    E1["eligible = members of X<br/>strict only when that group's mode is hard"]
+    E2["eligible = members<br/>strict"]
+    E3["demoted = every scope outside the group"]
+    E4["nothing confined, nothing demoted"]
+    BASE["evidence base, for EVERY scope in the corpus<br/>sum(scope-idf x prominence) / query tokens / size^0.15"]
+    PEN["demoted? base x 0.5<br/>here, before the boosts, so it cannot invert one"]
+    BOOST["+ ALIAS 6.0, the question names the project<br/>+ CWD 4.0, DEEPEST containing scope only<br/>+ RECENCY 0.15, a tiebreak and no more"]
+    TOPS["top = best ELIGIBLE scope<br/>top_all = best scope in the whole corpus"]
+    OOG{"strict, and top_all is outside the group,<br/>and top_all would itself have been routable?"}
+    A1(["ABSTAIN out_of_group<br/>the best answer is outside the group"])
+    FORCED{"forced?<br/>top carries an alias hit or the cwd signal"}
+    DEIX{"deictic?<br/>this / these / it / its / here / the project / the app / ..."}
+    A2(["ABSTAIN deictic<br/>the question points at a subject it never names"])
+    EV{"enough evidence?<br/>ANY ONE of the three is enough"}
+    A3(["ABSTAIN no_evidence<br/>too little of the question exists in any project"])
+    SELECT["keep every eligible scope scoring at or above 0.85 x top,<br/>cap at 3, then force in every concentrated-token holder"]
+    OUT(["selected scopes"])
+
+    Q --> CONF
+    CONF -->|"--group X, any mode"| E1
+    CONF -->|"cwd scope's strictest group is hard"| E2
+    CONF -->|"cwd scope's strictest group is soft"| E3
+    CONF -->|"explicit, or no group at all"| E4
+    E1 --> BASE
+    E2 --> BASE
+    E3 --> BASE
+    E4 --> BASE
+    BASE --> PEN
+    PEN --> BOOST
+    BOOST --> TOPS
+    TOPS --> OOG
+    OOG -->|yes| A1
+    OOG -->|no| FORCED
+    FORCED -->|yes| SELECT
+    FORCED -->|no| DEIX
+    DEIX -->|yes| A2
+    DEIX -->|no| EV
+    EV -->|"summed token evidence at or above the floor<br/>(7.6 shipped, refitted by loci calibrate)"| SELECT
+    EV -->|"at least 4 matched tokens"| SELECT
+    EV -->|"an eligible scope holds a CONCENTRATED token:<br/>held by at most 2 scopes, prominent inside them"| SELECT
+    EV -->|"none of the three"| A3
+    SELECT --> OUT
+```
+
+Three things in that shape are load-bearing and none of them are obvious.
+
+**`forced` is an escape, not a signal.** An alias hit or a cwd hit contributes
+nothing to either evidence count, so a scope winning purely on 6.0 or 4.0 reads
+as zero evidence to the gates below. It skips both of them instead: deixis is
+only a problem when nothing else has identified the subject, so a question that
+says "it" *and* names a project is unaffected.
+
+**`out_of_group` is judged against the whole corpus, not the group.** It fires
+only when the corpus-wide winner is outside the group *and* would itself have
+routed. Without that second test it swallowed the other two reasons entirely —
+on a question matching no vocabulary, every scope scores near zero and the
+winner is whoever took the 0.15 recency tiebreak.
+
+**The three evidence gates are OR'd because they fail on different question
+shapes.** A short question about a rare symbol has high evidence and a low
+count; a long question about a familiar subsystem has the reverse. Requiring
+all three abstains on both.
+
+### Scopes and groups
+
+Groups are overlapping labels over a flat scope set. There is no tree anywhere,
+and nothing is ever merged.
+
+```
+      scope                        the groups it carries
+      ───────────────────────────  ──────────────────────────────────────
+      delroy           monorepo    me    delroy
+      delroy/glasses   sub-scope   me    delroy
+      delroy/client    sub-scope   me    delroy   client:acme
+      acme-api         repo        me             client:acme
+      vendorlib        repo                                     vendor:someorg
+
+      me, vendor:someorg   read from git provenance by `scan` or `groups infer`
+      delroy               computed by `scan` from the filesystem: a repository
+                           that splits gives its own id to every sub-project
+                           inside it, and to itself
+      client:acme          asserted by hand, with `loci group add`
+```
+
+Five scopes, four groups. `delroy/glasses` is not stored *inside* `delroy`; it
+carries the label `delroy` exactly as it carries `me`. `client:acme` spans a
+monorepo sub-project and an unrelated repository, which a hierarchy could not
+express at all. The two sub-scopes exist only because that repository declared
+them in `.loci.json`, or was scanned with `--split`; without either, `delroy` is
+one scope and the containment group does not exist. A parent excludes its
+sub-scopes' subtrees from its own collection, so no file is counted twice and
+neither vocabulary is inflated with the other's tokens.
+
+What a group does to a question is its **mode**, and the mode answers two
+different questions depending on how the group was reached:
+
+```
+                    reached through your cwd        named with --group X
+  ────────────────  ─────────────────────────────   ────────────────────────
+  explicit          nothing                         confines to X's members
+  soft (default)    every outside scope's           confines to X's members
+                    evidence base × 0.5
+  hard              confines to members, and        confines to X's members,
+                    abstains when the best          and abstains when the
+                    answer is outside               best answer is outside
+```
+
+The right-hand column is the counter-intuitive half, so it is measured rather
+than asserted. On a three-scope fixture — `alpha` and `beta` in group `team`,
+`vend` outside it — one question, four policies:
+
+```
+loci route "how does the gizmo parser emitter handle sprocket calibration"
+
+  unconfined                  -> vend, alpha
+  --group team   explicit     -> alpha
+  --group team   soft         -> alpha
+  --group team   hard         -> ABSTAIN (out_of_group); candidates: alpha, beta
+```
+
+All three modes dropped `vend`, the scope that won unconfined. `--group` is you
+asserting the answer is in here; the mode decides only what happens when it is
+not.
+
+Reached through cwd instead, `soft` demotes and does not confine. The same
+question asked from inside `alpha` with no `--group` at all returns
+`alpha, vend`: `vend` scores 3.39 against `alpha`'s 6.18 — far outside the
+0.85 widening band — and comes back regardless, because it is the sole holder
+of `gizmo`, `parser` and `emitter`, and the concentrated tier forces every
+holder of a shared-or-rare term into the answer. Demoted is not excluded.
 
 ---
 
@@ -295,9 +511,43 @@ which offers it at step 2 of 5 and takes yes as the default — including with n
 terminal, where every prompt takes its default. `loci setup --no-graphs` skips
 it, and every other command reads.
 
-Written to `~/.loci` (or `$LOCI_HOME`): the scope registry, `groups.json` (the
-group policy — default mode, and any mode you set per group), routing index,
-episode store, fitted rankers, and optional vectors.
+So inside a repository exactly two files matter, and they point in opposite
+directions:
+
+```
+<repo>/graphify-out/graph.json    loci writes it, on request. You never do.
+<repo>/.loci.json                 you write it. loci never does.
+```
+
+Everything else goes to `~/.loci` (or `$LOCI_HOME`). One directory, not one per
+project: routing is a cross-scope decision, so answering *which project is this
+about* needs every scope's vocabulary in the same lookup, and N per-project
+indexes would turn the cheap question into the expensive one.
+
+```
+~/.loci/                    what it holds               written by
+
+├── scopes.json             the scope registry          scan, add, group
+├── groups.json             group policy: default mode  group set
+│                           and any mode set per group
+├── scope_index.json        routing index, the token    index
+│                           -> {scope: node_df} map
+├── episodes.json           the episode store: chunks   index
+│                           verbatim, already redacted
+├── rankers/<scope>.joblib  fitted BM25 + char-gram     index
+├── embeddings.npz          chunk and symbol vectors    embed
+├── .symbols-<scope>.json   symbol labels, in the       embed
+│                           order embeddings.npz has
+├── calibration.json        the fitted evidence floor   calibrate
+│                           + a semantic floor / scope
+└── .index.lock             advisory build locks, so    index, embed
+    .embed.lock             two builds cannot inter-
+                            leave their writes
+```
+
+`scopes.json` is machine-managed and rewritten wholesale by every scan;
+`groups.json` is yours and must survive one. That is why membership lives in the
+registry and mode lives in the policy, and why they are two files.
 
 ### Redaction
 
