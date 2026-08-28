@@ -825,6 +825,33 @@ def test_one_decisive_token_beats_the_count_gate():
     assert r.selected[0] == "a"
 
 
+def test_the_concentrated_tier_routes_when_its_owner_is_not_the_top_scope():
+    """The in-group evidence gate asks whether ANY eligible scope holds a
+    concentrated token, not whether the TOP one does, and the difference is the
+    whole point of the tier: a question about something two projects share
+    splits its evidence between them, so the owner of the shared term routinely
+    ranks below a scope that merely uses the common word a lot.
+
+    Here `shared` is everywhere and prominent in Alpha, which therefore wins;
+    `wrangler` lives only in Beta. The floor and the count gate are pushed out
+    of reach so concentration is the only thing that can route this at all.
+    Narrowing the gate to `top in concentrated` -- which reads tidier, and which
+    the rest of the suite does not catch -- abstains with `no_evidence` and
+    drops Beta, which is the failure the tier exists to fix.
+    """
+    idx = _index(
+        a=("Alpha", "/a", {"shared": 900}, 10),
+        b=("Beta", "/b", {"wrangler": 75, "shared": 2}, 2000),
+        c=("Gamma", "/c", {"shared": 3}, 400),
+        d=("Delta", "/d", {"shared": 3}, 400),
+    )
+    r = route("shared wrangler", idx, evidence_floor=10 ** 6, min_matched=99)
+
+    assert r.ranked[0] == "a", "fixture lost its point: the owner must be the runner-up"
+    assert not r.abstain, f"abstained {r.abstain_reason} on a contended question"
+    assert "b" in r.selected, "the owner of the concentrated token was dropped"
+
+
 def test_decisive_tier_does_not_admit_vague_questions():
     idx = _index(
         a=("Alpha", "/a", {"widget": 5, "thing": 3}, 100),
@@ -1028,6 +1055,36 @@ def test_hard_group_abstains_when_the_answer_is_named_outside_it(tmp_path):
     by_cwd = route(q, idx, cwd=str(a), **hard)
     assert by_cwd.abstain
     assert by_cwd.abstain_reason == "out_of_group"
+
+
+def test_out_of_group_asks_whether_THAT_scope_is_concentrated_not_whether_any_is():
+    """The mirror of the in-group gate, and deliberately not the same question.
+
+    `out_of_group` judges ONE scope -- the corpus-wide winner -- so it asks
+    whether that scope holds a concentrated token. `bool(concentrated_owners)`
+    there fires on a token the scope being judged does not hold, and since the
+    concentrated tier exists for terms two projects SHARE, the token is often
+    held by the in-group scope that is about to answer. A hard group would then
+    refuse the question on the strength of its own evidence.
+
+    Alpha wins the corpus on a common word alone; Beta, inside the group, holds
+    `wrangler`. The floor and count gate are out of reach, so Beta routes on
+    concentration and nothing about Alpha says the answer is elsewhere. Four
+    scopes, not two: `shared` has to exceed CONCENTRATED_SCOPES or Alpha is a
+    concentrated owner in its own right and the two readings agree by accident.
+    """
+    idx = _index(
+        a=("Alpha", "/a", {"shared": 900}, 10),
+        b=("Beta", "/b", {"wrangler": 75, "shared": 2}, 2000),
+        c=("Gamma", "/c", {"shared": 3}, 400),
+        d=("Delta", "/d", {"shared": 3}, 400),
+    )
+    r = route("shared wrangler", idx, eligible={"b"}, strict_group=True,
+              evidence_floor=10 ** 6, min_matched=99)
+
+    assert r.detail["a"]["signals"] == {}, "fixture lost its point"
+    assert not r.abstain, f"a hard group refused on its own evidence: {r.abstain_reason}"
+    assert r.selected == ["b"]
 
 
 def test_explicit_narrowing_does_not_abstain():

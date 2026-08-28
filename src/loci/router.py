@@ -238,6 +238,54 @@ def _calibrated_floor() -> float:
     return cal.evidence_floor if cal else EVIDENCE_FLOOR
 
 
+# The routability predicate, asked twice per question: once of the in-group
+# winner (`forced or enough`, which decides whether to answer) and once of the
+# corpus-wide winner (`answer_elsewhere`, which decides whether a hard group is
+# refusing something real). It was written out twice, and the copies drifted --
+# a fix round dropped the `signals` disjunct from the second one, which turned a
+# hard-group abstention into a confident answer from the wrong project.
+#
+# TWO helpers, not one, because the caller needs the halves apart: `forced`
+# alone distinguishes `deictic` from `no_evidence`, and a single combined
+# predicate would collapse those two abstention reasons into one.
+_NO_SCOPE = {"evidence_total": 0.0, "matched": 0, "signals": {}}
+
+
+def _signalled(d: dict) -> bool:
+    """cwd or an explicit alias resolved the subject.
+
+    Direct evidence, and it contributes nothing to `evidence_total` or
+    `matched`: a scope winning purely on ALIAS_BOOST or CWD_BOOST reads as zero
+    evidence to `_has_evidence`, which is why this is a separate disjunct at
+    both call sites rather than something the counts can stand in for.
+    """
+    return bool(d["signals"])
+
+
+def _has_evidence(d: dict, floor: float, min_matched: int,
+                  concentrated: bool) -> bool:
+    """Three independent ways to have enough evidence; any one routes.
+
+    They fail on different question shapes -- a short question about a rare
+    symbol has high evidence and a low count, a long question about a familiar
+    subsystem has the reverse -- so requiring all three abstains on both.
+
+    `concentrated` is the CALLER's concentration verdict, and the two callers
+    ask deliberately different questions of it. The in-group gate asks whether
+    ANY eligible scope holds a concentrated token, because a question about
+    something two projects share splits its evidence between them and the tier
+    then forces both owners into the result -- the top scope need not be one of
+    them. `answer_elsewhere` asks whether THAT ONE scope holds one, because it
+    is judging a single scope's answer and `bool(concentrated_owners)` there
+    would fire on a token no scope in the comparison holds. Passing `sid in
+    concentrated` at both sites reads tidier and is wrong: measured, it flips a
+    contended question whose owner is the runner-up from a two-scope answer into
+    a `no_evidence` abstention that drops the owner entirely.
+    """
+    return (d["evidence_total"] >= floor or d["matched"] >= min_matched
+            or concentrated)
+
+
 def route(question: str, index: dict, *, cwd: str | Path | None = None,
           widen_ratio: float | None = None, max_scopes: int | None = None,
           min_matched: int | None = None,
@@ -365,48 +413,37 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
 
     top = ranked[0] if ranked else None
     top_score = scores.get(top, 0.0) if top else 0.0
-    top_matched = detail[top]["matched"] if top else 0
-    top_total = detail[top]["evidence_total"] if top else 0.0
+    top_d = detail[top] if top else _NO_SCOPE
+    top_all_d = detail[top_all] if top_all else _NO_SCOPE
+    top_matched = top_d["matched"]
     floor = _calibrated_floor() if evidence_floor is None else evidence_floor
 
     # An alias or cwd signal is direct evidence, never overruled by abstention.
     # `forced` means cwd or an explicit alias resolved the subject; deixis is
     # only a problem when nothing else identifies what "this" refers to.
-    forced = bool(top and detail[top]["signals"])
+    forced = _signalled(top_d)
     deictic = is_deictic(question)
     # A concentrated token held only by scopes outside the group must not force
     # routing. With `eligible` unset this intersection is a no-op, because
     # concentrated_owners is always a subset of the corpus.
     concentrated_here = concentrated_owners & set(ranked)
-    # Three independent ways to have enough evidence, any one of which routes:
-    # one exceptionally discriminative token, enough summed evidence, or enough
-    # matched tokens. They fail on different question shapes -- a short question
-    # about a rare symbol has high evidence and a low count, a long question
-    # about a familiar subsystem has the reverse -- so requiring all three
-    # abstains on both.
-    enough = (top_total >= floor or top_matched >= min_matched
-              or bool(concentrated_here))
+    enough = _has_evidence(top_d, floor, min_matched, bool(concentrated_here))
 
-    # `forced or enough` applied to the corpus-wide winner instead of the
-    # in-group one. Without a gate here at all, `out_of_group` fired on a scope
-    # that matched nothing: when a question hits no vocabulary, every scope
-    # scores ~0 and the winner is whoever took the 0.15 recency tiebreak, so
-    # `out_of_group` swallowed both other reasons for every unroutable question
-    # under `hard`.
-    #
-    # The `signals` disjunct is not optional and mirrors `forced` above: an
-    # alias or cwd hit contributes nothing to evidence_total or matched, so a
-    # scope winning purely on ALIAS_BOOST or CWD_BOOST reads as zero evidence.
-    # Dropping it let the in-group runner-up's own evidence satisfy `enough`
-    # below, turning a hard-group abstention into a confident answer from the
+    # `forced or enough` asked of the corpus-wide winner instead of the in-group
+    # one -- the same predicate, through the same two helpers, which is the
+    # point: written out twice it drifted, and the copy here lost the `signals`
+    # disjunct. That let the in-group runner-up's own evidence satisfy `enough`
+    # above, turning a hard-group abstention into a confident answer from the
     # wrong project -- naming a project outside the group, or asking from inside
     # its tree, produced exactly the failure hard mode exists to prevent.
-    top_all_total = detail[top_all]["evidence_total"] if top_all else 0.0
-    top_all_matched = detail[top_all]["matched"] if top_all else 0
-    top_all_signals = detail[top_all]["signals"] if top_all else {}
-    answer_elsewhere = (bool(top_all_signals) or top_all_total >= floor
-                        or top_all_matched >= min_matched
-                        or top_all in concentrated_owners)
+    #
+    # Without a gate here at all, `out_of_group` fired on a scope that matched
+    # nothing: when a question hits no vocabulary, every scope scores ~0 and the
+    # winner is whoever took the 0.15 recency tiebreak, so `out_of_group`
+    # swallowed both other reasons for every unroutable question under `hard`.
+    answer_elsewhere = (_signalled(top_all_d)
+                        or _has_evidence(top_all_d, floor, min_matched,
+                                         top_all in concentrated_owners))
 
     reason: str | None = None
     if strict_group and eligible is not None and top_all is not None \
