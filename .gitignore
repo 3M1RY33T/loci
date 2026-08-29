@@ -9,6 +9,10 @@ dist/
 graphify-out/
 venv/
 
-# Internal planning docs -- kept locally, not published
+# Internal planning docs and agent scaffolding -- kept locally, not published.
+# Untracked is not enough: hatchling filters the sdist by .gitignore, so an
+# unignored working directory ships to PyPI. .superpowers put 500KB of review
+# diffs in the 0.1.0 sdist before this line existed.
 ROADMAP.md
 docs/
+.superpowers/
