@@ -1660,7 +1660,7 @@ def test_atomic_write_is_never_observed_half_written(tmp_path):
         try:
             for _ in range(10):
                 atomic_write(target, payload)
-        except BaseException as exc:  # noqa: BLE001 -- re-raised via `failed`
+        except BaseException as exc:  # recorded, then asserted on below
             failed.append(exc)
         finally:
             done[0] = True
