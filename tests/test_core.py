@@ -1642,31 +1642,92 @@ def test_atomic_write_is_never_observed_half_written(tmp_path):
     """
     import json
     import threading
+    import time
 
     from loci.paths import atomic_write
 
     target = tmp_path / "big.json"
     payload = json.dumps({"k": {str(i): "x" * 200 for i in range(8000)}})
-    torn, done = [0], [False]
+    torn, done, failed = [0], [False], []
 
+    # `done` is set from a finally and the reader carries its own deadline
+    # because the first version of this test could not fail: when the writer
+    # died -- which is what Windows did, PermissionError out of os.replace
+    # against a destination the reader held open -- `done` stayed False and the
+    # reader spun until GitHub killed the job at its six-hour ceiling. A test
+    # that hangs on a real bug reports nothing at all.
     def writer():
-        for _ in range(10):
-            atomic_write(target, payload)
-        done[0] = True
+        try:
+            for _ in range(10):
+                atomic_write(target, payload)
+        except BaseException as exc:  # noqa: BLE001 -- re-raised via `failed`
+            failed.append(exc)
+        finally:
+            done[0] = True
 
     def reader():
-        while not done[0]:
+        deadline = time.monotonic() + 60
+        while not done[0] and time.monotonic() < deadline:
             try:
                 if target.exists():
                     json.loads(target.read_text())
             except json.JSONDecodeError:
                 torn[0] += 1
-            except (FileNotFoundError, UnicodeDecodeError):
+            except (FileNotFoundError, UnicodeDecodeError, PermissionError):
                 pass
 
-    w, r = threading.Thread(target=writer), threading.Thread(target=reader)
-    w.start(), r.start(), w.join(), r.join()
+    # Daemon threads with bounded joins: whatever goes wrong from here, the
+    # test fails in two minutes instead of pinning a runner until it is killed.
+    w = threading.Thread(target=writer, daemon=True)
+    r = threading.Thread(target=reader, daemon=True)
+    w.start(), r.start(), w.join(120), r.join(120)
+    assert not w.is_alive() and not r.is_alive(), "the durable write never returned"
+    assert not failed, f"the durable write itself failed: {failed[0]!r}"
     assert torn[0] == 0
+
+
+def test_a_durable_write_retries_a_rename_windows_refuses(tmp_path, monkeypatch):
+    """Windows will not replace a destination another handle has open.
+
+    Simulated, because it cannot be provoked on POSIX -- which is the whole
+    problem: the bug this guards hung every Windows CI job to its six-hour
+    ceiling while Linux and macOS stayed green across four Python versions.
+    """
+    import loci.paths as P
+
+    target = tmp_path / "store.json"
+    real, calls = P.os.replace, []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(32, "being used by another process")
+        real(src, dst)
+
+    monkeypatch.setattr(P.os, "name", "nt")
+    monkeypatch.setattr(P.os, "replace", flaky)
+    P.atomic_write(target, '{"ok": true}')
+
+    assert json.loads(target.read_text()) == {"ok": True}
+    assert len(calls) == 3, "the rename was not retried"
+
+
+def test_a_durable_write_reports_a_real_permission_error_at_once(tmp_path, monkeypatch):
+    """Off Windows the same exception means what it says, so retrying only delays it."""
+    import loci.paths as P
+
+    calls = []
+
+    def denied(src, dst):
+        calls.append(1)
+        raise PermissionError(13, "permission denied")
+
+    monkeypatch.setattr(P.os, "name", "posix")
+    monkeypatch.setattr(P.os, "replace", denied)
+    with pytest.raises(PermissionError):
+        P.atomic_write(tmp_path / "store.json", "{}")
+
+    assert calls == [1]
 
 
 def test_build_lock_refuses_a_second_writer(tmp_path, monkeypatch):

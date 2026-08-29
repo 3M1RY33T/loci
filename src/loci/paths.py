@@ -12,6 +12,7 @@ from pathlib import Path
 
 ENV_HOME = "LOCI_HOME"
 LOCK_STALE_SECONDS = 3600
+REPLACE_RETRY_SECONDS = 5.0
 
 
 def home() -> Path:
@@ -76,6 +77,40 @@ def rankers_dir() -> Path:
 # ---------------------------------------------------------------------------
 # durable writes
 # ---------------------------------------------------------------------------
+def _replace(tmp: "str | Path", path: Path) -> None:
+    """`os.replace`, retried while Windows holds the destination open.
+
+    `os.replace` is atomic on POSIX and on Windows, but only POSIX lets it
+    proceed while another handle has the destination open. Windows raises
+    PermissionError instead, which converts the failure this module exists to
+    prevent -- a reader seeing half a file -- into a different one: a write that
+    never lands. A long-lived MCP server reading the store while `loci index`
+    runs holds exactly that handle, so the durable path was the one that broke.
+
+    Retrying is the whole mitigation, and it works because the competing handle
+    is a reader that opens, reads and closes: the window is milliseconds, not a
+    held lock. The retry is bounded so a genuinely locked file fails loudly
+    rather than hanging -- an unbounded wait here cost four CI jobs six hours
+    each before it was diagnosed.
+    """
+    import time
+
+    deadline = time.monotonic() + REPLACE_RETRY_SECONDS
+    delay = 0.001
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # POSIX never raises this merely because the destination is open,
+            # so anywhere but Windows it is a real permissions error and
+            # retrying would only delay the report.
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.05)
+
+
 def atomic_write(path: Path, data: "str | bytes") -> None:
     """Write via a sibling temp file and rename.
 
@@ -85,8 +120,9 @@ def atomic_write(path: Path, data: "str | bytes") -> None:
     runs hits exactly that window, and a JSONDecodeError there is indistinguishable
     from a corrupt index.
 
-    `os.replace` is atomic on POSIX and on Windows, and the temp file is created
-    beside the target so the rename never crosses a filesystem boundary.
+    The temp file is created beside the target so the rename never crosses a
+    filesystem boundary, and the rename goes through `_replace`, which absorbs
+    the one way Windows differs here.
     """
     import os
     import tempfile
@@ -100,7 +136,7 @@ def atomic_write(path: Path, data: "str | bytes") -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -118,7 +154,7 @@ def atomic_write_via(path: Path, writer) -> None:
     tmp = Path(tempfile.mkdtemp(dir=str(path.parent), prefix=f".{path.name}.")) / path.name
     try:
         writer(tmp)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     finally:
         try:
             tmp.parent.rmdir()
