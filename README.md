@@ -845,8 +845,11 @@ separately.
 - The structure store surfaces the answering symbol in 4 of 7 probes.
 - Large prose-only scopes over-attract; a scope with thousands of chunks and no
   code graph absorbs questions belonging elsewhere.
-- Never executed on Linux or Windows. Two platform bugs were found and fixed by
-  reading, which is evidence that reading finds bugs — not that it finds all.
+- CI now runs the suite on Linux, Windows and macOS across Python 3.10–3.13.
+  Standing it up found a third platform bug that reading had missed: Windows
+  refuses `os.replace` against a destination another handle holds open, so every
+  durable write failed there while both other platforms stayed green. Reading
+  finds bugs — it did not find that one. No user has run loci on Windows yet.
 - `loci eval` and `loci calibrate` share question families, so a perfect `eval`
   score immediately after calibrating is partly circular.
 

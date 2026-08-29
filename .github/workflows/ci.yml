@@ -8,10 +8,12 @@ on:
 
 jobs:
   test:
-    # loci has never been executed on Linux or Windows. Two platform bugs were
-    # already found by reading the code -- os.kill(pid, 0) terminating rather
-    # than probing on Windows, and backslash paths defeating glob matching --
-    # which is evidence that reading finds bugs, not that it finds all of them.
+    # This matrix exists because reading the code does not find every platform
+    # bug. Reading found two -- os.kill(pid, 0) terminating rather than probing
+    # on Windows, and backslash paths defeating glob matching. Running it found
+    # a third that reading had walked straight past: os.replace refusing a
+    # destination Windows has open, which failed every durable write on that
+    # platform alone.
     name: ${{ matrix.os }} · py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     strategy:
