@@ -1,5 +1,7 @@
 # loci
 
+<!-- mcp-name: io.github.3M1RY33T/loci -->
+
 **Scoped memory for coding agents.** A router in front of two stores.
 
 ```
@@ -258,11 +260,14 @@ flowchart TD
     OOG{"strict, and top_all is outside the group,<br/>and top_all would itself have been routable?"}
     A1(["ABSTAIN out_of_group<br/>the best answer is outside the group"])
     FORCED{"forced?<br/>top carries an alias hit or the cwd signal"}
+    ENUM{"enumerative?<br/>which projects / what repos / any of my / where else / have I ever"}
     DEIX{"deictic?<br/>this / these / it / its / here / the project / the app / ..."}
     A2(["ABSTAIN deictic<br/>the question points at a subject it never names"])
     EV{"enough evidence?<br/>ANY ONE of the three is enough"}
     A3(["ABSTAIN no_evidence<br/>too little of the question exists in any project"])
+    SEL{"did the question ask for a SET?"}
     SELECT["keep every eligible scope scoring at or above 0.85 x top,<br/>cap at 3, then force in every concentrated-token holder"]
+    SETSEL["keep every eligible scope clearing 0.8 x the floor ON ITS OWN,<br/>in rank order, cap at 8 -- no ratio cutoff at all"]
     OUT(["selected scopes"])
 
     Q --> CONF
@@ -280,18 +285,23 @@ flowchart TD
     TOPS --> OOG
     OOG -->|yes| A1
     OOG -->|no| FORCED
-    FORCED -->|yes| SELECT
-    FORCED -->|no| DEIX
+    FORCED -->|yes| SEL
+    FORCED -->|no| ENUM
+    ENUM -->|"yes, and it is not picking ONE scope"| EV
+    ENUM -->|no| DEIX
     DEIX -->|yes| A2
     DEIX -->|no| EV
-    EV -->|"summed token evidence at or above the floor<br/>(7.6 shipped, refitted by loci calibrate)"| SELECT
-    EV -->|"at least 4 matched tokens"| SELECT
-    EV -->|"an eligible scope holds a CONCENTRATED token:<br/>held by at most 2 scopes, prominent inside them"| SELECT
+    EV -->|"summed token evidence at or above the floor<br/>(7.6 shipped, refitted by loci calibrate)"| SEL
+    EV -->|"at least 4 matched tokens"| SEL
+    EV -->|"an eligible scope holds a CONCENTRATED token:<br/>held by at most 2 scopes, prominent inside them"| SEL
     EV -->|"none of the three"| A3
+    SEL -->|no| SELECT
+    SEL -->|yes| SETSEL
     SELECT --> OUT
+    SETSEL --> OUT
 ```
 
-Three things in that shape are load-bearing and none of them are obvious.
+Four things in that shape are load-bearing and none of them are obvious.
 
 **`forced` is an escape, not a signal.** An alias hit or a cwd hit contributes
 nothing to either evidence count, so a scope winning purely on 6.0 or 4.0 reads
@@ -309,6 +319,38 @@ winner is whoever took the 0.15 recency tiebreak.
 shapes.** A short question about a rare symbol has high evidence and a low
 count; a long question about a familiar subsystem has the reverse. Requiring
 all three abstains on both.
+
+**Enumeration inverts every other gate, so it gets its own selection rule.**
+Every gate above asks *is there enough evidence for ONE scope*, and a question
+about something several projects share splits its evidence across them by
+construction — so the more projects genuinely share a term, the less likely all
+of them come back. Measured, `which of my projects use Cloudflare workers or
+D1?` returned one owner of two: 2.098 against 1.0867, where the 0.85 ratio
+needed 1.783.
+
+The ratio is the part that inverts. It measures distance from the *top* scope,
+and the top scope of an enumeration is merely whichever owner says the term most
+often. Set mode drops it and asks each scope the same routability question in
+turn, against a floor discounted to 0.8 — because a member of a set legitimately
+carries less evidence than a lone answer.
+
+Enumeration is grammatical, like deixis, so it is detected the same way: a closed
+class of markers, no threshold. It also **outranks** deixis. *"where else does
+this pattern appear?"* points at its subject *and* asks across the corpus; the
+deixis rule exists because a pointing question gives no way to pick one scope,
+and an enumerative question is not picking one.
+
+The frame nouns are stripped from the query, which is the deixis insight one
+level down — `projects` is scaffolding, not vocabulary. It is not a cosmetic
+step: in the development corpus `projects` is held by exactly two scopes, so it
+scored as discriminative evidence *for those two* and dragged both into every
+"which of my projects" answer. Stripping it moved negative-family abstention
+from 66.7% to 88.9%.
+
+```bash
+loci ask "which of my projects use Cloudflare workers or D1?"
+# ENUMERATED -> 3M1RY33T.github.io, urthreads
+```
 
 ### Scopes and groups
 
@@ -495,13 +537,37 @@ than wording.
 
 ## MCP
 
+`loci mcp` speaks stdio, so a client launches it — you do not run it yourself.
+
+**Claude Code:**
+
 ```bash
-loci mcp
+claude mcp add loci --scope user -- loci mcp
+claude mcp list                       # loci: ... - ✔ Connected
 ```
+
+**Claude Desktop**, in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "loci": { "command": "loci", "args": ["mcp"] }
+  }
+}
+```
+
+Use an absolute path for `command` if `loci` lives in a version-managed
+environment — pyenv shims and `pipx` venvs resolve against a shell your client
+does not have. `which loci` from a working shell, then paste the target.
 
 Three tools — `ask`, `scopes`, `doctor` — not several dozen. Agents are the
 primary consumer, and a wide tool surface pushes orchestration onto the model
 and burns a turn per hop.
+
+Without this the server is dead weight: it is installed by the `mcp` extra and
+reachable by nothing, and every question an agent asks goes through the CLI
+instead — paying full process and model startup per question, and never touching
+the boot-time warm-up the server exists to provide.
 
 Pass `cwd` to `ask` whenever the client knows it, and `group` to narrow the same
 way `--group` does on the command line. The server loads the embedding model and
@@ -512,8 +578,10 @@ fast rather than paying ~4.4s of startup while the user waits.
 
 ## Measure it on your own corpus
 
-Every accuracy figure below was fitted and measured against one person's ten
-repositories. That is a claim you would otherwise have to take on trust.
+Every accuracy figure below was fitted and measured against one person's
+repositories — ten when the constants were fitted, fourteen now. That is a claim
+you would otherwise have to take on trust, and the drift between those two
+numbers cost the behavior family 57 points.
 
 ```bash
 loci eval            # a few seconds, no labelling, no setup
@@ -830,18 +898,32 @@ MIT, so forking stays available; it just is not necessary.
 
 Alpha, and the numbers deserve their caveats.
 
-Measured on a 105-item set over 10 scopes — see `evals/RESULTS.md` for method,
-per-family results, and the things that were tried and rejected. 80 of those
+Measured on a 143-item set over 14 scopes — see `evals/RESULTS.md` for method,
+per-family results, and the things that were tried and rejected. 112 of those
 items are generated from a fixed taxonomy applied to every scope, so that
-portion is unbiased by construction. The remaining 25 were hand-authored by the
+portion is unbiased by construction. The remaining 31 were hand-authored by the
 same person who built the router; each carries a `contamination` field recording
 what the author had seen, and uncontaminated results are always reported
 separately.
 
 **Known limits:**
 
-- Uncontaminated top-1 is 85.7% — that is 6 of 7 items. Single items move the
-  number 14 points.
+- **The behavior family fell from 85.7% to 28.6% when the corpus grew from 10
+  scopes to 14**, and the cause is not a threshold — sweeping `SIZE_PRIOR`
+  across 0.0–0.5 on the new corpus never beats the shipped 0.15. Two scopes now
+  hold 5,995 and 4,680 distinct tokens against `urthreads`' 427, and a scope
+  whose vocabulary approaches the corpus's own matches every question on
+  ordinary English. Five alternative scoring families were swept against it and
+  **none beat the plain sum**; the one strict improvement ships inert as
+  `CORROBORATION_WEIGHT`, because a single item on a single corpus is not
+  evidence. This is the largest open problem in the router.
+- The synthetic test bed cannot reproduce that failure: `CorpusSpec.size_skew`
+  varies file volume, not vocabulary breadth, so all thirteen shapes read 100%
+  at every value of the constant that would fix it. Closing that is a test-bed
+  change and it blocks the router change.
+- Two eval golds were found stale during this release, one of which was marking
+  a **correct** three-scope answer down as a precision failure. Corpus drift
+  turns right answers into recorded misses and nothing in the harness notices.
 - The structure store surfaces the answering symbol in 4 of 7 probes.
 - Large prose-only scopes over-attract; a scope with thousands of chunks and no
   code graph absorbs questions belonging elsewhere.

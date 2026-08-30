@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import re
 import subprocess
+import threading
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,6 +85,27 @@ _FIT: dict[str, tuple] = {}
 _EMB: dict | None = None
 _MODEL = None
 _RERANKER = None
+
+# `ask` fans out across the selected scopes in a ThreadPoolExecutor, so every
+# lazy initializer below is reachable from several threads at once. Unguarded,
+# `if _MODEL is None: _MODEL = SentenceTransformer(...)` is a check-then-act
+# race, and two threads constructing a sentence-transformer concurrently do not
+# merely duplicate the work -- they DEADLOCK, because the loader spins up a
+# joblib/loky process pool and doing that from two threads hangs. Measured:
+# `loci ask "which of my projects use Cloudflare workers or D1?"` never
+# returned, while the same question with the model already warm took 0.2s, and
+# the same question with one scope selected always worked.
+#
+# It is not new -- any question routing to two scopes on a cold model could hit
+# it -- but enumerative set mode selects two or more scopes far more often, so a
+# latent race became the first thing a user would run.
+#
+# Separate locks, not one: `_semantic` calls `_embeddings()` and then
+# `_encode_query()`, and a single shared lock would serialize every query behind
+# whichever thread is loading. Double-checked, so the lock is paid once.
+_EMB_LOCK = threading.Lock()
+_MODEL_LOCK = threading.Lock()
+_RERANKER_LOCK = threading.Lock()
 
 
 # ==========================================================================
@@ -493,13 +515,15 @@ def _calibrated_semantic_floor(scope_id: str | None = None) -> float:
 def _embeddings(path: Path | None = None):
     global _EMB
     if _EMB is None:
-        p = path or embeddings_file()
-        if not Path(p).is_file():
-            _EMB = {}
-        else:
-            import numpy as np
-            z = np.load(p, allow_pickle=False)
-            _EMB = {k: z[k] for k in z.files}
+        with _EMB_LOCK:
+            if _EMB is None:          # another thread may have won the race
+                p = path or embeddings_file()
+                if not Path(p).is_file():
+                    _EMB = {}
+                else:
+                    import numpy as np
+                    z = np.load(p, allow_pickle=False)
+                    _EMB = {k: z[k] for k in z.files}
     return _EMB or None
 
 
@@ -519,10 +543,12 @@ def _encode_query(text: str, model_name: str):
     if not model_name:
         return None
     if _MODEL is None:
-        import warnings
-        warnings.filterwarnings("ignore")
-        from sentence_transformers import SentenceTransformer
-        _MODEL = SentenceTransformer(model_name)
+        with _MODEL_LOCK:
+            if _MODEL is None:
+                import warnings
+                warnings.filterwarnings("ignore")
+                from sentence_transformers import SentenceTransformer
+                _MODEL = SentenceTransformer(model_name)
     prefix = next((v for kk, v in _QUERY_PREFIX.items() if kk in model_name.lower()), "")
     return _MODEL.encode([prefix + text], normalize_embeddings=True)[0]
 
@@ -534,10 +560,12 @@ def _rerank(question: str, hits: list[EpisodeHit], depth: int) -> list[EpisodeHi
     if len(head) < 2:
         return hits
     if _RERANKER is None:
-        import warnings
-        warnings.filterwarnings("ignore")
-        from sentence_transformers import CrossEncoder
-        _RERANKER = CrossEncoder(RERANK_MODEL, max_length=512)
+        with _RERANKER_LOCK:
+            if _RERANKER is None:
+                import warnings
+                warnings.filterwarnings("ignore")
+                from sentence_transformers import CrossEncoder
+                _RERANKER = CrossEncoder(RERANK_MODEL, max_length=512)
     scores = _RERANKER.predict(
         [(question, f"{h.chunk.heading} {h.chunk.text}") for h in head],
         show_progress_bar=False)

@@ -1808,3 +1808,166 @@ the five --split adds, with the aliases they mint:
 
 14 and 19 are the S0/S1/S2 and S3 registry sizes in "The four stages" above,
 which is the check that this is the same corpus and the same split.
+
+## v0.2.0, 2026-08-30: enumeration, the tokenizer, and a skew I could not fix
+
+Four things, in the order the evidence forced them. The first two are fixes; the
+third is a correction to this document; the fourth is a negative result.
+
+### The corpus moved, and this document did not
+
+Everything above was measured on ten scopes. The registry now holds fourteen,
+and two of them are very large: `Delroy` at 23,571 nodes and 5,995 distinct
+tokens, `odysseus` at 16,793 and 4,680, against `urthreads` at 771 and 427. The
+skew is 213x by vocabulary where Phase 1 recorded 79x.
+
+Re-running the same eval on the same code that produced the numbers above:
+
+```
+family        recorded here    re-measured, 14 scopes
+behavior           85.7%              28.6%
+```
+
+**This is corpus drift, not a code regression, and it is not a threshold
+problem.** Sweeping `SIZE_PRIOR` from 0.0 to 0.5 on the new corpus never beats
+0.15 -- the value already shipped -- so rule 4 applies: the inputs moved, not the
+knob. The mechanism is in "Rejected: conditional docstring routing" already, one
+scope up: a scope whose vocabulary approaches the corpus's own matches every
+question on ordinary English. `Delroy` answers *"Why would a browser silently
+discard a login cookie that curl accepts?"* by matching all seven query tokens on
+`browser`, `accepts`, `discard`, `silently`; `urthreads` matches three and owns
+the two that carry the question, `cookie` at 5.47 and `login` at 4.53.
+
+The 85.7% is left in place above rather than edited out. It was true of that
+corpus and it is the reason rule 2 exists.
+
+### Two eval golds were stale, and one of them was scoring a correct answer wrong
+
+Found while building the enumerative set, not while looking for it:
+
+- `cross-cloudflare` gold was `['urthreads']`. `3M1RY33T.github.io` was
+  registered later and ships a `wrangler.toml` with a `[[d1_databases]]`
+  binding, so it is a second correct answer. Gold now names both.
+- `cross-zim` gold was `['tsrc', 'zim-compress']`. `tensor-serve` describes
+  itself as "a ZIM-based retrieval augmented proxy" and holds `zim` 187 times.
+  The router had been returning all three and being **marked down for the one
+  that was right**. Gold now names three.
+
+A benchmark that penalises correct behaviour is worse than none -- rule 5, and
+this is the second time it has bitten. Corpus drift silently converts a correct
+answer into a recorded miss, and nothing in the harness notices.
+
+### Enumerative set mode
+
+Every gate in the router asks "is there enough evidence for ONE scope". A
+question that asks for a SET splits its evidence across the owners by
+construction, so **the more projects genuinely share a term, the less likely all
+of them come back.** Measured before the fix, `which of my projects use
+Cloudflare workers or D1?` returned one owner of two: 2.098 against 1.0867, where
+`WIDEN_RATIO` needed 1.783.
+
+The README's own quickstart returned both owners only by luck. `wrangler` sits in
+exactly two scopes and trips `CONCENTRATED_SCOPES`; `cloudflare` sits in two as
+well, but its owners score 2.527 and 2.314 against a `CONCENTRATED_EVIDENCE` of
+2.6 and the tier declined them both by a hair.
+
+Enumeration is grammatical, like deixis, so it is detected grammatically -- a
+closed class of markers. Two mechanisms, ablated separately:
+
+| | confusable top-1 | confusable goldcov | cross goldcov | negative |
+|---|---|---|---|---|
+| before | 50.0% | 41.7% | 66.7% | 66.7% |
+| **after** | **100.0%** | **66.7%** | **83.3%** | **88.9%** |
+
+`behavior` is byte-identical before and after, and taxonomy holds at 100% with
+cwd / 100% abstained without.
+
+**Frame stripping carries the negatives.** `projects` is not vocabulary, it is
+scaffolding -- the deixis insight one level down. In this corpus it is held by
+exactly two scopes at 88 and 7 occurrences, so it scored as discriminative
+evidence *for those two* and dragged both into every "which of my projects"
+answer ever given. Stripping the frame alone moved negative-family abstention
+from 66.7% to 88.9%.
+
+`SET_FLOOR_RATIO` is a ratio of the *calibrated* floor rather than an absolute,
+so it inherits whatever `loci calibrate` fitted to the corpus present. Swept:
+confusable gold-coverage is flat at 83.3% from **0.6 to 0.8** and falls to 66.7%
+at 0.9; precision peaks at 0.8 (77.8%) and decays below 0.7 (72.2% at 0.7, 65.1%
+at 0.5) as the sets grow. 0.8 is the top of the flat region and the precision
+maximum -- the value that widens least to get the coverage. The band is reported
+because rule 3 asks for the width, not the argmax.
+
+**Rejected on measurement: plural folding.** `urthreads` holds `worker` 158 times
+and `workers` twice, so "Cloudflare Workers" cannot see its strongest evidence.
+Folding singular/plural at query time looked obviously right and measured worse:
+behavior goldcov 42.9% -> 28.6%, negatives 66.7% -> 55.6%. Scoping the fold to
+enumerative questions only was still worse than not doing it. The dilution of
+scope-IDF costs more than the recovered evidence pays.
+
+### The tokenizer was deleting `D1`
+
+`_WORDISH` was `[^\W\d_]+`, which treats every digit as a separator *and*
+discards it. `D1` became `d` and died on `MIN_LEN`. Over 53 markdown files in
+three repositories: **258 distinct alphanumeric terms deleted outright across
+1,246 occurrences** -- `s3` (102), `n8n` (70), `d1` (64) -- plus `base64` -> `base`,
+`sha256` -> `sha`, `python3` -> `python`.
+
+`d1` appears in this project's README as a routing example. It could never have
+worked.
+
+It also killed an alias. A scope named `3M1RY33T` tokenized its only alias to
+`[]`, so `ALIAS_BOOST` -- at 6.0 the strongest signal in the router -- could never
+fire for it, and naming the project outright abstained.
+
+The new output is a **superset**: `base64` yields both `base64` and `base`, so no
+query that matched before can stop matching. Two guards keep the noise out. Bare
+numbers are dropped, and a git-hash guard drops runs that are six or more
+characters, entirely hexadecimal, and mixing digits with letters -- narrow on
+purpose, because dropping the digit requirement would delete `decade`, `facade`
+and `deface`.
+
+**A tokenizer change did not invalidate the index.** Shipping this, `loci index`
+reported 12 of 14 scopes "unchanged, reused without re-parsing" and kept the old
+vocabulary: the fingerprint is a content signature, and no file's mtime had
+moved. The routing index and the tokenizer disagreed about what a word is and
+nothing said so. `fingerprint()` is now seeded with `text.rules_signature()`, so
+any future change to the rules invalidates the cache by construction rather than
+when somebody remembers to bump a constant. `INDEX_VERSION` is 2.
+
+### Vocabulary-mass skew: five mechanisms, none of them worked
+
+The `behavior` regression above is the target. Five scoring families were swept,
+changing only the ranking base and leaving `evidence_total` a plain sum so every
+calibrated gate keeps its meaning:
+
+| family | behavior top-1 |
+|---|---|
+| sum (shipped) | **28.6%** |
+| share-weighted, exponent 0.5 / 1 / 2 | 28.6% / 14.3% / 14.3% |
+| owner-thresholded, tau 0.4-0.85 | 28.6% |
+| power mean, exponent 1.5-4 | 14.3% |
+| max + lambda x rest | 14.3% - 28.6% |
+
+**Nothing beats the baseline.** The reason is visible in the misses: on
+`beh-ody-windows-clicks` the big scope matches `clicks` and `responding` and the
+gold scope matches neither. Reweighting lexical evidence cannot rescue a case
+where the lexical evidence genuinely favours the wrong scope. That needs a
+different signal, not a different weighting -- which is the same conclusion "the
+sharpest finding" reached about docstrings, arrived at from the other side.
+
+One family is a strict improvement on one axis. `max + lambda x rest` at
+**0.55-0.90** leaves behavior, confusable, cross and both taxonomy figures
+byte-identical while taking negative-family abstention from 83.3% to 100% -- it
+converts `neg-plausible-absent` from a confident wrong answer into an abstention.
+
+It ships **inert, at 1.0**, as `router.CORROBORATION_WEIGHT`. One item, on one
+corpus, inside the set it was measured against, is rules 1 and 2 both. And the
+synthetic bed cannot arbitrate: swept across all thirteen standard shapes at
+0.5/0.7/0.9/1.0, **every metric reads 100% at every value** -- including
+`size-skew`, the shape that should reproduce this. `CorpusSpec.size_skew` scales
+file *volume* while every scope still draws its filler from one fixed pool of
+shared English, so the corpus that breaks routing is not generatable today.
+
+That is the next piece of work, and it is a test-bed change, not a router
+change: give the generator a vocabulary-breadth dimension, reproduce the
+failure, then settle the constant against it.

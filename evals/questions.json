@@ -123,11 +123,12 @@
       "question": "How are ZIM archive files handled?",
       "gold": [
         "tsrc",
-        "zim-compress"
+        "zim-compress",
+        "tensor-serve"
       ],
       "cwd": null,
       "contamination": "none",
-      "justification": "TSRC manages/downloads ZIM archives; zim-compress rewrites them. A correct answer widens to both rather than picking one.",
+      "justification": "TSRC manages/downloads ZIM archives; zim-compress rewrites them; tensor-serve is 'a ZIM-based retrieval augmented proxy' that builds a vector database from downloaded ZIMs. tensor-serve was missing from gold, so a correct three-scope answer scored as a precision failure.",
       "expect_contains": [
         "zim"
       ]
@@ -154,11 +155,12 @@
       "family": "cross",
       "question": "Which projects deploy to Cloudflare Workers with a D1 database?",
       "gold": [
-        "urthreads"
+        "urthreads",
+        "3m1ry33t-github-io"
       ],
       "cwd": null,
       "contamination": "prose",
-      "justification": "urthreads only, among registered scopes.",
+      "justification": "Both ship a wrangler.toml with a [[d1_databases]] binding: urthreads for its comment store, 3M1RY33T.github.io for portfolio-likes. Gold was ['urthreads'] alone because the second scope was registered after the item was written -- corpus drift, not a routing failure.",
       "expect_contains": [
         "cloudflare",
         "d1",
@@ -336,6 +338,82 @@
       "contamination": "none",
       "expect_symbol": "build_parser",
       "justification": "KNOWN MISS: the scope's 82-token symbol vocabulary contains none of the query terms, so expansion is empty and no traversal runs."
+    },
+    {
+      "id": "enum-cloudflare",
+      "family": "enumerative",
+      "question": "which of my projects use Cloudflare workers or D1?",
+      "gold": [
+        "urthreads",
+        "3m1ry33t-github-io"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "The motivating case. Before set mode this returned one owner of two: 2.098 against 1.0867, where WIDEN_RATIO needed 1.783.",
+      "expect_contains": [
+        "cloudflare",
+        "d1",
+        "worker"
+      ]
+    },
+    {
+      "id": "enum-wrangler",
+      "family": "enumerative",
+      "question": "which projects use wrangler and D1?",
+      "gold": [
+        "urthreads",
+        "3m1ry33t-github-io"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "The README quickstart. It returned both owners before set mode, but only by luck: `wrangler` sits in exactly two scopes and tripped CONCENTRATED_SCOPES. It is here so the luck is measured.",
+      "expect_contains": [
+        "wrangler",
+        "d1"
+      ]
+    },
+    {
+      "id": "enum-zim",
+      "family": "enumerative",
+      "question": "which of my projects handle ZIM files?",
+      "gold": [
+        "tsrc",
+        "zim-compress",
+        "tensor-serve"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "Three genuine owners of one term -- the shape MAX_SCOPES=3 and the widen ratio were never sized for.",
+      "expect_contains": [
+        "zim"
+      ]
+    },
+    {
+      "id": "enum-neg-k8s",
+      "family": "negative",
+      "question": "which of my projects use Kubernetes ingress controllers?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "Enumerative phrasing must not loosen abstention. No scope does Kubernetes; set mode drops the widen ratio and must still refuse."
+    },
+    {
+      "id": "enum-neg-vague",
+      "family": "negative",
+      "question": "which of my projects should I work on next?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "Enumerative frame, no discriminating vocabulary. Stripping the frame must not leave the remaining words looking like evidence."
+    },
+    {
+      "id": "enum-neg-stripe",
+      "family": "negative",
+      "question": "do any of my projects verify Stripe webhook signatures?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "Plausible and specific, and nobody here takes payments."
     }
   ]
 }

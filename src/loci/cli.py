@@ -467,7 +467,11 @@ def cmd_route(args) -> int:
         print(f"ABSTAIN (matched={r.top_matched}{f', {why}' if why else ''})"
               f" -> ask the user" + (f"; candidates: {cands}" if cands else ""))
     else:
-        print(f"-> {', '.join(names[s] for s in r.selected)}")
+        # Name the mode. A three-scope answer to "which of my projects use D1?"
+        # is a SET, and one to "why did the cookie drop?" is indecision; without
+        # the label they render identically.
+        how = " (all owners)" if r.enumerative else ""
+        print(f"-> {', '.join(names[s] for s in r.selected)}{how}")
     if args.explain:
         print()
         if r.group:

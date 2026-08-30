@@ -199,6 +199,29 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
 
     answers: list[ScopeAnswer] = []
     if selected:
+        if with_episodes and len(selected) > 1:
+            # Pay the one-off native initialization HERE, on one thread, before
+            # the fan-out below. Constructing the sentence-transformer and
+            # loading the joblib-persisted rankers concurrently does not merely
+            # duplicate work -- it crashes. Measured on macOS/CPython 3.14, the
+            # same question returned SIGSEGV, SIGABRT and an indefinite hang on
+            # different runs, and always succeeded once the model was already
+            # warm. `mcp_server._warm_up` pays this at boot for exactly this
+            # reason; a one-shot CLI invocation had no equivalent.
+            #
+            # It is not new -- any question routing to two scopes on a cold
+            # process could reach it -- but enumerative set mode selects two or
+            # more scopes far more often, which turned a rare race into the
+            # first thing a user would run.
+            #
+            # The work is not wasted: `_fit` and the model are cached, so the
+            # threads below find everything built. It is the same total cost,
+            # serialized only for the first question in the process.
+            try:
+                from .backends import episodes as _ep
+                _ep.warm_up(store, list(selected))
+            except Exception:
+                pass   # a cold fan-out is the old behaviour, not a new failure
         with ThreadPoolExecutor(max_workers=min(8, len(selected))) as pool:
             answers = list(pool.map(work, selected))
     return Answer(question=question, routing=rt, scopes=answers)
@@ -255,7 +278,10 @@ def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
         return "\n".join(out)
 
     how = "forced" if not rt.ranked or rt.top_matched == 0 else f"score={rt.top_score:.3f}"
-    out.append(f"ROUTED -> {', '.join(a.name for a in answer.scopes)}   ({how})")
+    # ENUMERATED, not ROUTED: the question asked which projects, and every scope
+    # below is an answer rather than a candidate the router could not separate.
+    verb = "ENUMERATED" if rt.enumerative else "ROUTED"
+    out.append(f"{verb} -> {', '.join(a.name for a in answer.scopes)}   ({how})")
 
     for a in answer.scopes:
         out.append("")

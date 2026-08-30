@@ -161,7 +161,123 @@ DEIXIS = re.compile(
 def is_deictic(question: str) -> bool:
     """True when the question points at its subject instead of naming it."""
     return bool(DEIXIS.search(question))
+
+
+# A question that asks for a SET is the exact inverse of the case every other
+# gate is built for. Each gate asks "is there enough evidence for ONE scope",
+# and enumeration splits its evidence across every owner by construction -- so
+# the more projects genuinely share a term, the less likely all of them come
+# back. Measured before this fix, `which of my projects use Cloudflare workers
+# or D1?` returned one owner of two: 2.098 against 1.0867, where WIDEN_RATIO
+# needed 1.783.
+#
+# The README's own quickstart returned both owners only by luck. `wrangler` sits
+# in exactly two scopes and trips the concentrated tier at CONCENTRATED_SCOPES;
+# `cloudflare` sits in two as well but its owners score 2.527 and 2.314 against
+# CONCENTRATED_EVIDENCE of 2.6, so the tier declined them both by a hair. The
+# mechanism inverts on the one question shape that wants a set.
+#
+# Enumeration is grammatical, like deixis, so it is detected grammatically -- a
+# closed class of markers, not a tuned threshold.
+ENUMERATIVE = re.compile(
+    r"\bwhich\s+(?:of\s+)?(?:my|the|our|your)?\s*"
+    r"(?:projects?|repos?|repositories|codebases?|code\s*bases?)\b"
+    r"|\bwhat\s+(?:projects?|repos?|repositories|codebases?)\b"
+    r"|\b(?:do\s+)?any\s+of\s+(?:my|the|our|your)\b"
+    r"|\b(?:where|anywhere)\s+else\b"
+    r"|\b(?:across|in)\s+(?:all\s+)?(?:my|the|our|your)\s+"
+    r"(?:projects?|repos?|repositories|codebases?)\b"
+    r"|\ball\s+(?:my|the|our|your)\s+(?:projects?|repos?|repositories)\b"
+    r"|\bhave\s+i\s+ever\b",
+    re.IGNORECASE,
+)
+
+# The frame nouns are scaffolding for the enumeration, not vocabulary that
+# identifies anything -- the same insight as deixis, one level down. Leaving
+# them in is not neutral: `projects` is held by exactly two scopes in the
+# development corpus, at 88 and 7 occurrences, so it scored as discriminative
+# evidence FOR those two and dragged both into the answer to every "which of my
+# projects" question ever asked. Stripping them alone lifted negative-family
+# abstention from 66.7% to 88.9%.
+ENUM_FRAME = frozenset({
+    "projects", "project", "repos", "repo", "repositories", "repository",
+    "codebases", "codebase", "else", "ever",
+})
+
+# What set mode does with the floor. It is a RATIO of the routing floor rather
+# than an absolute, so it inherits whatever `loci calibrate` fitted to the
+# corpus actually present -- the same reason EVIDENCE_FLOOR is calibrated at
+# all. A member of a set legitimately carries less evidence than a lone answer,
+# because the question's evidence is split across the owners.
+#
+# Swept against the hand-authored eval on the development corpus. Confusable
+# gold-coverage is FLAT at 83.3% from 0.6 to 0.8 and falls to 66.7% at 0.9;
+# precision peaks at 0.8 (77.8%) and decays below 0.7 (72.2% at 0.7, 65.1% at
+# 0.5) as the sets grow. 0.8 is the top of the flat region and the precision
+# maximum, so it is the value that widens least to get the coverage. The
+# acceptable band is 0.6-0.8, reported per the rule that a flat region beats a
+# sharp optimum.
+SET_FLOOR_RATIO = 0.8
+# Enumeration over a corpus of ten to twenty projects should be allowed to
+# return more than MAX_SCOPES, which is sized for "which ONE project". This is a
+# runaway guard, not a fitted value: nothing in the eval reaches it.
+MAX_SET_SCOPES = 8
+
+
+def is_enumerative(question: str) -> bool:
+    """True when the question asks which projects, not which project."""
+    return bool(ENUMERATIVE.search(question))
 SIZE_PRIOR = 0.15
+
+# How much a token counts when it is NOT a scope's best evidence.
+#
+# SHIPPED INERT AT 1.0, which is a plain sum and exactly what the router did
+# before this constant existed. It is here because the failure it addresses is
+# real and measured, and the evidence to SETTLE it is not obtainable from the
+# current test bed. Read the whole note before moving it.
+#
+# The failure. The score is a sum over matched tokens, and a sum rewards
+# BREADTH. Measured on a 14-scope corpus where one scope holds 5,995 distinct
+# tokens against urthreads' 427: "Why would a browser silently discard a login
+# cookie that curl accepts?" routes to the big scope, which matches all seven
+# query tokens on ordinary English -- `browser`, `accepts`, `discard`,
+# `silently` -- while urthreads matches three and owns the two that carry the
+# question, `cookie` at 5.47 and `login` at 4.53. Containing a word is not the
+# same as being about it. This is the same mechanism the size prior was
+# introduced for ("ordinary English words appear in exactly one scope when that
+# scope's index is 67x larger"), at a skew the size prior no longer corrects:
+# sweeping SIZE_PRIOR from 0.0 to 0.5 on this corpus never beats 0.15, so the
+# knob is not the answer.
+#
+# What was tried. Five scoring families, swept against the hand-authored eval:
+# share-weighting (contrib x its share of the token, exponent 0.5/1/2),
+# owner-thresholding (count a token only for scopes within tau of its best
+# owner, tau 0.4-0.85), power means (exponent 1.5-4), and this max-plus-
+# discounted-rest blend. NONE beats the baseline's 28.6% behavior top-1. The
+# power means and share-weightings are strictly worse. Reweighting lexical
+# evidence cannot fix a case where the lexical evidence genuinely favours the
+# wrong scope -- on `beh-ody-windows-clicks` the big scope matches `clicks` and
+# `responding` and the gold scope matches neither. That needs a different
+# signal, not a different weighting.
+#
+# What this blend DOES buy, at 0.55-0.90 on the real corpus: negative-family
+# abstention 83.3% -> 100%, with behavior, confusable, cross and both taxonomy
+# figures byte-identical to the baseline. The item it converts is
+# `neg-plausible-absent` -- a technically specific question about Kubernetes,
+# which no scope does -- from a confident wrong answer into an abstention. That
+# is the "plausibility alone must not produce an answer" test, and abstention is
+# the direction this design prefers to be wrong in.
+#
+# Why it is not enabled. One item, on one corpus, in the set it was measured
+# against -- rules 1 and 2. The synthetic bed cannot arbitrate: swept across all
+# thirteen standard shapes at 0.5/0.7/0.9/1.0, every metric reads 100% at every
+# value, because `CorpusSpec.size_skew` scales file VOLUME while every scope
+# still draws its filler from one fixed pool of shared English. The shape that
+# breaks the real corpus -- one scope whose DISTINCT vocabulary approaches the
+# whole corpus's -- is not generatable today. Give the generator a vocabulary-
+# breadth dimension, reproduce the failure, and then this constant can be
+# settled with evidence instead of with one item.
+CORROBORATION_WEIGHT = 1.0
 
 # Why an ABSOLUTE matched-token floor rather than a margin test: measured on
 # real corpora, margin does not separate routable from unroutable questions at
@@ -304,11 +420,14 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
           evidence_floor: float | None = None,
           concentrated_evidence: float | None = None,
           size_prior: float | None = None,
+          corroboration_weight: float | None = None,
           eligible: set[str] | None = None,
           demoted: set[str] | None = None,
           group_penalty: float | None = None,
           strict_group: bool = False,
           group: str | None = None,
+          set_floor_ratio: float | None = None,
+          max_set_scopes: int | None = None,
           mode: str | None = None) -> RouteResult:
     """Route a question to scope(s).
 
@@ -336,13 +455,21 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     concentrated_evidence = (CONCENTRATED_EVIDENCE if concentrated_evidence is None
                              else concentrated_evidence)
     size_prior = SIZE_PRIOR if size_prior is None else size_prior
+    corroboration_weight = (CORROBORATION_WEIGHT if corroboration_weight is None
+                            else corroboration_weight)
     group_penalty = GROUP_PENALTY if group_penalty is None else group_penalty
+    set_floor_ratio = (SET_FLOOR_RATIO if set_floor_ratio is None
+                       else set_floor_ratio)
+    max_set_scopes = MAX_SET_SCOPES if max_set_scopes is None else max_set_scopes
     scopes = index["scopes"]
     postings = index["postings"]
     S = len(scopes)
 
     q_all = vtokens(question)
     q = unique_tokens(question)
+    enumerative = is_enumerative(question)
+    if enumerative:
+        q = [t for t in q if t not in ENUM_FRAME]
     recency = _recency_rank(scopes)
     cwd_path = Path(cwd).expanduser().resolve() if cwd else None
 
@@ -393,7 +520,13 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         best_evidence = max((c for _, c in matched), default=0.0) / idf_max
         total_evidence = sum(c for _, c in matched) / idf_max
 
-        base = total / max(1, len(q))
+        # Only the RANKING base is discounted. `evidence_total` above stays a
+        # plain sum, so EVIDENCE_FLOOR and everything `loci calibrate` fitted
+        # keep the meaning they were measured with -- this changes which scope
+        # wins, never whether the question is routable at all.
+        best = max((c for _, c in matched), default=0.0)
+        ranked_total = best + corroboration_weight * (total - best)
+        base = ranked_total / max(1, len(q))
         if size_prior:
             base /= max(1, meta.get("token_count", 1)) ** size_prior
         # Before the boosts, deliberately: a multiplicative penalty here cannot
@@ -438,7 +571,12 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # `forced` means cwd or an explicit alias resolved the subject; deixis is
     # only a problem when nothing else identifies what "this" refers to.
     forced = _signalled(top_d)
-    deictic = is_deictic(question)
+    # Enumeration outranks deixis. "where else does this pattern appear?" points
+    # at its subject AND asks across the corpus; the deixis rule exists because
+    # a pointing question gives no way to pick ONE scope, and an enumerative one
+    # is not picking one. The evidence floor still guards it, so a question that
+    # points and says nothing else abstains on `no_evidence` as before.
+    deictic = is_deictic(question) and not enumerative
     # A concentrated token held only by scopes outside the group must not force
     # routing. With `eligible` unset this intersection is a no-op, because
     # concentrated_owners is always a subset of the corpus.
@@ -476,6 +614,24 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
 
     if abstain:
         selected = ranked            # caller should ask, not pick
+    elif enumerative:
+        # Every scope that clears the floor ON ITS OWN, in rank order -- not
+        # every scope within a ratio of the winner. The ratio cutoff is what
+        # inverts here: it measures distance from the TOP scope, and the top
+        # scope of an enumeration is merely the owner that happens to say the
+        # term most often. `_has_evidence` is asked of each scope in turn, the
+        # same predicate the top scope faces, against the discounted floor.
+        set_floor = floor * set_floor_ratio
+        selected = [s for s in ranked
+                    if _signalled(detail[s])
+                    or _has_evidence(detail[s], set_floor, min_matched,
+                                     s in concentrated_owners)][:max_set_scopes]
+        if not selected:
+            # The corpus-wide gate passed on the top scope's own evidence, but
+            # no scope clears the per-scope floor. Naming one owner of a set is
+            # the failure this branch exists to prevent, so abstain instead.
+            abstain, reason = True, "no_evidence"
+            selected = ranked
     else:
         cutoff = top_score * widen_ratio
         selected = [s for s in ranked if scores[s] >= cutoff][:max_scopes]
@@ -492,4 +648,5 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         question=question, query_tokens=q, ranked=ranked, selected=selected,
         abstain=abstain, top_score=top_score, top_matched=top_matched,
         detail=detail, group=group, mode=mode, abstain_reason=reason,
+        enumerative=enumerative,
     )

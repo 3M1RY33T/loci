@@ -124,6 +124,7 @@ class RouteResult:
     group: str | None = None
     mode: str | None = None
     abstain_reason: str | None = None   # deictic | no_evidence | out_of_group
+    enumerative: bool = False           # the question asked for a SET of scopes
 
     def to_json(self) -> dict:
         return {
@@ -133,5 +134,6 @@ class RouteResult:
             "top_matched": self.top_matched,
             "group": self.group, "mode": self.mode,
             "abstain_reason": self.abstain_reason,
+            "enumerative": self.enumerative,
             "detail": self.detail,
         }

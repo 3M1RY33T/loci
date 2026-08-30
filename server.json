@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.3M1RY33T/loci",
+  "title": "loci",
+  "description": "Scoped memory across your projects. A deterministic router in front of a code-structure store and a written-history store: it decides which project a question belongs to, answers it in scope with citations, and abstains instead of guessing.",
+  "version": "0.2.0",
+  "repository": {
+    "url": "https://github.com/3M1RY33T/loci",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "loci-mem",
+      "version": "0.2.0",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--from",
+          "value": "loci-mem[mcp]",
+          "description": "The distribution is loci-mem; the console script is loci. The mcp extra installs the server dependency."
+        },
+        {
+          "type": "positional",
+          "value": "loci",
+          "valueHint": "loci"
+        }
+      ],
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp",
+          "valueHint": "mcp"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

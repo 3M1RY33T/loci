@@ -16,7 +16,9 @@ from .paths import (BuildLock, atomic_write, atomic_write_via, embeddings_file,
                     ensure_home, episode_store_file, scope_index_file)
 from .types import Chunk, Scope
 
-INDEX_VERSION = 1
+# 2: the tokenizer keeps alphanumeric terms (`d1`, `s3`, `base64`), so a
+# version-1 index holds a vocabulary the router no longer speaks.
+INDEX_VERSION = 2
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 # Chunk kinds whose vocabulary feeds ROUTING by default. Docstrings are held
@@ -67,9 +69,14 @@ def fingerprint(scope: Scope, sb, *, exclude=()) -> str:
     """
     import hashlib
 
+    from .text import rules_signature
     from .walk import iter_files
 
     h = hashlib.sha256()
+    # The tokenizer's rules are part of the signature. Without this a change to
+    # what counts as a word leaves every file's mtime untouched, so `loci index`
+    # reports "unchanged" and keeps a vocabulary built by the previous rules.
+    h.update(rules_signature().encode())
     globs = list(scope.episode_globs or []) + list(scope.code_globs or [])
     for f in iter_files(scope.root, globs, exclude=exclude):
         try:

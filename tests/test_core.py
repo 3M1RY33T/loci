@@ -8,6 +8,7 @@ import pytest
 
 from loci.backends.episodes import (BuiltinEpisodeBackend, chunk_markdown,
                                       is_navigation, is_stub, pack)
+from loci.index import INDEX_VERSION
 from loci.router import route
 from loci.scopes import make_scope, resolve, scope_for_cwd, slugify
 from loci.text import tokens, unique_tokens
@@ -63,6 +64,57 @@ def test_unsegmented_scripts_also_emit_bigrams():
     # Scripts that DO use spaces are already segmented and must not be exploded.
     assert tokens("\u043f\u0435\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f") == ["\u043f\u0435\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f"]
     assert tokens("handler") == ["handler"]
+
+
+def test_alphanumeric_terms_survive_the_tokenizer():
+    """`D1` is a database, not a stray `d`.
+
+    The digit-stripping pattern deleted 258 distinct alphanumeric terms across
+    1,246 occurrences in a 53-file sample -- including `d1`, which this
+    project's own README used as a routing example.
+    """
+    assert "d1" in tokens("which projects use wrangler and D1?")
+    assert "s3" in tokens("uploaded to the S3 bucket")
+    assert "n8n" in tokens("an n8n workflow")
+    for term in ("utf8", "md5", "sha1", "2fa", "ipv6", "x86", "gpt4"):
+        assert term in tokens(f"see the {term} handler"), term
+
+
+def test_alphanumeric_output_is_a_superset_of_the_letters_only_form():
+    """`base64` must yield BOTH forms, so no query that matched can stop matching."""
+    got = tokens("base64 sha256 python3 warc2zim")
+    for whole in ("base64", "sha256", "python3", "warc2zim"):
+        assert whole in got, whole
+    for part in ("base", "sha", "python", "warc", "zim"):
+        assert part in got, part
+
+
+def test_a_scope_name_carrying_digits_can_still_be_an_alias():
+    """ALIAS_BOOST is the strongest signal in the router and it was unreachable.
+
+    A scope named `3M1RY33T` tokenized its only alias to `[]`, so `_alias_hit`
+    could never fire and naming the project outright abstained.
+    """
+    assert tokens("3M1RY33T") == ["3m1ry33t"]
+    assert unique_tokens("what is 3M1RY33T for?") == ["3m1ry33t"]
+
+
+def test_commit_hashes_do_not_become_vocabulary():
+    """Unique by construction, so scope-IDF would rate every one maximally."""
+    for h in ("e4bcfe0", "741bbb9", "ecef6264",
+              "41768130f0d5a159ec5100160890b2315ebb4fcb"):
+        assert tokens(h) == [], h
+    # Bare numbers are not vocabulary either, now that digits survive.
+    assert tokens("released in 2024 after 1000 commits") == [
+        "released", "after", "commits"]   # `after` is not in STOPWORDS
+
+
+def test_the_hex_guard_keeps_words_that_are_spellable_in_hex():
+    """Dropping the digit requirement would delete real English."""
+    for word in ("decade", "facade", "deface", "deeded", "deadbeef"):
+        assert word in tokens(word), word
+    # ...and short alphanumerics are never tested against it at all.
+    assert "2fa" in tokens("2fa")
 
 
 def test_unique_tokens_preserves_order():
@@ -850,7 +902,9 @@ def _index(**scopes) -> dict:
                      "chunk_count": 0, "sources": [], "updated_at": ""}
         for t, c in toks.items():
             postings.setdefault(t, {})[sid] = c
-    return {"version": 1, "scopes": meta, "postings": postings}
+    # The live constant, never a literal: a fixture pinned to a stale version
+    # fails the load gate instead of testing what it was written to test.
+    return {"version": INDEX_VERSION, "scopes": meta, "postings": postings}
 
 
 def test_thresholds_are_read_at_call_time_not_bound_at_import():
@@ -1441,6 +1495,210 @@ def test_gates_are_an_or_not_a_replacement():
     r = route("how is mimetype handled together with voxel?", idx,
               min_matched=99, evidence_floor=10**6, concentrated_evidence=10**6)
     assert r.abstain
+
+
+# -- concurrency -----------------------------------------------------------
+def test_the_embedding_model_is_built_exactly_once_under_threads():
+    """`ask` fans out across scopes, so every lazy init is reachable from
+    several threads at once.
+
+    Unguarded, `if _MODEL is None: _MODEL = SentenceTransformer(...)` is a
+    check-then-act race, and two threads constructing one concurrently crashed
+    the process -- SIGSEGV, SIGABRT and an indefinite hang on different runs of
+    the same question.
+    """
+    import sys
+    import threading
+    import types
+
+    from loci.backends import episodes as ep
+
+    built = []
+    slow = threading.Event()
+
+    class FakeModel:
+        def __init__(self, name):
+            built.append(name)
+            slow.wait(0.5)          # widen the window the race needs
+        def encode(self, texts, **kw):
+            return [[0.0, 1.0] for _ in texts]
+
+    fake = types.ModuleType("sentence_transformers")
+    fake.SentenceTransformer = FakeModel
+    fake.CrossEncoder = object
+    prev_mod = sys.modules.get("sentence_transformers")
+    prev_model = ep._MODEL
+    sys.modules["sentence_transformers"] = fake
+    ep._MODEL = None
+    try:
+        errors = []
+        def call():
+            try:
+                ep._encode_query("hello", "bge-small")
+            except Exception as exc:      # pragma: no cover - failure path
+                errors.append(exc)
+        threads = [threading.Thread(target=call) for _ in range(8)]
+        for t in threads:
+            t.start()
+        slow.set()
+        for t in threads:
+            t.join(timeout=10)
+            assert not t.is_alive(), "lazy model init deadlocked"
+        assert not errors, errors
+        assert len(built) == 1, f"model constructed {len(built)} times, not once"
+    finally:
+        ep._MODEL = prev_model
+        if prev_mod is None:
+            sys.modules.pop("sentence_transformers", None)
+        else:
+            sys.modules["sentence_transformers"] = prev_mod
+
+
+def test_ask_warms_the_model_before_fanning_out_over_scopes(monkeypatch):
+    """Native init must happen on ONE thread, before the pool starts.
+
+    The lock above makes concurrent construction safe; this makes it
+    unnecessary. Measured, the crash only ever happened on a cold process with
+    more than one scope selected.
+    """
+    from loci import ask as ask_mod
+    from loci.backends import episodes as ep
+
+    calls = []
+    monkeypatch.setattr(ep, "warm_up",
+                        lambda store=None, scope_ids=None: calls.append(list(scope_ids or [])))
+    idx = _index(a=("A", "/a", {"alpha": 30}, 100),
+                 b=("B", "/b", {"beta": 20}, 100))
+    store = {"chunks": {}}
+    ask_mod.ask("alpha and beta", index=idx, store=store,
+                force_scopes=["a", "b"], with_structure=False)
+    assert calls == [["a", "b"]], "ask did not warm before the fan-out"
+
+    calls.clear()
+    ask_mod.ask("alpha", index=idx, store=store, force_scopes=["a"],
+                with_structure=False)
+    assert calls == [], "a single scope has nothing to race with"
+
+
+# -- enumerative set mode --------------------------------------------------
+def test_is_enumerative_detects_the_closed_class():
+    from loci.router import is_enumerative
+    for q in ("which of my projects use Cloudflare workers?",
+              "which projects deploy to Fly?",
+              "what repos have a Dockerfile?",
+              "do any of my projects use Postgres?",
+              "where else is this pattern used?",
+              "across all my projects, what handles auth?",
+              "have I ever written a ZIM parser?"):
+        assert is_enumerative(q), q
+    # Singular questions, and questions that merely mention a project, are NOT
+    # enumerative. Set mode drops the widen ratio, so a false positive here
+    # widens every ordinary question.
+    for q in ("how does this project start up?",
+              "which function parses the arguments?",
+              "why was the session cookie dropped?",
+              "what does the project depend on?"):
+        assert not is_enumerative(q), q
+
+
+def test_an_enumerative_question_returns_every_owner_not_the_top_one():
+    """The ratio cutoff measures distance from the top scope, which for a set
+    question is merely whichever owner says the term most often."""
+    idx = _index(
+        loud=("Loud", "/l", {"cloudflare": 40, "workers": 60, "deploy": 20}, 200),
+        quiet=("Quiet", "/q", {"cloudflare": 5, "workers": 2, "deploy": 3}, 700),
+        other=("Other", "/o", {"handler": 900, "config": 800}, 9000))
+    q = "which of my projects deploy to cloudflare workers?"
+    # Widening from the top scope keeps only the loud owner...
+    narrow = route(q, idx, evidence_floor=1.0, set_floor_ratio=0.0001,
+                   max_set_scopes=1)
+    assert narrow.selected == ["loud"]
+    # ...while set mode returns both, because each clears the floor on its own.
+    r = route(q, idx, evidence_floor=1.0)
+    assert r.enumerative and not r.abstain
+    assert set(r.selected) == {"loud", "quiet"}
+    assert "other" not in r.selected
+
+
+def test_the_enumerative_frame_is_not_treated_as_vocabulary():
+    """`projects` is scaffolding, not evidence -- the deixis insight one level
+    down. In the development corpus it was held by exactly two scopes, so it
+    scored as discriminative FOR them and dragged both into every answer."""
+    from loci.router import ENUM_FRAME
+    idx = _index(
+        meta=("Meta", "/m", {"projects": 90, "repos": 40}, 300),
+        real=("Real", "/r", {"wrangler": 50, "cloudflare": 30}, 300))
+    r = route("which of my projects use wrangler?", idx, evidence_floor=1.0)
+    assert "projects" not in r.query_tokens
+    assert r.selected == ["real"], "the frame noun elected its own holder"
+    assert {"projects", "repos", "codebase"} <= ENUM_FRAME
+
+
+def test_enumeration_outranks_deixis():
+    """"where else does this appear" points AND asks across the corpus.
+
+    Deixis abstains because a pointing question gives no way to pick ONE scope.
+    An enumerative question is not picking one, so the rule does not apply."""
+    idx = _index(a=("A", "/a", {"wrangler": 50}, 300),
+                 b=("B", "/b", {"wrangler": 40}, 300))
+    r = route("where else is this wrangler config used?", idx, evidence_floor=1.0)
+    assert not r.abstain and r.abstain_reason is None
+    assert set(r.selected) == {"a", "b"}
+
+
+def test_enumerative_mode_still_abstains_without_evidence():
+    """Set mode widens what is returned, never whether to answer at all."""
+    idx = _index(a=("A", "/a", {"wrangler": 50}, 300),
+                 b=("B", "/b", {"handler": 900}, 9000))
+    r = route("which of my projects use Kubernetes ingress controllers?", idx)
+    assert r.abstain and r.abstain_reason == "no_evidence"
+
+
+def test_set_mode_thresholds_are_read_at_call_time():
+    import loci.router as R
+    idx = _index(a=("A", "/a", {"wrangler": 50, "cloudflare": 30}, 300),
+                 b=("B", "/b", {"wrangler": 40, "cloudflare": 20}, 300))
+    q = "which projects use wrangler and cloudflare?"
+    before = R.MAX_SET_SCOPES
+    try:
+        R.MAX_SET_SCOPES = 1
+        assert len(route(q, idx, evidence_floor=1.0).selected) == 1
+    finally:
+        R.MAX_SET_SCOPES = before
+    assert len(route(q, idx, evidence_floor=1.0).selected) == 2
+
+
+def test_corroboration_weight_ships_inert():
+    """1.0 is a plain sum -- the scoring the router had before the knob existed.
+
+    It is deliberately not enabled: the one thing it improves is a single
+    negative-family item on a single corpus, and the synthetic bed cannot
+    arbitrate because `size_skew` varies file volume rather than vocabulary
+    breadth. Changing this default without first reproducing the failure on a
+    generated corpus is fitting to one item.
+    """
+    from loci.router import CORROBORATION_WEIGHT
+    assert CORROBORATION_WEIGHT == 1.0
+    # ...and at 1.0 the blend must be arithmetically identical to the sum.
+    idx = _index(a=("A", "/a", {"alpha": 30, "beta": 20, "gamma": 10}, 200),
+                 b=("B", "/b", {"alpha": 5, "delta": 40}, 400))
+    q = "how do alpha beta and gamma relate to delta?"
+    assert (route(q, idx, evidence_floor=1.0).detail
+            == route(q, idx, evidence_floor=1.0,
+                     corroboration_weight=1.0).detail)
+
+
+def test_set_mode_constants_stay_at_their_swept_values():
+    """0.8 is the top of a flat region, not a sharp optimum.
+
+    Confusable gold-coverage is flat at 83.3% from 0.6 to 0.8 and drops to
+    66.7% at 0.9; precision peaks at 0.8 and decays below 0.7. Moving this
+    without re-running the sweep in evals/RESULTS.md is how a fitted constant
+    silently becomes a guess.
+    """
+    from loci.router import MAX_SET_SCOPES, SET_FLOOR_RATIO
+    assert SET_FLOOR_RATIO == 0.8
+    assert MAX_SET_SCOPES == 8
 
 
 def test_concentrated_tier_returns_every_owner_of_a_shared_term():
