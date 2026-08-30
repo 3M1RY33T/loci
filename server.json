@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.3M1RY33T/loci",
   "title": "loci",
-  "description": "Scoped memory across your projects. A deterministic router in front of a code-structure store and a written-history store: it decides which project a question belongs to, answers it in scope with citations, and abstains instead of guessing.",
+  "description": "Scoped memory for coding agents: picks the right project, answers in scope, or abstains.",
   "version": "0.2.0",
   "repository": {
     "url": "https://github.com/3M1RY33T/loci",
