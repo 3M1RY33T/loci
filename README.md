@@ -189,6 +189,36 @@ because most real questions name no project at all.
 **Abstention.** A first-class outcome. `ABSTAIN` means *ask the user*, not *pick
 the biggest*. Both layers can refuse.
 
+An abstention that only says *no* leaves the asking to you, so it carries the
+shortlist it refused to choose between — each project, and the terms that put it
+there:
+
+```
+loci ask "how is caching handled?"
+
+ABSTAINED - not enough of the question exists in any project.
+  candidates: Delroy (handled, caching), odysseus (handled, caching), tensor-serve (caching)
+  re-run with --scope <name>, or from inside the project directory.
+```
+
+A scope earns its place by holding a term **at most half the corpus holds**.
+Holding one is not enough: `change`, `handled` and `work` sit in nearly every
+project, so matching them is a coincidence rather than a claim. Measured on the
+development corpus, that is the difference between naming three projects and
+listing all fourteen in score order, which is the registry rather than a
+shortlist.
+
+When nothing clears that bar there is no shortlist to print, and saying so is the
+answer — the question's subject is not indexed anywhere, and choosing a scope
+would only relocate the guess:
+
+```
+loci ask "xyzzy plugh frotz quuz"
+
+ABSTAINED - not enough of the question exists in any project.
+  no project holds a distinctive term from this question -- `loci doctor` shows what is not indexed.
+```
+
 ---
 
 ## Architecture
@@ -214,8 +244,9 @@ route                                                             router.py
   │   query token. Deterministic, sub-millisecond, no model call.
   │
   ├──▶ ABSTAIN — deictic, no_evidence or out_of_group. Names the cause, lists
-  │             the candidates, names the flag that fixes it, and queries
-  │             nothing. An outcome, not an error.
+  │             the scopes with a claim on the question and what each one
+  │             holds, names the flag that fixes it, and queries nothing.
+  │             An outcome, not an error.
   ▼
 selected scopes, at most 3        one thread each; neither store is ever
   │                               queried across a scope boundary
@@ -406,12 +437,15 @@ loci route "how does the gizmo parser emitter handle sprocket calibration"
   unconfined                  -> vend, alpha
   --group team   explicit     -> alpha
   --group team   soft         -> alpha
-  --group team   hard         -> ABSTAIN (out_of_group); candidates: alpha, beta
+  --group team   hard         -> ABSTAIN (out_of_group); candidates: alpha (sprocket), beta (calibration)
 ```
 
 All three modes dropped `vend`, the scope that won unconfined. `--group` is you
 asserting the answer is in here; the mode decides only what happens when it is
-not.
+not. The shortlist under `hard` is wider than the selection above it on purpose:
+it is what the abstention refused to choose between, not what it would have
+answered from — `beta` is on it because `calibration` is a term only `beta`
+holds, and off the answer because that is all it has.
 
 Reached through cwd instead, `soft` demotes and does not confine. The same
 question asked from inside `alpha` with no `--group` at all returns
@@ -529,9 +563,12 @@ stdout for a client that does not read `~/.claude/skills`.
 Two things it teaches an agent that are not obvious from the CLI. **Run it from
 the project root** — cwd is the primary routing signal, so a question asked from
 the wrong directory routes worse than one asked from none. And **`ABSTAINED` is
-an answer**: the reason names what to do next, and an agent that rephrases and
-retries instead is burning turns on a decision that was about vocabulary rather
-than wording.
+an answer**: the reason names what to do next, the shortlist under it names the
+projects that could plausibly own the question and the terms that put them
+there, and an agent that rephrases and retries instead is burning turns on a
+decision that was about vocabulary rather than wording. An abstention carrying no
+shortlist at all is the one case where rephrasing cannot help either — nothing in
+the corpus holds a distinctive term from the question.
 
 ---
 

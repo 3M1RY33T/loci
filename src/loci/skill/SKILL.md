@@ -82,15 +82,17 @@ what those blocks contain. Quote `file:line` from structure hits and
 stores came back empty. Say that plainly. If you then answer from the working
 tree instead, say that is what you did.
 
-**`ABSTAINED - <reason>`**, with the candidates it considered and one suggested
-flag. **This is an outcome, not an error, and not a prompt to try again.**
+**`ABSTAINED - <reason>`**, with the shortlist it refused to choose between —
+each project and the terms that put it there — and one suggested flag. **This is
+an outcome, not an error, and not a prompt to try again.**
 Rephrasing and re-asking is the wrong move — abstention is about which
 vocabulary exists in which project, not about wording. Act on the reason:
 
 | reason | what it means | what to do |
 |---|---|---|
 | `the question points at its subject without naming it` | the question said "this" or "it" and nothing identified the subject | name the project with `--scope`, or ask the user which one |
-| `not enough of the question exists in any project` | memory does not hold this | say so, and fall back to ordinary tools |
+| `not enough of the question exists in any project` | memory does not hold this, or holds it in several projects at once | with a shortlist, name one with `--scope` or ask the user which; with none, say so and fall back to ordinary tools |
+| `no project holds a distinctive term from this question` | printed instead of a shortlist: nothing indexed is about this | `loci doctor` names the coverage gap; `--scope` would only relocate the guess |
 | `best match was outside group X` | the real answer is outside the group's policy | `--group` or `--scope` to override deliberately |
 | `no indexed project is in group X` | almost always a typo in a group name | `loci groups` lists the real ones |
 
