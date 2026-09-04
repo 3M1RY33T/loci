@@ -34,6 +34,44 @@ EVIDENCE_FLOOR = 7.6      # summed token evidence required to route at all
 CONCENTRATED_SCOPES = 2   # a token held by at most this many scopes is "concentrated"
 CONCENTRATED_EVIDENCE = 2.6
 
+# A token held by more than this share of the corpus is not a claim on the
+# question, and a scope holding nothing else is not a candidate for it.
+#
+# It governs the shortlist an ABSTENTION hands back, never a routing decision.
+# Before it existed the candidate line printed `ranked` -- every eligible scope,
+# in score order, which is the entire registry on any abstention. Fourteen names
+# with nothing to prefer between them is not a shortlist; it is the registry.
+#
+# Measured over 10 gold-bearing abstentions (the hand-authored eval set, plus
+# ablations of the questions that route -- drop the winner's top token until it
+# stops routing) and 22 questions that SHOULD abstain. Reproduce the table with
+# `python evals/clarify.py --sweep`:
+#
+#   rule                       gold recall   |cand| gold   |cand| should-abstain
+#   ranked, i.e. before            100.0%          14.0          14.0
+#   holds any matched token         90.0%           7.8           6.0
+#   held by <= S/2 scopes           90.0%           6.3           4.4
+#   held by <= S/3 scopes           80.0%           4.0           2.5
+#   held by <= 2 scopes             50.0%           2.4           1.0
+#
+# Half the corpus is the widest cut that costs no recall over "holds any token
+# at all", and every tighter cut drops a real answer. It is a SHARE rather than
+# a count because a count is a number that happened to suit fourteen scopes: at
+# S=4 a threshold of 4 filters nothing, and the same table on a 200-scope corpus
+# would be measuring something else entirely.
+#
+# Ten abstentions is not a fitted constant and is not presented as one -- the
+# corpus has three questions that abstain outright, and the rest are weakened
+# phrasings of ones that do not. What the table supports is the ORDERING, which
+# is monotone and wide: recall falls at every tightening and the shortlist
+# shrinks at every one, and 0.5 is the last point before recall moves at all.
+#
+# The one abstention no setting recovers is worth naming: "Can I drop
+# photographs but keep vector graphics?" holds no token its gold scope indexes,
+# so it is unreachable by any shortlist. That is a coverage problem, and
+# `_advice` sends it to `doctor` rather than pretending a scope could be chosen.
+CANDIDATE_SHARE = 0.5
+
 # The concentrated tier exists because every other gate asks "is there enough
 # evidence for ONE scope", and a question about something two projects share
 # splits its evidence between them by construction. Measured across five
@@ -502,10 +540,16 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
             if ev >= concentrated_evidence:
                 concentrated_owners.add(sid)
 
+    # At most this many scopes may hold a token before holding it stops meaning
+    # anything. Floored at 1 so a two- or three-scope corpus still asks for a
+    # token that separates, rather than accepting one every scope shares.
+    claim_max = max(1, int(S * CANDIDATE_SHARE))
+
     for sid, meta in scopes.items():
         n_nodes = max(1, meta.get("node_count", 1))
         total = 0.0
         matched: list[tuple[str, float]] = []
+        claim_toks: set[str] = set()
 
         for t in q:
             post = postings.get(t)
@@ -515,6 +559,8 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
             contrib = idf * (1 + math.log1p(post[sid] / n_nodes * 1000))
             total += contrib
             matched.append((t, round(contrib, 3)))
+            if len(post) <= claim_max:
+                claim_toks.add(t)
 
         idf_max = math.log(1 + S) or 1.0
         best_evidence = max((c for _, c in matched), default=0.0) / idf_max
@@ -549,6 +595,10 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         detail[sid] = {
             "name": meta["name"], "score": round(base, 4),
             "matched": len(matched),
+            # Ordered by contribution, not by where they fell in the question:
+            # these are printed to a reader who has to choose a scope, and the
+            # first one should be the term that most separates this scope.
+            "claims": [t for t, _ in matched if t in claim_toks],
             "evidence": round(best_evidence, 3),
             "evidence_total": round(total_evidence, 3),
             "coverage": round(len(matched) / max(1, len(q)), 3),
@@ -559,6 +609,14 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     top_all = ranked_all[0] if ranked_all else None
     ranked = ([s for s in ranked_all if s in eligible] if eligible is not None
               else ranked_all)
+
+    # In `ranked`'s order, which is the SCORE's. Re-sorting the shortlist by
+    # evidence reads as the more principled choice and measures worse: on the
+    # same 10 abstentions, the gold scope came first 70% of the time under the
+    # score and 30% under evidence_total. The score carries the cwd and alias
+    # boosts and the size prior; raw evidence favours whichever scope is
+    # biggest, which is the failure SIZE_PRIOR exists to correct.
+    candidates = [s for s in ranked if detail[s]["claims"]]
 
     top = ranked[0] if ranked else None
     top_score = scores.get(top, 0.0) if top else 0.0
@@ -648,5 +706,5 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         question=question, query_tokens=q, ranked=ranked, selected=selected,
         abstain=abstain, top_score=top_score, top_matched=top_matched,
         detail=detail, group=group, mode=mode, abstain_reason=reason,
-        enumerative=enumerative,
+        enumerative=enumerative, candidates=candidates,
     )

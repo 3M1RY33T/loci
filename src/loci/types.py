@@ -125,11 +125,18 @@ class RouteResult:
     mode: str | None = None
     abstain_reason: str | None = None   # deictic | no_evidence | out_of_group
     enumerative: bool = False           # the question asked for a SET of scopes
+    # Scopes with a real claim on the question, in `ranked` order. NOT a subset
+    # of `selected` and not a routing decision: this is what an abstention hands
+    # back to whoever has to choose, so it is populated whether or not the
+    # router abstained and read only when it did. `ranked` cannot do the job --
+    # it is every eligible scope, which on an abstention is the whole registry.
+    candidates: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
         return {
             "question": self.question, "query_tokens": self.query_tokens,
             "ranked": self.ranked, "selected": self.selected,
+            "candidates": self.candidates,
             "abstain": self.abstain, "top_score": round(self.top_score, 4),
             "top_matched": self.top_matched,
             "group": self.group, "mode": self.mode,

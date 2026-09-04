@@ -227,6 +227,25 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
     return Answer(question=question, routing=rt, scopes=answers)
 
 
+# Per candidate, presentational. The claims are already ordered by contribution,
+# so a cut keeps the most separating ones; this only stops one long question
+# from wrapping the line.
+CANDIDATE_TERMS = 3
+
+
+def _candidate(rt: RouteResult, sid: str, names: dict[str, str]) -> str:
+    """One shortlist entry: the scope, and what it holds that put it there.
+
+    The terms are the point. A bare list of names asks the reader to choose
+    between projects on nothing; naming the terms says WHY each one is listed,
+    and a list whose every entry holds only terms the reader did not mean is
+    itself the answer -- it says the subject is not indexed anywhere.
+    """
+    name = names.get(sid, sid)
+    terms = (rt.detail.get(sid) or {}).get("claims", [])[:CANDIDATE_TERMS]
+    return f"{name} ({', '.join(terms)})" if terms else name
+
+
 def _advice(rt: RouteResult) -> str:
     """What to do about this abstention -- which depends on what caused it.
 
@@ -238,6 +257,14 @@ def _advice(rt: RouteResult) -> str:
         return "run `loci groups` to see the groups that exist."
     if rt.abstain_reason == "out_of_group":
         return "re-run with --scope <name>: an explicit scope overrides the group."
+    if not rt.candidates:
+        # No scope holds a term that separates it from the others, so there is
+        # nothing to choose BETWEEN and `--scope` only relocates the guess. The
+        # question's subject is not indexed, which is a coverage report, not a
+        # routing one -- and it is the honest answer to the abstention no
+        # shortlist can recover.
+        return ("no project holds a distinctive term from this question -- "
+                "`loci doctor` shows what is not indexed.")
     return "re-run with --scope <name>, or from inside the project directory."
 
 
@@ -268,12 +295,18 @@ def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
                 "no_evidence": "not enough of the question exists in any project",
             }.get(rt.abstain_reason or "", "not specific enough to route")
         out.append(f"ABSTAINED - {reason}.")
-        if rt.ranked:
+        if rt.candidates:
+            # `candidates`, not `ranked`. `ranked` is every eligible scope, so
+            # this line used to print the whole registry in score order -- on
+            # the development corpus, fourteen names with nothing to prefer
+            # between them, which is not a shortlist.
+            #
             # Dropped, not emptied. An empty list rendered as "  candidates: "
             # with nothing after it, which reads as a truncated line rather
-            # than as "none" -- and the unknown-group case above always has
-            # nothing to list.
-            out.append(f"  candidates: {', '.join(names.get(s, s) for s in rt.ranked)}")
+            # than as "none" -- and both the unknown-group case above and a
+            # question whose vocabulary no scope owns have nothing to list.
+            out.append("  candidates: "
+                       + ", ".join(_candidate(rt, s, names) for s in rt.candidates))
         out.append(f"  {_advice(rt)}")
         return "\n".join(out)
 

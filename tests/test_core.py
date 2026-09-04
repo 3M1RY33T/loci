@@ -1348,6 +1348,70 @@ def test_abstention_always_carries_a_reason():
     assert route("how does the widget work", idx).abstain_reason in (None, "no_evidence")
 
 
+def _shared_vocabulary_corpus() -> dict:
+    """Four scopes, one term all of them hold and one term only two do."""
+    return _index(a=("Alpha", "/a", {"shared": 30, "widget": 20}, 500),
+                  b=("Beta", "/b", {"shared": 30, "widget": 15}, 500),
+                  c=("Gamma", "/c", {"shared": 30}, 500),
+                  d=("Delta", "/d", {"shared": 30}, 500))
+
+
+def test_the_candidate_list_holds_only_scopes_with_a_claim_on_the_question():
+    """An abstention's shortlist was `ranked` -- every eligible scope, which on
+    a real corpus is the whole registry in score order. Fourteen names the
+    reader has no way to choose between is not a shortlist.
+
+    Holding a query token is not a claim either. `shared` here is what
+    "change", "handled" and "work" are on a real corpus: present nearly
+    everywhere, so matching it is a coincidence. Only a term most of the corpus
+    does NOT hold separates one scope from the others.
+    """
+    idx = _shared_vocabulary_corpus()
+    r = route("how is the shared widget handled", idx)
+
+    assert len(r.ranked) == 4, "the ranking still weighs every scope"
+    assert set(r.candidates) == {"a", "b"}, \
+        "a scope matching only the corpus-wide term made the shortlist"
+    assert r.detail["c"]["matched"] == 1, \
+        "control: Gamma does match the question, it just cannot claim it"
+    assert r.detail["a"]["claims"] == ["widget"]
+    assert r.detail["c"]["claims"] == []
+
+
+def test_a_shortlist_keeps_the_ranking_order_rather_than_the_evidence_order():
+    """Measured on 10 gold-bearing abstentions: the gold scope comes first 70%
+    of the time in score order and 30% in evidence order. The score carries the
+    cwd and alias boosts and the size prior; raw evidence favours whichever
+    scope is largest, which is what SIZE_PRIOR exists to correct.
+    """
+    idx = _shared_vocabulary_corpus()
+    r = route("how is the shared widget handled", idx)
+
+    assert r.candidates == [s for s in r.ranked if s in set(r.candidates)]
+
+
+def test_a_question_no_scope_can_claim_offers_no_candidates_at_all():
+    """The abstention no shortlist can recover. Naming plausible-looking scopes
+    for a question whose subject is indexed nowhere invites the caller to pick
+    one, which turns an honest abstention into a confident wrong answer -- the
+    one failure mode abstaining exists to prevent.
+    """
+    idx = _shared_vocabulary_corpus()
+
+    assert route("xyzzy plugh frotz", idx).candidates == []
+    assert route("how is the shared thing handled", idx).candidates == [], \
+        "matching only the term every scope holds is not a claim"
+
+
+def test_the_candidate_share_stays_at_its_measured_value():
+    """Widest cut that costs no recall over "holds any matched token". Tighter
+    cuts shrink the shortlist and every one of them drops a real answer; see
+    the table in router.py. A SHARE, not a count, so it scales with the corpus.
+    """
+    import loci.router as R
+    assert R.CANDIDATE_SHARE == 0.5
+
+
 def test_group_penalty_stays_at_its_documented_value():
     """Hand-set, never fitted. If this moves, the sweep has to move with it."""
     import loci.router as R
@@ -3398,10 +3462,11 @@ def test_an_abstention_gives_advice_that_can_actually_work():
 
     index = _index(a=("Alpha", "/a", {"widget": 40}, 500))
 
-    def body(reason, group=None, ranked=("a",)):
+    def body(reason, group=None, ranked=("a",), candidates=None):
         rt = RouteResult(question="q", query_tokens=[], ranked=list(ranked),
                          selected=[], abstain=True, top_score=0.0, top_matched=0,
-                         group=group, abstain_reason=reason)
+                         group=group, abstain_reason=reason,
+                         candidates=list(ranked if candidates is None else candidates))
         return render(Answer(question="q", routing=rt), index=index)
 
     confined = body("out_of_group", "client:acme")
@@ -3414,6 +3479,41 @@ def test_an_abstention_gives_advice_that_can_actually_work():
     assert "candidates:" not in unknown
     assert "loci groups" in unknown
     assert all(ln.strip() for ln in unknown.splitlines()), "a blank rendered line"
+
+    # A shortlist with nothing on it is the THIRD case, and it wants neither
+    # trailer. `--scope` relocates the guess and the cwd hint cannot help a
+    # question whose subject no scope indexes; the only true next step is to
+    # find out what is missing.
+    nothing = body("no_evidence", candidates=())
+    assert "--scope" not in nothing
+    assert "inside the project directory" not in nothing
+    assert "loci doctor" in nothing
+
+
+def test_the_candidate_line_says_what_each_scope_holds():
+    """Names alone ask the reader to choose between projects on nothing. The
+    terms say WHY each one is listed -- and a shortlist whose entries all hold
+    terms the reader did not mean is itself the answer.
+
+    Routed for real rather than hand-built: the shortlist and the terms on it
+    are the router's, and a render test that invents both would pass with the
+    filter removed.
+    """
+    from loci.ask import Answer, render
+
+    idx = _shared_vocabulary_corpus()
+    # Deixis rather than a forced threshold: the evidence floor resolves through
+    # the calibration file in $LOCI_HOME, and `widget` sits in exactly two
+    # scopes, so the concentrated tier routes this question past any floor. A
+    # pointing question with no cwd abstains on grammar alone.
+    rt = route("how does this project handle the shared widget", idx)
+    assert rt.abstain, "control: the fixture has to reach the abstention branch"
+
+    line = next(ln for ln in render(Answer(question="q", routing=rt), index=idx)
+                .splitlines() if "candidates:" in ln)
+    assert "Alpha (widget)" in line and "Beta (widget)" in line
+    assert "Gamma" not in line and "Delta" not in line, \
+        "the line still renders every ranked scope"
 
 
 def test_a_policy_that_cannot_be_constructed_is_an_error_not_a_traceback(

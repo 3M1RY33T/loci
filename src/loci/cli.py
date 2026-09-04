@@ -463,7 +463,11 @@ def cmd_route(args) -> int:
         # the diagnostic surface must not be the less informative of the two.
         why = (f"no indexed project is in group {r.group}"
                if r.group and not r.ranked else r.abstain_reason)
-        cands = ", ".join(names[s] for s in r.ranked)
+        # `ask.render`'s own entry formatter, not a second one that renders the
+        # same shortlist differently -- this surface has already drifted from
+        # `ask` once, on the reason line directly above.
+        from .ask import _candidate
+        cands = ", ".join(_candidate(r, s, names) for s in r.candidates)
         print(f"ABSTAIN (matched={r.top_matched}{f', {why}' if why else ''})"
               f" -> ask the user" + (f"; candidates: {cands}" if cands else ""))
     else:
