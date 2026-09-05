@@ -16,3 +16,7 @@ venv/
 ROADMAP.md
 docs/
 .superpowers/
+# The eval harness reads a corpus of 14 real projects, six of them private
+# or local-only, and records them by name at file:line. Ignored rather than
+# merely untracked because hatchling filters the sdist by this file.
+evals/

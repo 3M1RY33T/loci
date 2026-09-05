@@ -935,13 +935,19 @@ MIT, so forking stays available; it just is not necessary.
 
 Alpha, and the numbers deserve their caveats.
 
-Measured on a 143-item set over 14 scopes — see `evals/RESULTS.md` for method,
-per-family results, and the things that were tried and rejected. 112 of those
-items are generated from a fixed taxonomy applied to every scope, so that
-portion is unbiased by construction. The remaining 31 were hand-authored by the
-same person who built the router; each carries a `contamination` field recording
-what the author had seen, and uncontaminated results are always reported
-separately.
+Measured on a 173-item set over 14 scopes. 112 of those items are generated from
+a fixed taxonomy applied to every scope, so that portion is unbiased by
+construction. The remaining 61 were hand-authored by the same person who built
+the router; each carries a `contamination` field recording what the author had
+seen, and uncontaminated results are always reported separately.
+
+**The eval corpus is not in this repository.** The harness reads fourteen real
+projects, six of them private or never pushed anywhere, and its records name
+them at `file:line` — so `evals/` and the `evals/RESULTS.md` cited throughout
+these sources are kept locally and are not published here or in the sdist. What
+ships instead is `loci eval`, which generates its own questions from whatever
+corpus *you* have registered; that is the number worth trusting about your own
+setup, and it is the one this README asks you to run.
 
 **Known limits:**
 

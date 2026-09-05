@@ -31,7 +31,8 @@ Holding a query token is not itself a claim. `change`, `handled` and `work` sit
 in nearly every project, so matching one is a coincidence — filtering on
 "matched anything" keeps 8.4 scopes of 14 and manufactures plausible candidates
 for questions that should return none. Measured over 24 gold-bearing abstentions
-and 25 questions that should abstain (`python evals/clarify.py --sweep`):
+and 25 questions that should abstain, via the local eval harness (see
+**Status** in the README for why the corpus is not published):
 
 | rule | gold recall | \|cand\| gold | \|cand\| should-abstain |
 |---|---|---|---|
@@ -62,8 +63,9 @@ up with no change.
 ### A question set big enough to decide something
 
 The hand-authored eval set went from 31 questions to 61, covering 13 of 14
-scopes rather than 10, and `evals/clarify.py` reports what an abstention's
-shortlist is worth and where the remaining error actually lives.
+scopes rather than 10, and a new `clarify` harness reports what an abstention's
+shortlist is worth and where the remaining error actually lives. Both stay out
+of the repository: they name six private or local-only projects at `file:line`.
 
 | family | n | top-1 | gold-coverage | | contamination | n | top-1 |
 |---|---|---|---|---|---|---|---|

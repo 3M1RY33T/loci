@@ -44,8 +44,8 @@ CONCENTRATED_EVIDENCE = 2.6
 #
 # Measured over 24 gold-bearing abstentions (the hand-authored eval set, plus
 # ablations of the questions that route -- drop the winner's top token until it
-# stops routing) and 25 questions that SHOULD abstain. Reproduce the table with
-# `python evals/clarify.py --sweep`:
+# stops routing) and 25 questions that SHOULD abstain. Rebuilt by the `clarify`
+# harness, which is kept out of the repository with the corpus it reads:
 #
 #   rule                       gold recall   |cand| gold   |cand| should-abstain
 #   ranked, i.e. before            100.0%          14.0          14.0
@@ -67,7 +67,7 @@ CONCENTRATED_EVIDENCE = 2.6
 # set grew, claimed 0.5 was "the widest cut that costs no recall at all". It is
 # not: on 2.4x the questions it costs 4.1 points. The shape of the curve is what
 # survived the bigger sample, not that one number -- which is the whole reason
-# the table names its sample size and ships the command that rebuilds it.
+# the table names the sample it was measured on rather than standing alone.
 #
 # The one abstention no setting recovers is worth naming: "Can I drop
 # photographs but keep vector graphics?" holds no token its gold scope indexes,
