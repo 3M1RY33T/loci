@@ -204,6 +204,45 @@ def is_deictic(question: str) -> bool:
     return bool(DEIXIS.search(question))
 
 
+# A scope name can be the INSTRUMENT of a question rather than its subject.
+# "use loci to tell me which project I am using another project in" addresses
+# the tool; the subject is the corpus. This is the exact shape ENUM_FRAME
+# already handles one level down -- scaffolding, not vocabulary -- and leaving
+# it in is not neutral: measured, that question returned the `loci` scope alone.
+#
+# ALIAS_BOOST is NOT what does the damage, and an earlier fix that suppressed
+# only the boost changed nothing at all. A scope's own name is ordinary
+# vocabulary inside it -- `loci` sits in 407 nodes of the loci scope against 1
+# elsewhere -- so the question elects that scope on evidence, boost or no boost.
+# The name has to leave the QUERY, not just the alias test.
+#
+# Grammatical, like deixis and enumeration: a closed class of verbs that take a
+# tool as their object, no threshold to fit.
+INSTRUMENTAL = (r"\b(?:use|uses|using|used|ask|asking|query|querying|via|with)"
+                r"\s+(?:the\s+)?{alias}\b")
+
+
+def strip_instrumental(question: str, scopes: dict) -> str:
+    """The question with any scope name it uses as a tool removed.
+
+    Returns the question unchanged when nothing matches, which is the common
+    case -- this fires only on questions that address a project by name in the
+    instrumental position.
+    """
+    banned: set[str] = set()
+    for meta in scopes.values():
+        for alias in [*meta.get("aliases", []), meta.get("name", "")]:
+            if not alias:
+                continue
+            if re.search(INSTRUMENTAL.format(alias=re.escape(alias)),
+                         question, re.IGNORECASE):
+                banned |= set(vtokens(alias))
+    if not banned:
+        return question
+    return " ".join(w for w in question.split()
+                    if not (set(vtokens(w)) & banned))
+
+
 # A question that asks for a SET is the exact inverse of the case every other
 # gate is built for. Each gate asks "is there enough evidence for ONE scope",
 # and enumeration splits its evidence across every owner by construction -- so
@@ -506,8 +545,18 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     postings = index["postings"]
     S = len(scopes)
 
-    q_all = vtokens(question)
-    q = unique_tokens(question)
+    # The question as ASKED stays on the result; what gets TOKENIZED is the
+    # question with any instrumentally-used scope name removed. Dropping it here
+    # rather than inside the alias test is deliberate -- see INSTRUMENTAL: the
+    # name is ordinary evidence for its own scope, so suppressing only the boost
+    # leaves the outcome unchanged.
+    #
+    # The grammar checks below read the ORIGINAL. Removing a noun cannot make a
+    # question stop pointing or stop enumerating, and running them on the
+    # stripped text would only add a way for them to disagree with the reader.
+    subject = strip_instrumental(question, scopes)
+    q_all = vtokens(subject)
+    q = unique_tokens(subject)
     enumerative = is_enumerative(question)
     if enumerative:
         q = [t for t in q if t not in ENUM_FRAME]

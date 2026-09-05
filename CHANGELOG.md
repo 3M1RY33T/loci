@@ -1,5 +1,93 @@
 # Changelog
 
+## 0.4.0 — 2026-09-05
+
+**Upgrading requires one command.** `INDEX_VERSION` is now 3 and a v2 index is
+rejected on load with the reason. Run:
+
+```bash
+loci update          # or: loci index && loci calibrate
+```
+
+The tokenizer changed what counts as a word again, so the old vocabulary is
+genuinely incompatible rather than merely older.
+
+### `OAuth` was indexed as `auth`, and could not find itself
+
+The camel splitter emits `O` + `Auth`, the solitary `O` dies on the length
+floor, and the term the writer typed survived only as the ordinary word `auth`.
+Lowercase occurrences in code (`oauth_config`, `oauth_tokens`) index as `oauth`,
+so the two halves of a corpus disagreed: one real project held `oauth` 50 times
+and no naturally-written question could ever reach it.
+
+A split that discards a piece now keeps the whole run as well:
+
+| written | 0.3.0 | 0.4.0 |
+|---|---|---|
+| `OAuth` | `auth` | `oauth`, `auth` |
+| `macOS` | `mac` | `macos`, `mac` |
+| `OpenID` | `open` | `openid`, `open` |
+| `GraphQL` | `graph` | `graphql`, `graph` |
+| `IOError` | `error` | `ioerror`, `error` |
+| `GlassesBridge` | `glasses`, `bridge` | *unchanged* |
+
+Conditioned on a piece actually being lost, so this is not a blanket "keep the
+run too" — a name that splits cleanly gains nothing, which is what stops the
+vocabulary doubling. The output stays a **superset**, the same rule 0.2.0
+followed for `base64`, so no query that matched before can stop matching.
+
+### A project named as the tool is not the subject
+
+*"Can you use loci to tell me in which project am I using another one of my
+projects?"* returned the `loci` scope, alone. The user addressed the tool; the
+router read it as the subject.
+
+Scope names used in the instrumental position are now stripped from the query
+before it is tokenized — the same treatment `ENUM_FRAME` already gives
+`projects` and `repos`, for the same stated reason: scaffolding, not vocabulary.
+Detection is grammatical, a closed class of verbs that take a tool as their
+object, with no threshold to fit. Naming a project anywhere else is untouched:
+*"how does Alpha handle the widget"* still routes to Alpha.
+
+### Measured
+
+Both changes against the same index and the same 67-question hand-authored set,
+so this isolates the code from a corpus repair that landed in the same release:
+
+| | top-1 | gold-coverage | negatives correctly abstained |
+|---|---|---|---|
+| 0.3.0 | 42.6% | 45.1% | 92.3% |
+| **0.4.0** | **46.3%** | **48.8%** | **92.3%** |
+
+| family | 0.3.0 | 0.4.0 |
+|---|---|---|
+| cross | 28.6% | **42.9%** |
+| enumerative | 71.4% | **85.7%** |
+| behavior, confusable, negative, structure | — | *unchanged* |
+
+Nothing regressed, and negative abstention did not move: neither change buys
+coverage by answering questions it cannot know.
+
+### Rejected on measurement
+
+**Suppressing `ALIAS_BOOST` for an instrumentally-named scope.** The obvious fix
+for the second bug, and it changes nothing at all: a scope's own name is
+ordinary vocabulary inside it — `loci` sits in 407 nodes of the loci scope
+against 1 elsewhere — so the scope still wins on evidence with the boost gone.
+The name has to leave the query, not just the alias test. There is a test
+pinning this, because it is the fix a reader will propose again.
+
+### Known, and not fixed here
+
+A large scope can still lose a term it genuinely owns. *"…in which one of my
+projects am I using oauth?"* now abstains rather than answering confidently
+wrong, but the right project is third on the shortlist instead of first: 50
+occurrences inside a 16,793-node scope is 0.30% prominence, below the
+concentrated tier's threshold, while generic vocabulary elsewhere outweighs it.
+Opening that tier wide lifts coverage to 54.3% and collapses negative abstention
+from 92.3% to 53.8%, which is the trade this design refuses. It needs a fitted
+threshold, not a patch.
+
 ## 0.3.0 — 2026-09-05
 
 **No reindex.** `INDEX_VERSION` stays at 2. The shortlist below is computed at

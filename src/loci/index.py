@@ -17,8 +17,11 @@ from .paths import (BuildLock, atomic_write, atomic_write_via, embeddings_file,
 from .types import Chunk, Scope
 
 # 2: the tokenizer keeps alphanumeric terms (`d1`, `s3`, `base64`), so a
-# version-1 index holds a vocabulary the router no longer speaks.
-INDEX_VERSION = 2
+#    version-1 index holds a vocabulary the router no longer speaks.
+# 3: a camel split that discards a piece now keeps the whole run too, so
+#    `OAuth`, `macOS`, `OpenID` and `GraphQL` are terms rather than `auth`,
+#    `mac`, `open` and `graph`. A version-2 index indexed the lossy forms.
+INDEX_VERSION = 3
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 # Chunk kinds whose vocabulary feeds ROUTING by default. Docstrings are held

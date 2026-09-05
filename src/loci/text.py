@@ -131,6 +131,24 @@ def tokens(text: str, *, drop_stopwords: bool = True) -> list[str]:
             # written without spaces, but it is not silently lost.
             if run.isascii():
                 parts = _CAMEL.findall(run) or [run]
+                # A split that DISCARDS a piece keeps the whole run as well.
+                # `OAuth` splits to `O` + `Auth`, the solitary `O` dies on
+                # MIN_LEN, and the term the writer typed survived only as
+                # `auth` -- indistinguishable from the ordinary word, and
+                # unable to reach the `oauth` postings that lowercase
+                # occurrences had already created. Measured on a real corpus,
+                # `oauth` sits 50 times in one scope and a question written the
+                # normal way could never match it. Same for `macOS` -> `mac`,
+                # `OpenID` -> `open`, `GraphQL` -> `graph`, `IOError` -> `error`.
+                #
+                # Conditioned on a piece actually being lost, so this is not a
+                # blanket "keep the run too": `GlassesBridge` splits cleanly and
+                # gains nothing, which is what stops the vocabulary doubling.
+                # The output stays a SUPERSET, the same rule the alphanumeric
+                # branch above follows, so no query that matched before can stop
+                # matching.
+                if len(parts) > 1 and any(len(p) < MIN_LEN for p in parts):
+                    parts = [run] + parts
             else:
                 parts = [run]
                 if len(run) >= NGRAM_SCRIPT_MIN and is_unsegmented(run):

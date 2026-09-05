@@ -89,6 +89,36 @@ def test_alphanumeric_output_is_a_superset_of_the_letters_only_form():
         assert part in got, part
 
 
+def test_a_camel_split_that_loses_a_piece_keeps_the_whole_run():
+    """`OAuth` was `auth`, and could not reach the `oauth` it meant.
+
+    The camel pattern emits `O` + `Auth` and the solitary `O` dies on MIN_LEN,
+    so the term survived only as the ordinary word `auth`. Lowercase
+    occurrences in code (`oauth_config`) index as `oauth`, so the two halves of
+    the corpus disagreed: a question written the normal way could never match
+    the postings that already existed. Measured on a real corpus, one scope
+    held `oauth` 50 times and no natural phrasing reached it.
+    """
+    for whole, part in [("OAuth", "auth"), ("macOS", "mac"),
+                        ("OpenID", "open"), ("GraphQL", "graph"),
+                        ("IOError", "error")]:
+        got = tokens(f"about {whole} handling")
+        assert whole.lower() in got, f"{whole} lost its whole form: {got}"
+        assert part in got, f"{whole} must stay a superset of {part}: {got}"
+
+
+def test_the_whole_run_is_kept_only_when_splitting_would_lose_something():
+    """Not a blanket "keep the run too" -- that would double the vocabulary.
+
+    A name that splits cleanly gains nothing, which is what bounds the cost of
+    the rule above. `GlassesBridge` is the tokenizer's own docstring example.
+    """
+    got = tokens("the GlassesBridge and the MessageRepository")
+    assert "glasses" in got and "bridge" in got
+    assert "glassesbridge" not in got, "a clean split must not also emit the run"
+    assert "messagerepository" not in got
+
+
 def test_a_scope_name_carrying_digits_can_still_be_an_alias():
     """ALIAS_BOOST is the strongest signal in the router and it was unreachable.
 
@@ -1401,6 +1431,62 @@ def test_a_question_no_scope_can_claim_offers_no_candidates_at_all():
     assert route("xyzzy plugh frotz", idx).candidates == []
     assert route("how is the shared thing handled", idx).candidates == [], \
         "matching only the term every scope holds is not a claim"
+
+
+def _instrument_corpus() -> dict:
+    """One scope whose own NAME is heavy vocabulary inside it, and a rival."""
+    return _index(a=("Alpha", "/a", {"alpha": 400, "widget": 5}, 500),
+                  b=("Beta", "/b", {"widget": 40, "gizmo": 30, "sprocket": 20}, 500))
+
+
+def test_a_scope_named_as_the_tool_is_not_the_subject():
+    """"use Alpha to tell me ..." addresses the tool; the subject is elsewhere.
+
+    Measured on a real corpus, "Can you use loci to tell me in which project am
+    I using another one of my projects?" returned the `loci` scope alone.
+    """
+    idx = _instrument_corpus()
+    q = "use Alpha to tell me which project handles the widget gizmo sprocket"
+    r = route(q, idx)
+
+    assert not r.abstain
+    assert r.ranked[0] == "b", "the instrument won instead of the subject"
+    assert "alpha" not in r.query_tokens, "the tool name stayed in the query"
+    assert r.question == q, "the question as ASKED must survive on the result"
+
+
+def test_suppressing_only_the_alias_boost_would_not_have_been_enough():
+    """Why the name leaves the QUERY rather than just the alias test.
+
+    A scope's own name is ordinary vocabulary inside it, so the scope wins on
+    evidence with the boost already gone. Zeroing ALIAS_BOOST is the fix that
+    looks right and changes nothing; this pins that it was measured, not
+    assumed.
+    """
+    import loci.router as R
+
+    idx = _instrument_corpus()
+    q = "use Alpha to tell me which project handles the widget gizmo sprocket"
+    saved = R.ALIAS_BOOST
+    try:
+        R.ALIAS_BOOST = 0.0
+        # With the strip in place the subject still wins -- and the point is the
+        # control below: the name alone, unstripped, is enough to take it back.
+        assert route(q, idx).ranked[0] == "b"
+        assert route(q.replace("use Alpha to tell me", "tell me"), idx,
+                     ).ranked[0] == "b"
+        # Unstripped: the same question with the name in SUBJECT position keeps
+        # electing Alpha at zero boost, on its own vocabulary.
+        assert route("how does Alpha handle the widget", idx).ranked[0] == "a"
+    finally:
+        R.ALIAS_BOOST = saved
+
+
+def test_a_question_genuinely_about_a_scope_still_names_it():
+    """The strip is positional, not a blanket ban on naming a project."""
+    idx = _instrument_corpus()
+    assert route("how does Alpha handle the widget", idx).ranked[0] == "a"
+    assert route("what is Alpha for?", idx).ranked[0] == "a"
 
 
 def test_the_candidate_share_stays_at_its_measured_value():
