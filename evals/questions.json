@@ -414,6 +414,469 @@
       "cwd": null,
       "contamination": "none",
       "justification": "Plausible and specific, and nobody here takes payments."
+    },
+    {
+      "id": "beh-loci-alnum",
+      "family": "behavior",
+      "question": "Why did short names that mix letters with numbers disappear from the search index before?",
+      "gold": [
+        "loci"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "src/loci/text.py:24 `_WORDISH = [^\\W_]+` keeps digits inside a word; the earlier `[^\\W\\d_]+` treated every digit as a separator AND discarded it. text.py:38 MIN_LEN_ALNUM admits two-character alphanumeric terms below the prose floor. Question names neither the constant nor the pattern.",
+      "expect_contains": [
+        "digit",
+        "token",
+        "separator"
+      ]
+    },
+    {
+      "id": "beh-loci-coldstart",
+      "family": "behavior",
+      "question": "Why does the first question that reaches several projects at once have to load something before the parallel part starts?",
+      "gold": [
+        "loci"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "src/loci/ask.py:207-222 pays the native initialization on one thread before the ThreadPoolExecutor fan-out; constructing the sentence-transformer concurrently returned SIGSEGV, SIGABRT and hangs. Lives in a comment, which neither store indexes.",
+      "expect_contains": [
+        "warm",
+        "thread",
+        "model"
+      ]
+    },
+    {
+      "id": "beh-loci-monorepo",
+      "family": "behavior",
+      "question": "Why is splitting one repository into a separate entry per package not the default behaviour?",
+      "gold": [
+        "loci"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "src/loci/scopes.py:67 WORKSPACE_MARKERS and scopes.py:177; the README explains the measurement (a new scope's alias is its bare directory name and an alias outranks cwd, 6.0 to 4.0). README is indexed, so this ranks rather than recalls.",
+      "expect_contains": [
+        "alias",
+        "split",
+        "directory"
+      ]
+    },
+    {
+      "id": "beh-hlep-oldmessages",
+      "family": "behavior",
+      "question": "If someone got hold of the key for a chat later on, could they read everything that had already been sent?",
+      "gold": [
+        "hlep-davay"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "lib/src/messages/data/encryption_service.dart:7-10 documents one STATIC X25519 keypair per session with no Double Ratchet and no forward secrecy, so a compromised key opens the whole history. Question avoids 'forward secrecy', 'ratchet' and 'key rotation'.",
+      "expect_contains": [
+        "forward secrecy",
+        "static",
+        "ratchet"
+      ]
+    },
+    {
+      "id": "beh-hlep-firstsend",
+      "family": "behavior",
+      "question": "Why can nothing be sent until the other person has opened the app at least once?",
+      "gold": [
+        "hlep-davay"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "lib/src/messages/data/encryption_service.dart:19-20 throws a user-presentable MessageException when the partner has not published a public key yet; the shared secret needs both halves.",
+      "expect_contains": [
+        "public key",
+        "partner",
+        "shared"
+      ]
+    },
+    {
+      "id": "beh-hlep-typing",
+      "family": "behavior",
+      "question": "What clears the 'still writing' indicator when a phone loses signal half way through?",
+      "gold": [
+        "hlep-davay"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "lib/src/messages/domain/presence.dart:4-6 -- the repository's onDisconnect handler resets isOnline and isTyping when the client disappears, rather than a timeout on the reader's side.",
+      "expect_contains": [
+        "ondisconnect",
+        "presence",
+        "typing"
+      ]
+    },
+    {
+      "id": "beh-beacon-case",
+      "family": "behavior",
+      "question": "Can two different links differ only by which letters are capitalised?",
+      "gold": [
+        "beacon"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "app/shortcode.py:8 ALPHABET is ascii_lowercase + digits, so an uppercase letter can neither be generated nor validated -- is_valid (shortcode.py:22) rejects it outright.",
+      "expect_contains": [
+        "alphabet",
+        "lowercase",
+        "digits"
+      ]
+    },
+    {
+      "id": "beh-beacon-firstburst",
+      "family": "behavior",
+      "question": "Does a caller nobody has seen before get held back on its very first rush of requests?",
+      "gold": [
+        "beacon"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "app/ratelimit.py:47 a new bucket is created with tokens=capacity, so an unseen key starts FULL and may spend the whole capacity immediately. Question avoids 'bucket', 'token' and 'capacity'.",
+      "expect_contains": [
+        "capacity",
+        "bucket",
+        "full"
+      ]
+    },
+    {
+      "id": "beh-beacon-clock",
+      "family": "behavior",
+      "question": "Could moving the machine's clock backwards get someone more requests than they are owed?",
+      "gold": [
+        "beacon"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "app/ratelimit.py:46 and :52 use time.monotonic(), which is unaffected by wall-clock changes, so refill cannot be gamed that way.",
+      "expect_contains": [
+        "monotonic",
+        "refill",
+        "clock"
+      ]
+    },
+    {
+      "id": "beh-brewery-intel",
+      "family": "behavior",
+      "question": "Where does it look for the package manager on an older Mac before it gives up?",
+      "gold": [
+        "brewery"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "Sources/BreweryCore/BrewDetector.swift:26 tries /opt/homebrew/bin/brew then /usr/local/bin/brew, and :31-38 falls back to a sanitized login shell PATH before reporting not-found.",
+      "expect_contains": [
+        "/usr/local",
+        "login shell",
+        "path"
+      ]
+    },
+    {
+      "id": "beh-brewery-confirm",
+      "family": "behavior",
+      "question": "Does this ever change what is installed on my machine without asking me first?",
+      "gold": [
+        "brewery"
+      ],
+      "cwd": "brewery",
+      "contamination": "prose",
+      "justification": "README states package actions run only after confirmation. Deictic on purpose and asked from the project root, so the working directory is the only thing that identifies the subject.",
+      "expect_contains": [
+        "confirmation",
+        "action",
+        "install"
+      ]
+    },
+    {
+      "id": "beh-g2cc-safebash",
+      "family": "behavior",
+      "question": "Which commands can the glasses start on their own without waiting for approval?",
+      "gold": [
+        "g2-claude-companion"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "src/daemon/tool-permissions.ts:28-29 SAFE_BASH admits a read-only set (ls, cat, head, tail, wc, pwd, stat, env, uname, and git status/log/diff/branch/show/remote/rev-parse); everything else prompts. Reworded off 'headset' and 'shell', neither of which this scope indexes -- it says `glasses` (14 nodes) throughout.",
+      "expect_contains": [
+        "read-only",
+        "prompt",
+        "bash"
+      ]
+    },
+    {
+      "id": "beh-g2cc-unknown-tool",
+      "family": "behavior",
+      "question": "When a tool nobody has classified reaches the glasses, is it allowed or held?",
+      "gold": [
+        "g2-claude-companion"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "src/daemon/tool-permissions.ts:37-39 -- anything not in AUTO_ALLOW and not a safe Bash command returns true, i.e. unrecognized tools prompt rather than defaulting open. Reworded onto `glasses` (14) and `tool` (13); the earlier phrasing shared only `run` with the scope, so it measured the corpus rather than the router.",
+      "expect_contains": [
+        "prompt",
+        "unrecognized",
+        "permission"
+      ]
+    },
+    {
+      "id": "beh-ts-boundary",
+      "family": "behavior",
+      "question": "If a sentence falls right on the join between two passages, is it lost to the search?",
+      "gold": [
+        "tensor-serve"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "api/chunker.py:1 and :7 -- chunk_size 500 with overlap 50 and step = chunk_size - overlap, so consecutive passages share 50 words and a straddling sentence appears whole in one of them.",
+      "expect_contains": [
+        "overlap",
+        "chunk",
+        "500"
+      ]
+    },
+    {
+      "id": "beh-ts-repeat",
+      "family": "behavior",
+      "question": "If the same query comes back an hour later, is the whole search run from scratch?",
+      "gold": [
+        "tensor-serve"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "api/cache.py:14 QueryCache defaults to ttl_seconds=3600 with LRU eviction past max_size=100, so an hour is exactly the boundary at which a repeat stops being free. Reworded from a phrasing whose tokens tensor-serve did not index at all -- `query` (56 nodes there) makes it reachable without naming the cache.",
+      "expect_contains": [
+        "ttl",
+        "cache",
+        "lru"
+      ]
+    },
+    {
+      "id": "conf-zim-shrink",
+      "family": "confusable",
+      "question": "Which one makes an offline archive smaller by dropping the pictures?",
+      "gold": [
+        "zim-compress"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "Three scopes handle ZIM archives -- zim-compress strips them, tensor-serve ingests them, TSRC browses them -- so the archive vocabulary is shared and only the VERB separates the owners.",
+      "expect_contains": [
+        "image",
+        "smaller",
+        "archive"
+      ]
+    },
+    {
+      "id": "conf-zim-ask",
+      "family": "confusable",
+      "question": "Which one lets me put questions to an offline archive instead of reading it?",
+      "gold": [
+        "tensor-serve",
+        "tsrc"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "Same shared ZIM vocabulary as conf-zim-shrink, resolving to the other two owners: tensor-serve serves the retrieval, TSRC is the desktop workspace that talks to it. zim-compress must NOT come back.",
+      "expect_contains": [
+        "chat",
+        "retrieval",
+        "vector"
+      ]
+    },
+    {
+      "id": "conf-blog-writeup",
+      "family": "confusable",
+      "question": "Where is the write-up about the agent manager, as opposed to the tool itself?",
+      "gold": [
+        "myblog"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "_posts/2025-08-05-what-is-delroy.md and _posts/2026-07-11-introducing-delroy.md. The blog holds posts ABOUT the other projects, which is the sharpest confusion in this corpus: the post and the project share every term.",
+      "expect_contains": [
+        "delroy",
+        "post",
+        "agent"
+      ]
+    },
+    {
+      "id": "conf-site-vs-posts",
+      "family": "confusable",
+      "question": "Which one is the published site rather than the raw text that feeds it?",
+      "gold": [
+        "3m1ry33t-github-io"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "The inverse of conf-blog-writeup: MyBlog is 'raw posts from my personal website' while 3M1RY33T.github.io is the site itself. Both hold the same post vocabulary.",
+      "expect_contains": [
+        "site",
+        "blog"
+      ]
+    },
+    {
+      "id": "conf-agent-installer",
+      "family": "confusable",
+      "question": "Which one drops reusable coding agents into a project directory?",
+      "gold": [
+        "delroy"
+      ],
+      "cwd": null,
+      "contamination": "prose",
+      "justification": "Delroy manages and deploys agents; loci and G2-claude-companion are also 'AI coding agent' tooling and share that vocabulary, so the discriminating idea is INSTALLING INTO a project.",
+      "expect_contains": [
+        "agent",
+        "project",
+        "init"
+      ]
+    },
+    {
+      "id": "cross-embeddings",
+      "family": "cross",
+      "question": "Where do I have code that turns text into vectors so it can be searched by meaning?",
+      "gold": [
+        "tensor-serve",
+        "loci"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "tensor-serve api/embedder.py and api/vectordb.py; loci src/loci/backends/episodes.py and the embeddings written by `loci embed`. Two real owners, so returning one is the failure.",
+      "expect_contains": [
+        "embedding",
+        "vector",
+        "semantic"
+      ]
+    },
+    {
+      "id": "cross-confirm-before",
+      "family": "cross",
+      "question": "Which projects stop and ask before doing something that cannot be undone?",
+      "gold": [
+        "brewery",
+        "g2-claude-companion"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "brewery runs package actions only after confirmation (Sources/BreweryCore/BrewAction.swift, README); g2cc gates every mutating tool behind a permission prompt (src/daemon/tool-permissions.ts:31-39).",
+      "expect_contains": [
+        "confirm",
+        "permission",
+        "prompt"
+      ]
+    },
+    {
+      "id": "enum-swift",
+      "family": "enumerative",
+      "question": "Which of my projects are written in Swift?",
+      "gold": [
+        "brewery"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "brewery is the only SwiftUI/Package.swift project in the corpus. An enumeration with exactly ONE right answer, which is the case set mode most easily over-widens on.",
+      "expect_contains": [
+        "swift",
+        "macos"
+      ]
+    },
+    {
+      "id": "enum-flutter",
+      "family": "enumerative",
+      "question": "Do any of my projects use Flutter?",
+      "gold": [
+        "hlep-davay"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "hlep_davay is the only pubspec.yaml/Dart project (114 files under lib/). Same single-owner enumeration shape as enum-swift, phrased with the 'do any of' marker instead of 'which of'.",
+      "expect_contains": [
+        "flutter",
+        "dart"
+      ]
+    },
+    {
+      "id": "neg-video-bitrate",
+      "family": "negative",
+      "question": "How does the video transcoding pipeline choose a bitrate?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "No scope transcodes video. Plausible for a corpus holding a desktop app, a worker and a media-adjacent archive tool, which is what makes it a test rather than nonsense.",
+      "expect_contains": []
+    },
+    {
+      "id": "neg-lsp-server",
+      "family": "negative",
+      "question": "Where is the language server implemented and which protocol version does it speak?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "No scope implements LSP. Deliberately adjacent to loci, which reasons about symbols and references and would be the tempting wrong answer.",
+      "expect_contains": []
+    },
+    {
+      "id": "neg-raytracer",
+      "family": "negative",
+      "question": "How are light paths sampled in the renderer?",
+      "gold": [],
+      "cwd": null,
+      "contamination": "none",
+      "justification": "No rendering code anywhere. 'renderer' collides with UI rendering vocabulary in several scopes, so the router has to refuse on evidence rather than on the word being absent.",
+      "expect_contains": []
+    },
+    {
+      "id": "str-beacon-bucket",
+      "family": "structure",
+      "question": "What decides whether one more request from the same key goes through?",
+      "gold": [
+        "beacon"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "expect_symbol": "TokenBucket",
+      "justification": "app/ratelimit.py:17 TokenBucket.allow(key) is the decision. Avoids 'token', 'bucket' and 'limit'; reworded onto `request` and `key`, which beacon indexes, from a phrasing that shared no token with the scope at all.",
+      "expect_contains": [
+        "rate",
+        "limit"
+      ]
+    },
+    {
+      "id": "str-brewery-deps",
+      "family": "structure",
+      "question": "What works out which packages rely on which others?",
+      "gold": [
+        "brewery"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "expect_symbol": "BrewDependencyGraph",
+      "justification": "Sources/BreweryCore/BrewDependencyGraph.swift holds the dependency/dependent relation the browse view renders. Question says 'rely on' rather than 'depend'.",
+      "expect_contains": [
+        "dependency",
+        "dependent"
+      ]
+    },
+    {
+      "id": "str-hlep-crypto",
+      "family": "structure",
+      "question": "What sits between the message list and what the repository actually stores?",
+      "gold": [
+        "hlep-davay"
+      ],
+      "cwd": null,
+      "contamination": "none",
+      "expect_symbol": "EncryptionService",
+      "justification": "lib/src/messages/data/encryption_service.dart:11 is the boundary: controllers and widgets see plaintext, the repository sees ciphertext. Avoids 'encrypt'; reworded from a phrasing built on 'scrambling', a word no scope indexes, onto `message` (187) and `repository` (602), which hlep_davay does.",
+      "expect_contains": [
+        "encryption",
+        "boundary",
+        "ciphertext"
+      ]
     }
   ]
 }
