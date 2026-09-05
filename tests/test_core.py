@@ -1379,8 +1379,8 @@ def test_the_candidate_list_holds_only_scopes_with_a_claim_on_the_question():
 
 
 def test_a_shortlist_keeps_the_ranking_order_rather_than_the_evidence_order():
-    """Measured on 10 gold-bearing abstentions: the gold scope comes first 70%
-    of the time in score order and 30% in evidence order. The score carries the
+    """Measured on 24 gold-bearing abstentions: the gold scope comes first 41.7%
+    of the time in score order and 12.5% in evidence order. The score carries the
     cwd and alias boosts and the size prior; raw evidence favours whichever
     scope is largest, which is what SIZE_PRIOR exists to correct.
     """
@@ -1404,9 +1404,11 @@ def test_a_question_no_scope_can_claim_offers_no_candidates_at_all():
 
 
 def test_the_candidate_share_stays_at_its_measured_value():
-    """Widest cut that costs no recall over "holds any matched token". Tighter
-    cuts shrink the shortlist and every one of them drops a real answer; see
-    the table in router.py. A SHARE, not a count, so it scales with the corpus.
+    """The last rung before the cliff. Halving the corpus costs 4.1 points of
+    gold recall and takes two scopes off the shortlist; the next tightening
+    costs 25 more points, and the one after that gives up three quarters of the
+    answers. See the table in router.py. A SHARE, not a count, so it scales with
+    the corpus.
     """
     import loci.router as R
     assert R.CANDIDATE_SHARE == 0.5

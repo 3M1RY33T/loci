@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.3.0 — 2026-09-05
+
+**No reindex.** `INDEX_VERSION` stays at 2. The shortlist below is computed at
+query time from postings already on disk, and nothing changed about what a token
+is, so upgrading is `pipx upgrade loci-mem` and nothing else.
+
+### An abstention's candidates are a shortlist, not the registry
+
+The candidate line printed `ranked` — every eligible scope, in score order.
+On a fourteen-scope corpus that is fourteen names with nothing to prefer between
+them, which is the registry rather than a shortlist:
+
+```
+ABSTAINED - not enough of the question exists in any project.
+  candidates: Delroy, odysseus, tensor-serve, loci, MyBlog, 3M1RY33T.github.io,
+              urthreads, beacon, hlep_davay, G2-claude-companion, TSRC, brewery,
+              3M1RY33T, zim-compress
+```
+
+A scope now earns its place by holding a term **at most half the corpus holds**,
+and the line says which terms those are:
+
+```
+ABSTAINED - not enough of the question exists in any project.
+  candidates: Delroy (handled, caching), odysseus (handled, caching), tensor-serve (caching)
+```
+
+Holding a query token is not itself a claim. `change`, `handled` and `work` sit
+in nearly every project, so matching one is a coincidence — filtering on
+"matched anything" keeps 8.4 scopes of 14 and manufactures plausible candidates
+for questions that should return none. Measured over 24 gold-bearing abstentions
+and 25 questions that should abstain (`python evals/clarify.py --sweep`):
+
+| rule | gold recall | \|cand\| gold | \|cand\| should-abstain |
+|---|---|---|---|
+| `ranked`, i.e. before | 100.0% | 14.0 | 14.0 |
+| holds any matched token | 95.8% | 8.4 | 6.1 |
+| **held by ≤ S/2 scopes** | **91.7%** | **6.5** | **4.6** |
+| held by ≤ S/3 scopes | 66.7% | 4.5 | 2.7 |
+| held by ≤ 2 scopes | 20.8% | 2.1 | 1.0 |
+
+What picks 0.5 is the cliff under it, not a flat optimum above it: halving the
+corpus costs 4.1 points of recall for two scopes off the list, the next
+tightening costs 25 more, and the one after that gives up three quarters of the
+answers. It is a share rather than a count so it scales with the corpus.
+
+When nothing clears the bar there is no shortlist to print, and saying so is the
+answer — the subject is indexed nowhere, and `--scope` would only relocate the
+guess:
+
+```
+ABSTAINED - not enough of the question exists in any project.
+  no project holds a distinctive term from this question -- `loci doctor` shows what is not indexed.
+```
+
+`route --json` gains `candidates` and a per-scope `claims` list. The MCP `ask`
+tool returns the same rendered text it always did, so an agent client picks this
+up with no change.
+
+### A question set big enough to decide something
+
+The hand-authored eval set went from 31 questions to 61, covering 13 of 14
+scopes rather than 10, and `evals/clarify.py` reports what an abstention's
+shortlist is worth and where the remaining error actually lives.
+
+| family | n | top-1 | gold-coverage | | contamination | n | top-1 |
+|---|---|---|---|---|---|---|---|
+| behavior | 22 | 27.3% | 63.6% | | none (from code) | 25 | 32.0% |
+| confusable | 7 | 42.9% | 76.2% | | prose (from docs) | 14 | 57.1% |
+| cross | 5 | 40.0% | 70.0% | | | | |
+| enumerative | 5 | 100.0% | 100.0% | | | | |
+| negative | 12 | 91.7% | 91.7% | | | | |
+
+Questions derived from code bodies route at roughly half the rate of ones
+derived from indexed prose. The set can now say that on 25 items against 14
+rather than 24 against 7, and six questions were discarded or reworded during
+authoring because the gold scope indexed none of their tokens — they measured
+the corpus, not the router.
+
+It immediately falsified a number in this release. The first table above was
+measured on 10 abstentions and reported 0.5 as costing *no* recall; on 2.4× the
+questions it costs 4.1 points. The shape of the curve survived, the number did
+not, which is why the table now names its sample size and ships the command that
+rebuilds it.
+
+### Rejected on measurement
+
+**Ordering the shortlist by evidence.** It reads as the more principled choice
+and measures worse: the gold scope comes first 41.7% of the time in score order
+and 12.5% in evidence order. The score carries the cwd and alias boosts and the
+size prior; raw evidence favours whichever scope is biggest.
+
+**Generating a question that splits the shortlist.** The postings are an
+object × attribute matrix, so information gain over them is available and cheap —
+and the terms it selects are properties of the corpus, not of the question.
+Across the twelve abstentions where the gold scope is present but not first, the
+top splitters were the same handful of terms (`dart`, `brewery`, `minigames`)
+regardless of whether the question was about rate limiting, chunk overlap or a
+blog post. Not one was a term the asker could have answered from their own
+subject.
+
 ## 0.2.0 — 2026-08-30
 
 **Upgrading requires one command.** `INDEX_VERSION` is now 2 and a v0.1.0 index

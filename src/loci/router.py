@@ -42,29 +42,32 @@ CONCENTRATED_EVIDENCE = 2.6
 # in score order, which is the entire registry on any abstention. Fourteen names
 # with nothing to prefer between them is not a shortlist; it is the registry.
 #
-# Measured over 10 gold-bearing abstentions (the hand-authored eval set, plus
+# Measured over 24 gold-bearing abstentions (the hand-authored eval set, plus
 # ablations of the questions that route -- drop the winner's top token until it
-# stops routing) and 22 questions that SHOULD abstain. Reproduce the table with
+# stops routing) and 25 questions that SHOULD abstain. Reproduce the table with
 # `python evals/clarify.py --sweep`:
 #
 #   rule                       gold recall   |cand| gold   |cand| should-abstain
 #   ranked, i.e. before            100.0%          14.0          14.0
-#   holds any matched token         90.0%           7.8           6.0
-#   held by <= S/2 scopes           90.0%           6.3           4.4
-#   held by <= S/3 scopes           80.0%           4.0           2.5
-#   held by <= 2 scopes             50.0%           2.4           1.0
+#   holds any matched token         95.8%           8.4           6.1
+#   held by <= S/2 scopes           91.7%           6.5           4.6
+#   held by <= S/3 scopes           66.7%           4.5           2.7
+#   held by <= 2 scopes             20.8%           2.1           1.0
 #
-# Half the corpus is the widest cut that costs no recall over "holds any token
-# at all", and every tighter cut drops a real answer. It is a SHARE rather than
-# a count because a count is a number that happened to suit fourteen scopes: at
-# S=4 a threshold of 4 filters nothing, and the same table on a 200-scope corpus
-# would be measuring something else entirely.
+# What picks 0.5 is the CLIFF under it, not a flat optimum above it. Halving the
+# corpus costs 4.1 points of recall and takes 2 scopes off the shortlist; the
+# next tightening costs 25 more points for 2 more scopes, and the one after that
+# gives up three quarters of the answers. 0.5 is the last rung before the drop.
 #
-# Ten abstentions is not a fitted constant and is not presented as one -- the
-# corpus has three questions that abstain outright, and the rest are weakened
-# phrasings of ones that do not. What the table supports is the ORDERING, which
-# is monotone and wide: recall falls at every tightening and the shortlist
-# shrinks at every one, and 0.5 is the last point before recall moves at all.
+# It is a SHARE rather than a count because a count is a number that happened to
+# suit fourteen scopes: at S=4 a threshold of 4 filters nothing, and the same
+# table on a 200-scope corpus would be measuring something else entirely.
+#
+# An earlier version of this comment, measured on 10 abstentions before the eval
+# set grew, claimed 0.5 was "the widest cut that costs no recall at all". It is
+# not: on 2.4x the questions it costs 4.1 points. The shape of the curve is what
+# survived the bigger sample, not that one number -- which is the whole reason
+# the table names its sample size and ships the command that rebuilds it.
 #
 # The one abstention no setting recovers is worth naming: "Can I drop
 # photographs but keep vector graphics?" holds no token its gold scope indexes,
@@ -612,8 +615,8 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
 
     # In `ranked`'s order, which is the SCORE's. Re-sorting the shortlist by
     # evidence reads as the more principled choice and measures worse: on the
-    # same 10 abstentions, the gold scope came first 70% of the time under the
-    # score and 30% under evidence_total. The score carries the cwd and alias
+    # same 24 abstentions, the gold scope came first 41.7% of the time under the
+    # score and 12.5% under evidence_total. The score carries the cwd and alias
     # boosts and the size prior; raw evidence favours whichever scope is
     # biggest, which is the failure SIZE_PRIOR exists to correct.
     candidates = [s for s in ranked if detail[s]["claims"]]

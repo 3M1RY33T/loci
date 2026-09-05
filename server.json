@@ -3,7 +3,7 @@
   "name": "io.github.3M1RY33T/loci",
   "title": "loci",
   "description": "Scoped memory for coding agents: picks the right project, answers in scope, or abstains.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "repository": {
     "url": "https://github.com/3M1RY33T/loci",
     "source": "github"
@@ -13,7 +13,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "loci-mem",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {
