@@ -1877,6 +1877,32 @@ def test_enumerative_mode_still_abstains_without_evidence():
     assert r.abstain and r.abstain_reason == "no_evidence"
 
 
+def test_an_enumeration_does_not_pad_itself_with_the_scope_you_are_standing_in(tmp_path):
+    """A scope earns its place in a set the way every other scope does.
+
+    The gate above already refuses an enumeration a cwd is the ONLY reason to
+    answer. This is the other half: when some other scope carries the question,
+    the cwd scope rode into the answer beside it on `signals` alone, holding
+    none of the vocabulary. Enumerating "which of my projects use X" and naming
+    one that does not is the failure the set branch exists to prevent.
+    """
+    root = tmp_path / "beta"
+    root.mkdir()
+    idx = _index(a=("Alpha", "/nowhere", {"wrangler": 50, "cloudflare": 30}, 300),
+                 b=("Beta", str(root), {"flange": 1}, 10))
+    q = "which of my projects use wrangler and cloudflare?"
+
+    r = route(q, idx, cwd=root)
+    assert r.enumerative and not r.abstain
+    assert r.ranked[0] == "b", "CWD_BOOST still wins the ranking"
+    assert r.selected == ["a"], "the cwd scope holds none of the vocabulary"
+
+    # An alias earns the place a cwd does not: it names the subject.
+    named = route("which of my projects use wrangler and cloudflare, Beta?",
+                  idx, cwd=root)
+    assert set(named.selected) == {"a", "b"}
+
+
 def test_set_mode_thresholds_are_read_at_call_time():
     import loci.router as R
     idx = _index(a=("A", "/a", {"wrangler": 50, "cloudflare": 30}, 300),

@@ -780,9 +780,17 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         # scope of an enumeration is merely the owner that happens to say the
         # term most often. `_has_evidence` is asked of each scope in turn, the
         # same predicate the top scope faces, against the discounted floor.
+        #
+        # `_subject_signalled`, not `_located`: a scope you are standing in
+        # earns its place in an enumeration the same way every other scope
+        # does, by clearing the floor. A cwd put it in the set regardless, so
+        # "which of my projects use X?" named the project you happened to be
+        # in whether or not it used X -- and when nothing else cleared the
+        # floor, that scope was the whole answer. An alias is different: it
+        # names the subject, so the question itself put the scope in the set.
         set_floor = floor * set_floor_ratio
         selected = [s for s in ranked
-                    if _located(detail[s])
+                    if _subject_signalled(detail[s])
                     or _has_evidence(detail[s], set_floor, min_matched,
                                      s in concentrated_owners)][:max_set_scopes]
         if not selected:
