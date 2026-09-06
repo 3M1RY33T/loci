@@ -11,12 +11,19 @@ would put the word `loci` in the vocabulary of every scope that shells out to
 it — so a question about loci would route to whoever calls it. Collected per
 scope from that scope's own tree, joined by arithmetic afterwards.
 
-Two collectors, and the split is a measurement. Swept across fifteen real
-repositories on 2026-09-06: zero `.gitmodules`, zero manifest dependencies
-naming a sibling repository, and exactly one true cross-project edge —
-`Delroy -> loci`, expressed as `shutil.which("loci")`. A collector that reads
-manifests and stops has a measured recall of 0 on that corpus, which is why
-`invoked_edges` exists beside `declared_edges` rather than after it.
+Two collectors, and the split is a measurement. Across fifteen real
+repositories on 2026-09-06 there are exactly two cross-project edges, one of
+each kind:
+
+    3m1ry33t-github-io -> urthreads   "urthreads": "^1.2.0"   package.json:10
+    delroy             -> loci        shutil.which("loci")    client/loci_memory.py:36
+
+Neither collector finds the other's edge. There is no `.gitmodules` in the
+corpus, no path dependency and no git-URL dependency, so `declared_edges`
+rests entirely on the plain registry name; and `Delroy -> loci` is a binary
+resolved on PATH, declared in no manifest, lockfile or submodule. Either
+collector alone has a measured recall of 0.5, which is why `invoked_edges`
+exists beside `declared_edges` rather than after it.
 """
 from __future__ import annotations
 
@@ -219,3 +226,156 @@ def declared_edges(root: Path) -> list[dict]:
         except Exception:
             continue
     return _dedupe(out)
+
+
+# -- invoked ---------------------------------------------------------------
+# Files worth reading for a spawn. Not DEFAULT_CODE_GLOBS: only these three
+# families are parsed, and walking Go and Rust sources to find nothing is the
+# cost `SKIP_DIRS` exists to avoid paying.
+_SCAN_GLOBS = ["**/*.py", "**/*.js", "**/*.mjs", "**/*.ts", "**/*.tsx",
+               "**/*.json"]
+
+# A generated lockfile is megabytes of dependency records and carries no spawn.
+_MAX_SCAN_BYTES = 512 * 1024
+
+# `module.func` forms that take a command as their first argument.
+_SPAWN_ATTRS = {
+    ("shutil", "which"),
+    ("subprocess", "run"), ("subprocess", "Popen"), ("subprocess", "call"),
+    ("subprocess", "check_call"), ("subprocess", "check_output"),
+}
+# Bare names, for `from subprocess import Popen`. `run` and `call` are
+# deliberately absent: they are among the most common function names in any
+# codebase, and a bare `run(["deploy"])` is not evidence of a subprocess.
+_SPAWN_NAMES = {"which", "Popen", "check_call", "check_output"}
+
+_JS_SPAWN = re.compile(
+    r"\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*"
+    r"[\'\"`]([^\'\"`]+)[\'\"`]")
+
+
+def _first_command(node: ast.AST) -> str | None:
+    """The command out of a spawn's first argument.
+
+    Both shapes: `which("loci")` and `run(["loci", "ask", q])`. A list whose
+    first element is not a literal -- `run([exe, "ask"])` -- names nothing.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+        head = node.elts[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            return head.value
+    return None
+
+
+def _is_spawn(func: ast.AST) -> bool:
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return (func.value.id, func.attr) in _SPAWN_ATTRS or (
+            func.value.id == "os" and (func.attr.startswith("exec")
+                                       or func.attr.startswith("spawn")))
+    return isinstance(func, ast.Name) and func.id in _SPAWN_NAMES
+
+
+def _python_spawns(text: str, rel: str, out: list[dict]) -> None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return                       # a file this parser cannot read is not a
+                                     # reason to abandon the repository
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if not _is_spawn(node.func):
+            continue
+        cmd = _first_command(node.args[0])
+        if cmd:
+            out.append(_edge(_basename(cmd), "command", rel, node.lineno))
+
+
+def _js_spawns(text: str, rel: str, out: list[dict]) -> None:
+    # Gated on the module being present in the file. `exec(` and `spawn(` are
+    # ordinary words in a codebase that never starts a process; requiring the
+    # import is what keeps a scheduler's `spawn("worker")` out of the table.
+    if "child_process" not in text:
+        return
+    for i, line in enumerate(text.splitlines(), 1):
+        for m in _JS_SPAWN.finditer(line):
+            out.append(_edge(_basename(m.group(1)), "command", rel, i))
+
+
+def _json_commands(obj, text: str, rel: str, out: list[dict]) -> None:
+    """`{"command": ..., "args": [...]}` -- an MCP server or a task runner.
+
+    `args` is required. A lone `command` key is how every configuration file
+    that happens to use the word becomes an edge; the pair is what says a
+    process is being described.
+    """
+    if isinstance(obj, dict):
+        cmd = obj.get("command")
+        if isinstance(cmd, str) and "args" in obj:
+            out.append(_edge(_basename(cmd), "command", rel,
+                             _line_of(text, f'"{cmd}"')))
+        for v in obj.values():
+            _json_commands(v, text, rel, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _json_commands(v, text, rel, out)
+
+
+def _basename(cmd: str) -> str:
+    """`/usr/local/bin/loci` and `loci` are the same command."""
+    return cmd.strip().rstrip("/").rsplit("/", 1)[-1]
+
+
+def invoked_edges(root: Path) -> list[dict]:
+    """Outbound references this project makes at runtime, by name.
+
+    The measured majority of what a manifest cannot see. `Delroy -> loci` is
+    `shutil.which("loci")` and nothing else -- no manifest, no lockfile, no
+    submodule -- so a collector that reads declarations and stops misses half
+    the edges in the corpus.
+
+    Only spawn positions count. A bare `LOCI_SERVER_NAME = "loci"` is a name,
+    not a call, and admitting string constants makes every string in a
+    codebase an edge.
+    """
+    from .walk import iter_files
+
+    root = Path(root)
+    out: list[dict] = []
+    for f in iter_files(root, _SCAN_GLOBS):
+        try:
+            if f.stat().st_size > _MAX_SCAN_BYTES:
+                continue
+        except OSError:
+            continue
+        rel = str(f.relative_to(root)) if f.is_relative_to(root) else f.name
+        text = _read(f)
+        if not text:
+            continue
+        try:
+            if f.suffix == ".py":
+                _python_spawns(text, rel, out)
+            elif f.suffix == ".json":
+                _json_commands(json.loads(text), text, rel, out)
+            else:
+                _js_spawns(text, rel, out)
+        except Exception:
+            continue
+    return _dedupe(out)
+
+
+def edges_for(scope) -> list[dict]:
+    """Every outbound edge of one scope, minus the ones pointing at itself.
+
+    A console script invoking its own binary is not a cross-project edge, and
+    dropping it here means nothing downstream has to know to ignore it.
+    """
+    from .identity import signboard_of, targets
+
+    own = targets(signboard_of(scope) or {})
+    own.add(scope.id.lower())
+    root = Path(scope.root)
+    found = _dedupe(declared_edges(root) + invoked_edges(root))
+    return [e for e in found if e["target"] not in own]

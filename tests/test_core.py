@@ -1881,6 +1881,67 @@ def test_declared_edges_are_read_at_the_root_only(tmp_path):
     assert declared_edges(tmp_path) == []
 
 
+def test_invoked_edges_find_every_spawn_position(tmp_path):
+    """The half of the corpus that manifests cannot see. `Delroy -> loci` is
+    a binary name resolved on PATH: no manifest, no lockfile, no submodule.
+    """
+    from loci.edges import invoked_edges
+
+    (tmp_path / "a.py").write_text(
+        'import shutil, subprocess\n'
+        'BIN = shutil.which("loci")\n'
+        'subprocess.run(["graphify", "query", q], check=True)\n')
+    (tmp_path / "b.js").write_text(
+        'const cp = require("child_process");\n'
+        'cp.spawn("wrangler", ["dev"]);\n')
+    (tmp_path / "mcp.json").write_text(
+        '{"servers": {"mem": {"command": "loci", "args": ["mcp"]}}}')
+
+    edges = invoked_edges(tmp_path)
+    by_target = {e["target"]: e for e in edges}
+
+    assert set(by_target) == {"loci", "graphify", "wrangler"}
+    assert by_target["loci"]["source"] in {"a.py:2", "mcp.json:1"}
+    assert by_target["graphify"]["source"] == "a.py:3"
+    assert by_target["wrangler"]["source"] == "b.js:2"
+    assert {e["how"] for e in edges} == {"command"}
+
+
+def test_a_name_that_is_not_called_is_not_an_edge(tmp_path):
+    """`LOCI_SERVER_NAME = "loci"` is a name, not a call. Admitting a bare
+    string constant makes every string in a codebase an edge, and the table
+    stops meaning anything.
+    """
+    from loci.edges import invoked_edges
+
+    (tmp_path / "a.py").write_text(
+        'LOCI_SERVER_NAME = "loci"\n'
+        'PATHS = ["graphify", "wrangler"]\n'
+        'log("wrangler deploy failed")\n')
+    (tmp_path / "b.json").write_text('{"command": "loci"}')
+
+    assert invoked_edges(tmp_path) == []
+
+
+def test_a_project_does_not_have_an_edge_to_itself(tmp_path):
+    """A console script invoking its own binary is not a cross-project edge.
+    Dropped at collection, so nothing downstream has to know to ignore it.
+    """
+    from loci.edges import edges_for
+    from loci.types import Scope
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "mine"\n\n[project.scripts]\nmine = "m:main"\n')
+    (tmp_path / "a.py").write_text(
+        'import subprocess\nsubprocess.run(["mine", "--check"])\n'
+        'subprocess.run(["loci", "ask"])\n')
+
+    scope = Scope(id="mine", name="Mine", root=tmp_path,
+                  meta={"identity": {"remote": "", "dist": ["mine"],
+                                     "imports": [], "command": ["mine"]}})
+    assert [e["target"] for e in edges_for(scope)] == ["loci"]
+
+
 # -- docstring collector ---------------------------------------------------
 PY_SAMPLE = '''
 """Module level explanation that is long enough to be worth keeping around."""
