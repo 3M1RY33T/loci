@@ -272,6 +272,72 @@ ENUMERATIVE = re.compile(
     re.IGNORECASE,
 )
 
+# A RELATIONAL question asks about an edge BETWEEN scopes -- "am I using
+# another of my projects" -- and no scope holds a token for it. Every
+# content-bearing word is a function word (`using`, `another`, `one`, `my`), so
+# the evidence model has nothing to look up and abstains, correctly, with a
+# shortlist assembled from `another` and `using`. Three Delroy sessions on
+# 2026-09-06 abandoned loci over exactly that, and the abstention was right:
+# the fact the question wants is not in either store, it is in the registry.
+#
+# Two shapes. The first names no project and points at the class of them; it is
+# unambiguous, because nothing else phrases a question that way. The second
+# names one -- "what depends on urthreads" -- and is ambiguous with an ordinary
+# enumeration ("which projects use wrangler"), so it is admitted only when the
+# name IS a registered project. Without that guard the relational path would
+# take "which of my projects use oauth?" away from the enumerative path, which
+# answers it well, and hand back an empty table.
+_USES = (r"(?:us(?:e|es|ing|ed)|depends?|depending|references?|"
+         r"imports?|importing|calls?|invok(?:e|es|ing)|runs?|reach(?:es|ing)?)")
+# "using another one of my projects", "depend on each other", "use one another"
+RELATIONAL_ANY = re.compile(
+    rf"\b{_USES}\b[^?.!]{{0,40}}?\b(?:another|each\s+other|one\s+another)\b"
+    rf"|\b(?:my|our|your)\s+(?:other|own)\s+"
+    rf"(?:projects?|repos?|repositories|codebases?)\b"
+    rf"|\b(?:other|another)\s+(?:one\s+of\s+)?(?:my|our|your)\s+"
+    rf"(?:projects?|repos?|repositories|codebases?)\b",
+    re.IGNORECASE,
+)
+# "what depends on urthreads", "where do I use urthreads"
+RELATIONAL_NAMED = re.compile(
+    rf"\b(?:what|which|who|where)\b[^?.!]{{0,40}}?\b{_USES}\b\s+(?:on\s+)?"
+    rf"(?:the\s+)?([A-Za-z0-9._\-/]{{2,}})",
+    re.IGNORECASE,
+)
+
+
+def is_relational(question: str, *, names: "set[str] | None" = None) -> bool:
+    """True when the question asks about an edge between registered projects.
+
+    `names` is every string a registered project answers to -- the union of the
+    signboards. The named shape is admitted only against it, so an unknown name
+    falls through to ordinary routing rather than being answered from an empty
+    table. The unnamed shape needs no guard: nothing but a question about the
+    class of one's own projects is phrased that way.
+    """
+    return relational_name(question, names=names) is not None
+
+
+def relational_name(question: str, *, names: "set[str] | None" = None) -> str:
+    """`""` for the unnamed shape, the name for the named one, None for neither.
+
+    Three states, not two: "what depends on urthreads" restricts the answer to
+    the edges touching urthreads, and "am I using another of my projects" does
+    not restrict it at all. Collapsing them to a boolean makes the first
+    question answerable only as the second.
+    """
+    q = question or ""
+    if RELATIONAL_ANY.search(q):
+        return ""
+    if not names:
+        return None
+    for m in RELATIONAL_NAMED.finditer(q):
+        name = m.group(1).strip(" ?.,").lower()
+        if name in names:
+            return name
+    return None
+
+
 # The frame nouns are scaffolding for the enumeration, not vocabulary that
 # identifies anything -- the same insight as deixis, one level down. Leaving
 # them in is not neutral: `projects` is held by exactly two scopes in the

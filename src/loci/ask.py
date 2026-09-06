@@ -18,7 +18,7 @@ from pathlib import Path
 from .backends import get_episode_backend, get_structure_backend
 from .groups import Policy, confinement, load_policy
 from .index import chunks_for, load_episodes, load_index
-from .router import route
+from .router import relational_name, route
 from .scopes import load_scopes
 from .text import unique_tokens
 from .types import EpisodeHit, RouteResult, Scope, StructureHit
@@ -48,6 +48,12 @@ class Answer:
     question: str
     routing: RouteResult
     scopes: list[ScopeAnswer] = field(default_factory=list)
+    # Resolved cross-project edges, when the question asked about a relation
+    # between projects rather than about the contents of one. Never merged into
+    # `scopes`: an edge is registry arithmetic with a citation, not a retrieval
+    # hit with a score, and rendering it as one would put a fact and a ranking
+    # in the same list.
+    edges: list[dict] = field(default_factory=list)
 
     def to_json(self) -> dict:
         # `clarify` is a VIEW of `routing.candidates`, never a replacement for
@@ -59,6 +65,7 @@ class Answer:
         from .clarify import clarify
         return {"question": self.question, "routing": self.routing.to_json(),
                 "scopes": [s.to_json() for s in self.scopes],
+                "edges": list(self.edges),
                 "clarify": clarify(self.routing)}
 
 
@@ -122,6 +129,34 @@ def expand_for_scope(question: str, index: dict, scope_id: str) -> list[str]:
     return [t for t in unique_tokens(question) if scope_id in postings.get(t, {})]
 
 
+def relational_edges(question: str, registry: list[Scope]) -> list[dict] | None:
+    """Resolved edges for a relational question, or None when it is not one.
+
+    None and `[]` are different answers and the caller depends on it: None
+    means "not a question about edges, route it", and `[]` means "it was, and
+    the table holds none" -- which must not be reported as "no project uses
+    another" without its coverage.
+    """
+    from .edges import load_edges, resolved
+    from .identity import signboard_of, targets
+
+    names: set[str] = set()
+    for s in registry:
+        names |= targets(signboard_of(s) or {})
+        names.add(s.id.lower())
+
+    focus = relational_name(question, names=names)
+    if focus is None:
+        return None
+
+    edges = resolved(registry, load_edges())
+    if not focus:
+        return edges
+    owners = {s.id for s in registry
+              if focus in targets(signboard_of(s) or {}) or focus == s.id.lower()}
+    return [e for e in edges if e["from"] in owners or e["to"] in owners]
+
+
 def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
         episodes_k: int = 3, dfs: bool = False, rerank: bool = False,
         with_structure: bool = True, with_episodes: bool = True,
@@ -170,6 +205,20 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
                 registry = load_scopes()
             except Exception:
                 registry = []
+        # Before confinement and before routing, because routing is what
+        # abstains: a question about an edge BETWEEN projects holds no token
+        # any project owns, so the evidence model has nothing to look up. The
+        # fact it wants is in the registry, and getting there through `route`
+        # is not possible -- `route` can only choose scopes.
+        rel = relational_edges(question, registry)
+        if rel is not None:
+            return Answer(question=question, edges=rel,
+                          routing=RouteResult(
+                              question=question,
+                              query_tokens=unique_tokens(question),
+                              ranked=[], selected=[], abstain=False,
+                              top_score=0.0, top_matched=0))
+
         conf = confinement(policy, registry, cwd=cwd, forced_group=group)
         rt = route(question, index, cwd=cwd,
                    eligible=conf.eligible, demoted=conf.demoted,
@@ -288,6 +337,19 @@ def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
     out: list[str] = []
     rt = answer.routing
     names = {sid: m["name"] for sid, m in index["scopes"].items()}
+
+    if answer.edges:
+        # A different kind of answer, so a different shape: no scores, no
+        # expansion, no per-scope blocks. Every line is a fact with the file
+        # and line that backs it, because an edge without a citation is an
+        # assertion and this path has no ranking to fall back on.
+        out.append(f"USES -> {len(answer.edges)} cross-project edge(s)")
+        for e in sorted(answer.edges, key=lambda e: (e["from"], e["to"])):
+            how = "runs" if e["how"] == "command" else "depends on"
+            out.append(f"  {names.get(e['from'], e['from'])} -> "
+                       f"{names.get(e['to'], e['to'])}   ({how} "
+                       f"`{e['target']}`)  {e['source']}")
+        return "\n".join(out)
 
     if rt.abstain:
         # An abstention that does not name its cause is indistinguishable from a

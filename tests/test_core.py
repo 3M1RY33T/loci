@@ -2047,6 +2047,60 @@ def test_edge_report_names_what_could_not_be_read(tmp_path):
         "loci publishes a command; it is nameable"
 
 
+# -- relational questions --------------------------------------------------
+@pytest.mark.parametrize("question,want", [
+    # The subject is a RELATION between scopes, and no scope holds a token for
+    # it. This is the question three Delroy sessions abandoned loci over.
+    ("in which project am I using another one of my projects?", True),
+    ("am I using any of my other projects here?", True),
+    ("do any of my repos depend on each other?", True),
+    # Named object, and the name IS a registered project.
+    ("what depends on urthreads?", True),
+    ("where do I use urthreads?", True),
+    # Named object that is NOT a registered project: an ordinary vocabulary
+    # question, and the enumerative path already answers it well. Taking it
+    # here would trade a working answer for an empty table.
+    ("which projects use wrangler and D1?", False),
+    ("which of my projects use oauth?", False),
+    # No usage verb at all.
+    ("what is another project of mine about?", False),
+])
+def test_is_relational_needs_a_relation_and_a_reachable_object(question, want):
+    from loci.router import is_relational
+
+    assert is_relational(question, names={"urthreads", "loci"}) is want
+
+
+def test_a_relational_question_is_answered_from_the_table_not_the_router(
+        loci_home, monkeypatch):
+    """The capability is useless if the question cannot reach it. `ask` has to
+    take this path BEFORE routing, because routing is what abstains: the
+    question holds no token any scope owns, which is why it abstained for
+    three sessions running.
+    """
+    import loci.ask as A
+    from loci.edges import save_edges
+    from loci.scopes import save_scopes
+
+    save_scopes([_signed("delroy", loci_home / "d"),
+                 _signed("loci", loci_home / "l", command=["loci"])])
+    save_edges({"delroy": [{"target": "loci", "how": "command",
+                            "source": "client/loci_memory.py:36"}]})
+    _install_index({"version": 3, "scopes": {}, "postings": {}, "sizes": {}})
+
+    def explode(*a, **k):
+        raise AssertionError("routing must not run for a relational question")
+
+    monkeypatch.setattr(A, "route", explode)
+
+    answer = A.ask("in which project am I using another one of my projects?")
+    assert answer.edges == [{"from": "delroy", "to": "loci", "target": "loci",
+                             "how": "command",
+                             "source": "client/loci_memory.py:36"}]
+    assert "delroy -> loci" in A.render(answer, index={"scopes": {}}).lower()
+    assert "client/loci_memory.py:36" in A.render(answer, index={"scopes": {}})
+
+
 # -- docstring collector ---------------------------------------------------
 PY_SAMPLE = '''
 """Module level explanation that is long enough to be worth keeping around."""
