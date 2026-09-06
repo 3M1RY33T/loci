@@ -238,6 +238,7 @@ def cmd_groups_infer(args) -> int:
     `loci group add` is not durable -- like a containment label, it is recomputed
     rather than remembered.
     """
+    from .identity import signboard
     from .provenance import classify, infer_identity, is_retractable
     from .scopes import load_scopes, repositories, save_scopes
 
@@ -249,6 +250,11 @@ def cmd_groups_infer(args) -> int:
     print(f"  {identity.describe()}")
     changed = 0
     for s in scopes:
+        # The signboard rides along on the pass that was already reading this
+        # scope's git remote. Refreshed unconditionally, and it does not count
+        # toward `changed`: that number is about group labels, and a renamed
+        # distribution is not a scope this command relabelled.
+        s.meta = {**(s.meta or {}), "identity": signboard(s.root)}
         g = classify(s.root, identity)
         current = s.group_set()
         stale = {p for p in current if is_retractable(p, identity)} - {g}

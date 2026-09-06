@@ -1768,6 +1768,61 @@ def test_manifests_are_read_at_the_root_only(tmp_path):
     assert packaging_identity(tmp_path)["dist"] == ["outer"]
 
 
+def test_registration_puts_a_signboard_on_the_scope(tmp_path, hermetic_git):
+    """Written at registration, not computed per question: resolving an edge
+    reads every scope's signboard, and shelling out to git fifteen times in a
+    query path is not a query path.
+    """
+    repo = _repo(tmp_path, "thing", origin="git@github.com:acme/thing.git")
+    (repo / "package.json").write_text('{"name": "thing", "bin": {"th": "c.js"}}')
+
+    sign = make_scope(repo).meta["identity"]
+    assert sign["remote"] == "acme/thing"
+    assert sign["dist"] == ["thing"]
+    assert sign["command"] == ["th"]
+
+
+def test_an_absent_signboard_is_not_an_empty_one(tmp_path):
+    """The distinction `Scope.from_json` already draws twice, for `groups` and
+    for the glob keys: ABSENT means "not yet inferred", present-and-empty means
+    "inferred, and this project publishes nothing". Collapsing them makes a
+    later refresh skip every scope registered before signboards existed --
+    which is every scope in an existing install.
+    """
+    from loci.identity import signboard_of
+
+    old = Scope.from_json({"id": "a", "name": "A", "root": str(tmp_path)})
+    fresh = Scope.from_json({"id": "b", "name": "B", "root": str(tmp_path),
+                             "meta": {"identity": {"remote": "", "dist": [],
+                                                   "imports": [], "command": []}}})
+
+    assert signboard_of(old) is None
+    assert signboard_of(fresh) == {"remote": "", "dist": [], "imports": [],
+                                   "command": []}
+
+
+def test_groups_infer_refreshes_the_signboard(loci_home, hermetic_git, capsys):
+    """`groups infer` is already the command `doctor` sends users to, and it
+    already re-reads each scope's git remote. Reading the rest of the identity
+    in the same pass costs one manifest read and saves a second command.
+    """
+    from loci.cli import main
+    from loci.identity import signboard_of
+    from loci.scopes import load_scopes, save_scopes
+
+    repo = _repo(loci_home, "mine", origin="git@github.com:me/mine.git")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "mine-dist"\n\n[project.scripts]\nmine = "m:main"\n')
+    save_scopes([Scope(id="mine", name="Mine", root=repo)])
+    assert signboard_of(load_scopes()[0]) is None, "precondition: no signboard"
+
+    assert main(["groups", "infer"]) == 0
+    sign = signboard_of(load_scopes()[0])
+    assert sign["remote"] == "me/mine"
+    assert sign["dist"] == ["mine-dist"]
+    assert sign["command"] == ["mine"]
+
+
 def test_a_malformed_manifest_yields_nothing_rather_than_raising(tmp_path):
     """`loci scan` walks every repository on the disk. One unparseable
     package.json in one of them must not end the scan.

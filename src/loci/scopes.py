@@ -143,6 +143,11 @@ def make_scope(root: Path, *, name: str | None = None,
     if not root.is_dir():
         raise NotADirectoryError(f"not a directory: {root}")
     nm = name or root.name
+    # Computed here rather than per question: resolving one edge reads every
+    # scope's signboard, and fifteen git subprocesses in a query path is not a
+    # query path. `scan` already runs git per repository for `updated_at`, so
+    # this adds a manifest read to a pass that was already paying for the walk.
+    from .identity import signboard
     return Scope(
         id=slugify(nm),
         name=nm,
@@ -151,6 +156,7 @@ def make_scope(root: Path, *, name: str | None = None,
         episode_globs=episode_globs if episode_globs is not None else list(DEFAULT_EPISODE_GLOBS),
         code_globs=code_globs if code_globs is not None else list(DEFAULT_CODE_GLOBS),
         updated_at=_git_updated_at(root) or datetime.now(timezone.utc).isoformat(),
+        meta={"identity": signboard(root)},
     )
 
 

@@ -254,6 +254,19 @@ def signboard(root: Path) -> dict:
     return out
 
 
+def signboard_of(scope) -> dict | None:
+    """The stored signboard, or None when one was never computed.
+
+    ABSENT and empty are different answers and the registry keeps them apart,
+    the same way `Scope.from_json` keeps them apart for `groups` and for the
+    glob keys. Absent means "registered before signboards existed, refresh
+    it"; present and empty means "read, and this project publishes nothing".
+    Collapsing them makes a refresh skip every scope in an existing install.
+    """
+    sign = (scope.meta or {}).get("identity")
+    return sign if isinstance(sign, dict) else None
+
+
 def targets(sign: dict) -> set[str]:
     """Every string an edge could name this project by, lowercased.
 
