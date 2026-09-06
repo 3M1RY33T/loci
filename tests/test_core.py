@@ -3738,6 +3738,36 @@ def test_the_json_answer_also_carries_the_text_it_would_have_printed(
     assert payload["clarify"] is None, "a routed answer has no question to ask"
 
 
+def test_the_mcp_ask_tool_declares_the_question_in_its_output_schema():
+    """Text for the model to read, structure for the client to render.
+
+    Skipped without the `mcp` extra, which CI does not install -- it builds the
+    base wheel and runs pytest against that, so an unguarded import here would
+    fail all thirteen jobs for a dependency the base install deliberately does
+    not carry.
+    """
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from mcp import types
+
+    from loci.mcp_server import build_server
+
+    server = build_server()
+
+    async def _tools():
+        result = await server.request_handlers[types.ListToolsRequest](
+            types.ListToolsRequest(method="tools/list")
+        )
+        return result.root.tools
+
+    ask_tool = next(t for t in asyncio.run(_tools()) if t.name == "ask")
+    assert ask_tool.outputSchema is not None, "no schema for a client to trust"
+    props = ask_tool.outputSchema["properties"]
+    assert "clarify" in props and "answer" in props
+    assert props["clarify"]["properties"]["options"]["items"]["required"] == ["label"]
+
+
 def test_a_policy_that_cannot_be_constructed_is_an_error_not_a_traceback(
         loci_home, capsys, monkeypatch):
     """`Policy.__post_init__` refuses an unknown `default_mode`. `load_policy`

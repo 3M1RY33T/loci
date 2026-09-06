@@ -62,6 +62,39 @@ def build_server():
                     },
                     "required": ["question"],
                 },
+                # The abstention, as data. A client that reads only `content`
+                # sees exactly the text it saw before; one that reads structure
+                # gets the shortlist as options it can draw with its own
+                # question UI instead of the model narrating the choice.
+                outputSchema={
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"},
+                        # Present and null on every answered question, an object
+                        # only when loci refused to choose.
+                        "clarify": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                "header": {"type": "string"},
+                                "question": {"type": "string"},
+                                "multiSelect": {"type": "boolean"},
+                                "options": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "description": {"type": "string"},
+                                        },
+                                        "required": ["label"],
+                                    },
+                                },
+                            },
+                            "required": ["header", "question", "options"],
+                        },
+                    },
+                    "required": ["answer"],
+                },
             ),
             types.Tool(
                 name="scopes",
@@ -119,7 +152,14 @@ def build_server():
                          rerank=bool(args.get("rerank", False)),
                          force_scopes=forced, group=args.get("group"),
                          index=index, store=load_episodes())
-            return _text(render(answer, index=index))
+            # A 2-tuple, which the SDK splits into `content` and
+            # `structuredContent`. The text is byte-identical to what this tool
+            # returned before, so a client that reads only `content` cannot
+            # tell the difference.
+            from .clarify import clarify
+            text = render(answer, index=index)
+            return _text(text), {"answer": text,
+                                 "clarify": clarify(answer.routing)}
 
         return _text(f"unknown tool: {name}")
 
