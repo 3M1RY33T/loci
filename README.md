@@ -22,6 +22,32 @@ the scope set changes.
 
 ---
 
+## The shape, in one picture
+
+A street of independent shops. Each **shop** is one project — its own stock, its
+own books, nothing pooled in a shared warehouse. Each keeps **two ledgers**:
+what calls what, and what happened and why. They are read together or not at
+all.
+
+Shops wear overlapping **badges** — yours, this client's, that vendor's, this
+monorepo's. A badge can cover shops at opposite ends of the street, which is why
+they are labels rather than a hierarchy.
+
+You never walk the street yourself. You ask the **dispatcher**, who knows only
+which *uncommon* words are stocked where. They send you into at most three
+shops, or say nobody here carries that and name who might.
+
+Each shop also hangs a **signboard** naming what it *is* — repository, package,
+command — and keeps a list of what it **reaches for**. Reading one against the
+other is how the street answers *which of my shops buys from another*, which no
+amount of asking the dispatcher ever could: that question is about the road
+between two shops, and the dispatcher only knows what is stocked inside them.
+
+One thing the street still lacks: **aisles** inside a shop, so a word found in a
+test fixture does not count like the same word in shipped code.
+
+---
+
 ## The problem it solves
 
 Put every project in one index and the largest one wins regardless of the
@@ -465,6 +491,7 @@ holder of a shared-or-rare term into the answer. Demoted is not excluded.
 | `loci scan <dirs>` | discover git repos and register them as scopes (`--split`) |
 | `loci add <path>` | register one scope explicitly (`--alias`, `--glob`) |
 | `loci scopes` | list what is registered (`--group`) |
+| `loci uses` | which of your projects reference another, with citations (`--refresh`) |
 | `loci groups` | list groups, their resolved mode, and how many are in each |
 | `loci groups infer` | label every scope `me` or `vendor:<org>` from git provenance |
 | `loci group set <group> --mode` | how much a group confines: `explicit`, `soft`, `hard` |
