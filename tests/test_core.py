@@ -12,7 +12,7 @@ from loci.index import INDEX_VERSION
 from loci.router import route
 from loci.scopes import make_scope, resolve, scope_for_cwd, slugify
 from loci.text import tokens, unique_tokens
-from loci.types import Chunk, Scope
+from loci.types import Chunk, RouteResult, Scope
 
 
 # -- tokenizer -------------------------------------------------------------
@@ -3602,6 +3602,95 @@ def test_the_candidate_line_says_what_each_scope_holds():
     assert "Alpha (widget)" in line and "Beta (widget)" in line
     assert "Gamma" not in line and "Delta" not in line, \
         "the line still renders every ranked scope"
+
+
+def test_clarify_offers_the_shortlist_as_selectable_options():
+    """The payload a host renders. Field names are AskUserQuestion's, verbatim,
+    because Delroy's `normalize_questions` reads the same ones -- one shape,
+    two hosts, no translation layer to drift.
+    """
+    from loci.clarify import clarify
+
+    idx = _shared_vocabulary_corpus()
+    rt = route("how does this project handle the shared widget", idx)
+    assert rt.abstain, "control: the fixture has to reach the abstention branch"
+
+    payload = clarify(rt)
+    assert payload["header"] == "Project"
+    assert len(payload["header"]) <= 12
+    assert payload["multiSelect"] is False
+    assert [o["label"] for o in payload["options"]] == ["Alpha", "Beta"], \
+        "options are the shortlist, in the router's own rank order"
+    assert payload["options"][0]["description"] == "holds: widget"
+
+
+def test_clarify_declines_when_there_is_nothing_to_choose_between():
+    """One candidate is not a question, and zero is a coverage report. Both
+    hosts reject a card with fewer than two options, so emitting one would be
+    an error the model has to handle rather than a question the user can answer.
+    """
+    from loci.clarify import clarify
+
+    def rt(candidates):
+        return RouteResult(question="q", query_tokens=[], ranked=list(candidates),
+                           selected=[], abstain=True, top_score=0.0, top_matched=0,
+                           abstain_reason="no_evidence", candidates=list(candidates),
+                           detail={c: {"name": c.title(), "claims": ["x"]}
+                                   for c in candidates})
+
+    assert clarify(rt([])) is None
+    assert clarify(rt(["a"])) is None
+    assert clarify(rt(["a", "b"])) is not None
+
+
+def test_clarify_is_silent_when_the_router_did_not_abstain():
+    """It exists to break a tie the router refused to break. A routed answer
+    has no tie, and a card drawn over one would ask the user to confirm what
+    loci already decided.
+    """
+    from loci.clarify import clarify
+
+    idx = _shared_vocabulary_corpus()
+    rt = route("how does Alpha handle the widget", idx)
+    assert not rt.abstain, "control: this fixture must route"
+    assert clarify(rt) is None
+
+
+def test_clarify_caps_options_at_what_both_hosts_accept():
+    """Four is the ceiling in Delroy (MAX_OPTIONS_PER_QUESTION) and in
+    AskUserQuestion. A fifth option is silently dropped by one host and an
+    error in the other, so loci cuts it.
+    """
+    from loci.clarify import clarify
+
+    ids = ["a", "b", "c", "d", "e", "f"]
+    rt = RouteResult(question="q", query_tokens=[], ranked=ids, selected=[],
+                     abstain=True, top_score=0.0, top_matched=0,
+                     abstain_reason="no_evidence", candidates=ids,
+                     detail={c: {"name": c.title(), "claims": ["t"]} for c in ids})
+    assert len(clarify(rt)["options"]) == 4
+
+
+def test_clarify_names_its_cause_so_the_card_is_not_a_bare_list():
+    """The reason is what makes the question answerable -- "I could not tell
+    these apart" and "this is aimed outside the group" want different answers
+    from the user, and the shortlist alone cannot say which.
+    """
+    from loci.clarify import clarify
+
+    def question_for(reason):
+        rt = RouteResult(question="q", query_tokens=[], ranked=["a", "b"],
+                         selected=[], abstain=True, top_score=0.0, top_matched=0,
+                         abstain_reason=reason, candidates=["a", "b"],
+                         detail={c: {"name": c.title(), "claims": ["x"]}
+                                 for c in ("a", "b")})
+        return clarify(rt)["question"].lower()
+
+    assert "points at" in question_for("deictic")
+    assert "not enough" in question_for("no_evidence")
+    assert "outside the group" in question_for("out_of_group")
+    assert "not specific enough" in question_for(None), \
+        "an unknown cause still has to say something true"
 
 
 def test_a_policy_that_cannot_be_constructed_is_an_error_not_a_traceback(
