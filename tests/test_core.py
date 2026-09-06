@@ -1009,6 +1009,45 @@ def test_cwd_overrides_a_vague_question(tmp_path):
     assert not r.abstain and r.selected[0] == "b"
 
 
+def test_a_cwd_does_not_carry_a_question_asked_across_the_corpus(tmp_path):
+    """Standing somewhere answers "which one?"; it answers nothing about "which ones?".
+
+    Measured on the real corpus: "am I using any of my other projects here?",
+    asked from inside a scope holding none of the question's vocabulary, was
+    answered from that scope alone -- zero matched tokens, and the retrieval
+    stage came back empty. The same question with no cwd at all abstained and
+    handed back a five-scope shortlist, which is the better product. A cwd is
+    a claim about the ASKER, and an enumeration is not asking where they are.
+    """
+    root = tmp_path / "beta"
+    root.mkdir()
+    # Alpha's vocabulary is deliberately diffuse: three tokens it alone holds,
+    # none of them prominent enough to be concentrated. The concentrated tier
+    # is a separate route to `enough` and would answer this on Alpha's behalf,
+    # which is not the path under test.
+    idx = _index(
+        a=("Alpha", "/nowhere", {"sprocket": 2, "calibration": 2, "drift": 2}, 50000),
+        b=("Beta", str(root), {"flange": 1}, 10),
+    )
+
+    r = route("which of my projects handle sprocket calibration drift?",
+              idx, cwd=root)
+    assert r.enumerative
+    assert r.ranked[0] == "b", "CWD_BOOST still wins the ranking"
+    assert r.abstain and r.abstain_reason == "no_evidence"
+    assert r.candidates == ["a"], "the shortlist is what an abstention is for"
+
+    # An alias names the SUBJECT, so it still carries an enumeration.
+    named = route("which of my projects handle sprocket calibration drift, Beta?",
+                  idx, cwd=root)
+    assert not named.abstain
+
+    # And the same vocabulary asked about ONE project, from the same place,
+    # is still decided by the cwd: that is the case the signal is good for.
+    one = route("how is sprocket calibration drift corrected?", idx, cwd=root)
+    assert not one.abstain and one.selected[0] == "b"
+
+
 def test_size_prior_stops_the_biggest_scope_winning_everything():
     # A scope 100x larger contains ordinary words by accident; without size
     # normalization it wins every query that touches one.

@@ -699,7 +699,30 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # An alias or cwd signal is direct evidence, never overruled by abstention.
     # `forced` means cwd or an explicit alias resolved the subject; deixis is
     # only a problem when nothing else identifies what "this" refers to.
+    #
+    # The two abstention rules below ask DIFFERENT halves of it, and what
+    # separates them is the SHAPE of the question, not the strength of the
+    # signal. A cwd is a claim about the ASKER: it says where they are
+    # standing. For a question about ONE project that is the best answer
+    # available to "which one?" -- deixis says so outright, and a question that
+    # names no subject at all means the same thing. For a question that asks
+    # ACROSS the corpus it answers nothing: "which of my projects use X?" is
+    # not asking where you are, and a cwd that satisfies the evidence floor
+    # there collapses the enumeration to the one scope you happen to be in.
+    #
+    # Measured on the 14-scope development corpus, which is why the gate is cut
+    # here and not at `_located` for every rule. Asking `_subject_signalled`
+    # unconditionally -- so a cwd never satisfies the floor -- takes the
+    # taxonomy family's with-cwd top-1 from 100.0% to 75.0%, and the two
+    # question shapes it loses are the vocabulary-free ones: "How do I run the
+    # tests?" and "How do I set up a development environment?". Neither
+    # abstention is any use to the caller. The first hands back an EMPTY
+    # candidate list -- no scope holds the vocabulary, so there is nothing to
+    # shortlist -- and the second hands back 7 of the 14 scopes, which is the
+    # registry, not a shortlist. Restricting the abstention to scopes with a
+    # claim elsewhere recovers only half of it (87.5%).
     forced = _located(top_d)
+    named = _subject_signalled(top_d)
     # Enumeration outranks deixis. "where else does this pattern appear?" points
     # at its subject AND asks across the corpus; the deixis rule exists because
     # a pointing question gives no way to pick ONE scope, and an enumerative one
@@ -736,7 +759,14 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         abstain, reason = True, "out_of_group"
     elif not forced and deictic:
         abstain, reason = True, "deictic"
-    elif not forced and not enough:
+    elif not named and not enough and (enumerative or not forced):
+        # `enumerative or not forced`, not `not forced`: a cwd is allowed to
+        # carry a question about one project and is not allowed to carry one
+        # that asks across the corpus. Without the first disjunct, asking "am I
+        # using any of my other projects here?" from inside a thin scope
+        # answered from that scope with zero matched tokens and retrieved
+        # nothing -- the shortlist the same question produced with no cwd at
+        # all was the better product.
         abstain, reason = True, "no_evidence"
     else:
         abstain = False
