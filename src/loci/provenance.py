@@ -57,6 +57,43 @@ def _git(root: Path, *args: str) -> str:
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
+def _repo_name(url: str) -> str | None:
+    """The last path segment of a remote URL, `.git` stripped, lowercased.
+
+    Read off the tail rather than by extending the three patterns above with a
+    second capture group, which is what this looked like it wanted. Those
+    patterns are deliberately unanchored prefixes: `_HTTPS` matches
+    `gitlab.com/group/subgroup/repo.git` and reports `group`, because the org
+    is the FIRST segment at any depth. A two-group anchored pattern needs the
+    repository to be the second segment, so every self-hosted GitLab subgroup
+    remote stops matching at all -- and `remote_org` loses an answer it has
+    today. The repository is the LAST segment at any depth; the two are read
+    from opposite ends, so they do not belong in one pattern.
+    """
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    return tail.lower() or None
+
+
+def remote_slug(root: Path) -> tuple[str, str] | None:
+    """`(org, repo)` of `origin`, lowercased, or None.
+
+    The org half is what `classify` needs to say whose a repository is. The
+    repo half is what an edge needs to say WHICH project it points at, and it
+    is why this exists next to `remote_org` rather than inside it.
+    """
+    url = _git(root, "remote", "get-url", "origin")
+    if not url:
+        return None
+    for pattern in (_SSH_URL, _SSH_SCP, _HTTPS):
+        m = pattern.match(url)
+        if m:
+            repo = _repo_name(url)
+            return (m.group(1).lower(), repo) if repo else None
+    return None
+
+
 def remote_org(root: Path) -> str | None:
     """The owning org of `origin`, lowercased, or None."""
     url = _git(root, "remote", "get-url", "origin")

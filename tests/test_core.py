@@ -2685,6 +2685,33 @@ def test_remote_org_parses_every_url_form(tmp_path, hermetic_git):
     assert remote_org(port) == "acme"
 
 
+def test_remote_slug_keeps_the_repository_name(tmp_path, hermetic_git):
+    """The org alone cannot say WHICH repository a dependency edge points at.
+
+    `vendor:someorg` needs only the org, so the patterns captured only the org
+    and threw the rest away. An edge that says `loci` has to resolve to the
+    scope `loci`, and the org is the half that does not identify it.
+
+    The port form is here for the same reason it is in the test above: reading
+    `2222` as the org made `vendor:2222`, and a second capture group added
+    carelessly reads the org as the repository in exactly the same way.
+    """
+    from loci.provenance import remote_slug
+
+    ssh = _repo(tmp_path, "a", origin="git@github.com:3M1RY33T/Delroy.git")
+    https = _repo(tmp_path, "b", origin="https://github.com/3M1RY33T/brewery.git")
+    bare = _repo(tmp_path, "c")
+    port = _repo(tmp_path, "d",
+                 origin="ssh://git@git.example.com:2222/acme/thing.git")
+    nosuffix = _repo(tmp_path, "e", origin="https://github.com/3M1RY33T/loci")
+
+    assert remote_slug(ssh) == ("3m1ry33t", "delroy")
+    assert remote_slug(https) == ("3m1ry33t", "brewery")
+    assert remote_slug(bare) is None
+    assert remote_slug(port) == ("acme", "thing")
+    assert remote_slug(nosuffix) == ("3m1ry33t", "loci")
+
+
 def test_identity_is_the_modal_remote_org(tmp_path, hermetic_git):
     """No configuration: the org that owns most of your disk is you.
 
