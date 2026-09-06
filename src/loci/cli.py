@@ -178,6 +178,53 @@ def cmd_scopes(args) -> int:
     return 0
 
 
+def cmd_uses(args) -> int:
+    """Cross-project edges: which of your projects reaches for which other.
+
+    A registry scan, not a question. Nothing here routes, ranks or abstains --
+    an edge either names a registered scope or it does not, and the citation
+    is what makes the answer checkable rather than asserted.
+    """
+    from .edges import build, load_edges, resolved, save_edges
+    from .scopes import load_scopes
+
+    scopes = load_scopes()
+    if not scopes:
+        print("no scopes registered. Try: loci scan ~/code")
+        return 1
+
+    table = load_edges()
+    if args.refresh or not table:
+        if not table and not args.refresh:
+            print("  no edges collected yet; collecting now")
+        table = build(scopes)
+        save_edges(table)
+
+    edges = resolved(scopes, table)
+    names = {s.id: s.name for s in scopes}
+    for e in sorted(edges, key=lambda e: (e["from"], e["to"])):
+        how = "runs" if e["how"] == "command" else "depends on"
+        print(f"  {names.get(e['from'], e['from'])} -> "
+              f"{names.get(e['to'], e['to'])}   ({how} `{e['target']}`)  "
+              f"{e['source']}")
+
+    scanned = len(table)
+    total = sum(len(v) for v in table.values())
+    if not edges:
+        # Never a bare "none". `no_edges` is indistinguishable from `not
+        # collected` and from `collected, but this project declares nothing`
+        # unless the coverage is said out loud, and a confident empty scan is
+        # how a false negative gets believed.
+        print("  no project references another registered project.")
+        print(f"  scanned {scanned} of {len(scopes)} project(s); "
+              f"{total} outbound reference(s), none naming a registered scope.")
+        print("  `loci doctor` names the projects nothing could be read from.")
+        return 0
+    print(f"\n{len(edges)} edge(s) over {scanned} of {len(scopes)} project(s), "
+          f"{total} outbound reference(s) examined")
+    return 0
+
+
 def cmd_groups(args) -> int:
     from .groups import members
     from .scopes import load_scopes
@@ -791,6 +838,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("scopes", help="list registered scopes")
     s.add_argument("--group", help="restrict to one group of projects")
     s.set_defaults(func=cmd_scopes)
+
+    s = sub.add_parser("uses", help="which of your projects uses another")
+    s.add_argument("--refresh", action="store_true",
+                   help="recollect edges before reporting")
+    s.set_defaults(func=cmd_uses)
 
     s = sub.add_parser("groups", help="list groups, their mode, and members")
     gsub = s.add_subparsers(dest="groups_cmd")

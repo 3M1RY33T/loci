@@ -379,3 +379,78 @@ def edges_for(scope) -> list[dict]:
     root = Path(scope.root)
     found = _dedupe(declared_edges(root) + invoked_edges(root))
     return [e for e in found if e["target"] not in own]
+
+
+# -- resolve and persist ---------------------------------------------------
+EDGES_VERSION = 1
+
+
+def build(scopes) -> dict[str, list[dict]]:
+    """Every scope's outbound edges, keyed by scope id.
+
+    Collected per scope from that scope's own tree. Nothing here reads another
+    scope, and nothing here resolves anything: the join is `resolved`, and
+    keeping it separate is what lets a table survive registering a new scope --
+    an edge naming `zim-compress` becomes a cross-project edge the moment that
+    project is registered, without recollecting anything.
+    """
+    out: dict[str, list[dict]] = {}
+    for s in scopes:
+        if not Path(s.root).is_dir():
+            continue
+        found = edges_for(s)
+        if found:
+            out[s.id] = found
+    return out
+
+
+def resolved(scopes, table: dict[str, list[dict]]) -> list[dict]:
+    """Edges whose target names another REGISTERED scope.
+
+    Arithmetic over the registry: no ranking, no floor, no abstention. An edge
+    that resolves is a fact with a citation, and one that does not is an
+    ordinary external dependency -- kept in the table, absent from the answer.
+    """
+    from .identity import signboard_of, targets
+
+    owners: list[tuple[str, set[str]]] = []
+    for s in scopes:
+        own = targets(signboard_of(s) or {})
+        own.add(s.id.lower())
+        owners.append((s.id, own))
+
+    out: list[dict] = []
+    for sid, edges in table.items():
+        for e in edges:
+            for other, own in owners:
+                if other == sid or e["target"] not in own:
+                    continue
+                out.append({"from": sid, "to": other, "target": e["target"],
+                            "how": e["how"], "source": e["source"]})
+    return out
+
+
+def save_edges(table: dict[str, list[dict]]) -> None:
+    from .paths import atomic_write, edges_file, ensure_home
+
+    ensure_home()
+    atomic_write(edges_file(),
+                 json.dumps({"version": EDGES_VERSION, "scopes": table},
+                            indent=2, sort_keys=True))
+
+
+def load_edges() -> dict[str, list[dict]]:
+    """The stored table, or `{}` when there is none.
+
+    A malformed file degrades to "no edges collected" rather than raising, the
+    same way `load_policy` does: a traceback out of `loci ask` is a worse
+    answer than a missing one, and `doctor` reports the emptiness either way.
+    """
+    from .paths import edges_file
+
+    try:
+        data = json.loads(edges_file().read_text(encoding="utf-8"))
+        table = data.get("scopes")
+        return table if isinstance(table, dict) else {}
+    except Exception:
+        return {}

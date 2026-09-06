@@ -1942,6 +1942,78 @@ def test_a_project_does_not_have_an_edge_to_itself(tmp_path):
     assert [e["target"] for e in edges_for(scope)] == ["loci"]
 
 
+def _signed(sid, root, **fields):
+    sign = {"remote": "", "dist": [], "imports": [], "command": []}
+    sign.update(fields)
+    return Scope(id=sid, name=sid, root=root, meta={"identity": sign})
+
+
+def test_an_edge_resolves_against_another_scopes_signboard(tmp_path):
+    """The join the whole feature exists for. `shutil.which("loci")` carries a
+    COMMAND, and a signboard holding only the distribution name never matches
+    it -- loci is `loci-mem` on PyPI and `loci` on the command line.
+    """
+    from loci.edges import resolved
+
+    scopes = [_signed("delroy", tmp_path / "d"),
+              _signed("loci", tmp_path / "l", dist=["loci-mem"], command=["loci"])]
+    table = {"delroy": [{"target": "loci", "how": "command",
+                         "source": "client/loci_memory.py:36"}]}
+
+    assert resolved(scopes, table) == [
+        {"from": "delroy", "to": "loci", "target": "loci", "how": "command",
+         "source": "client/loci_memory.py:36"}]
+
+
+def test_an_unresolved_edge_is_kept_but_not_reported(tmp_path):
+    """`react` is a real outbound reference and not a cross-project edge. It
+    stays in the table because registering a scope later is what turns it into
+    one, and it stays out of the answer because today it is not one.
+    """
+    from loci.edges import resolved, save_edges, load_edges
+
+    scopes = [_signed("app", tmp_path / "a")]
+    table = {"app": [{"target": "react", "how": "declared",
+                      "source": "package.json:9"}]}
+
+    assert resolved(scopes, table) == []
+    save_edges(table)
+    assert load_edges()["app"][0]["target"] == "react"
+
+
+def test_a_resolved_edge_never_points_at_the_scope_that_made_it(tmp_path):
+    """Two scopes can share a target string -- a monorepo whose sub-scope
+    publishes the parent's name -- and an edge to yourself is not a finding.
+    """
+    from loci.edges import resolved
+
+    scopes = [_signed("mine", tmp_path / "m", command=["mine"])]
+    table = {"mine": [{"target": "mine", "how": "command", "source": "a.py:2"}]}
+
+    assert resolved(scopes, table) == []
+
+
+def test_uses_prints_every_resolved_edge_with_its_citation(loci_home, capsys):
+    """An edge without a citation is an assertion. The command that reports
+    one has to carry the file and line that back it."""
+    from loci.cli import main
+    from loci.edges import save_edges
+    from loci.scopes import save_scopes
+
+    save_scopes([_signed("delroy", loci_home / "d"),
+                 _signed("loci", loci_home / "l", command=["loci"])])
+    save_edges({"delroy": [{"target": "loci", "how": "command",
+                            "source": "client/loci_memory.py:36"}],
+                "loci": [{"target": "graphify", "how": "command",
+                          "source": "src/loci/backends/graphify.py:38"}]})
+
+    assert main(["uses"]) == 0
+    out = capsys.readouterr().out
+    assert "delroy -> loci" in out
+    assert "client/loci_memory.py:36" in out
+    assert "graphify" not in out, "an unresolved target is not a project"
+
+
 # -- docstring collector ---------------------------------------------------
 PY_SAMPLE = '''
 """Module level explanation that is long enough to be worth keeping around."""

@@ -63,6 +63,16 @@ def embeddings_file() -> Path:
     return home() / "embeddings.npz"
 
 
+def edges_file() -> Path:
+    """Outbound references per scope, for cross-project resolution.
+
+    Beside the registry rather than inside it: the registry is rewritten
+    wholesale by `scan`, and edges are recollected rather than remembered, so
+    fusing the two would make a re-scan drop a table it never read.
+    """
+    return home() / "edges.json"
+
+
 def rankers_dir() -> Path:
     """Fitted lexical rankers, one file per scope.
 

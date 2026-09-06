@@ -135,6 +135,19 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
               "coverage gaps until you drop them from scopes.json")
     print(f"  {len(registry)} project(s) registered")
 
+    # Registry-layer data, so it belongs to this step rather than to the index:
+    # nothing an edge knows is in either store, and recollecting is cheap --
+    # AST and manifests only, no model call, measured at 2.1s over fifteen
+    # repositories. Rebuilt rather than merged, because an edge that was
+    # deleted from a manifest is not a fact any more.
+    from .edges import build as build_edges
+    from .edges import resolved, save_edges
+    table = build_edges(registry)
+    save_edges(table)
+    cross = resolved(registry, table)
+    print(f"  {sum(len(v) for v in table.values())} outbound reference(s), "
+          f"{len(cross)} naming another registered project  (`loci uses`)")
+
     # -- 2. structure graphs ----------------------------------------------
     print("\n[2/5] structure graphs   (what calls what)")
     from .backends import get_structure_backend
