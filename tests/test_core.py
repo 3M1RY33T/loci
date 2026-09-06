@@ -1084,6 +1084,38 @@ def test_deictic_questions_abstain_without_a_working_directory(tmp_path):
     assert not r.abstain and r.selected[0] == "b"
 
 
+def test_an_alias_names_the_subject_and_a_cwd_only_locates_the_asker(tmp_path):
+    """The two signals answer different questions, so they are two predicates.
+
+    An alias is evidence about the SUBJECT -- the question said which project.
+    A cwd is evidence about the ASKER -- where they are standing, which is a
+    strong prior on what "this" refers to and no claim at all that the scope
+    holds an answer. Collapsing them into one `bool(signals)` let a cwd stand
+    in for evidence at gates that were asking about the subject.
+
+    Asserted on the dicts `route` actually builds, not hand-made ones: the
+    point of the split is the shape of the real `signals` dict.
+    """
+    from loci.router import _located, _subject_signalled
+
+    root = tmp_path / "beta"
+    root.mkdir()
+    idx = _index(a=("Alpha", "/nowhere", {"widget": 40, "gizmo": 30}, 500),
+                 b=("Beta", str(root), {"flange": 20}, 300))
+
+    by_alias = route("what does Beta do?", idx).detail["b"]
+    by_cwd = route("what does this do?", idx, cwd=root).detail["b"]
+    assert set(by_alias["signals"]) == {"alias"}
+    assert set(by_cwd["signals"]) == {"cwd"}
+
+    assert _subject_signalled(by_alias)
+    assert not _subject_signalled(by_cwd), "a cwd does not name the subject"
+    assert _located(by_alias) and _located(by_cwd)
+
+    unsignalled = route("how does the widget work?", idx).detail["a"]
+    assert not _located(unsignalled) and not _subject_signalled(unsignalled)
+
+
 def test_only_the_deepest_containing_scope_takes_the_cwd_boost(tmp_path):
     """CWD_BOOST went to EVERY scope whose root contains cwd. On a flat corpus
     that is the same thing; on a split monorepo it is not -- parent and child

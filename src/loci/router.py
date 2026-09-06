@@ -453,19 +453,38 @@ def _calibrated_floor() -> float:
 # a fix round dropped the `signals` disjunct from the second one, which turned a
 # hard-group abstention into a confident answer from the wrong project.
 #
-# TWO helpers, not one, because the caller needs the halves apart: `forced`
-# alone distinguishes `deictic` from `no_evidence`, and a single combined
-# predicate would collapse those two abstention reasons into one.
+# SEPARATE helpers, not one, because the callers need the halves apart:
+# `forced` alone distinguishes `deictic` from `no_evidence`, and a single
+# combined predicate would collapse those two abstention reasons into one.
 _NO_SCOPE = {"evidence_total": 0.0, "matched": 0, "signals": {}}
 
 
-def _signalled(d: dict) -> bool:
-    """cwd or an explicit alias resolved the subject.
+# `signals` records WHICH signal fired, and the distinction is load-bearing:
+# an alias is evidence about the SUBJECT (the question named the project), a
+# cwd is evidence about the ASKER (where they are standing). One predicate over
+# `bool(signals)` threw that away, and every gate then read "you are standing
+# here" as a claim that this scope holds an answer.
+def _subject_signalled(d: dict) -> bool:
+    """An explicit alias resolved the subject: the question named the project.
 
     Direct evidence, and it contributes nothing to `evidence_total` or
-    `matched`: a scope winning purely on ALIAS_BOOST or CWD_BOOST reads as zero
-    evidence to `_has_evidence`, which is why this is a separate disjunct at
-    both call sites rather than something the counts can stand in for.
+    `matched`: a scope winning purely on ALIAS_BOOST reads as zero evidence to
+    `_has_evidence`, which is why this is a separate disjunct at its call sites
+    rather than something the counts can stand in for. A CWD_BOOST scope reads
+    as zero evidence for the same reason -- and there that is not a gap to
+    paper over, it is the truth: a working directory says nothing about what
+    the scope contains. Hence `_located`, which is a strictly weaker claim.
+    """
+    return "alias" in d["signals"]
+
+
+def _located(d: dict) -> bool:
+    """An alias named the subject, OR a cwd says where the asker is standing.
+
+    The weaker of the pair, and the right question for exactly one gate:
+    deixis. "how do the tests run here?" is unanswerable until something
+    resolves "here", and a working directory resolves it. Everywhere else the
+    caller wants `_subject_signalled`.
     """
     return bool(d["signals"])
 
@@ -680,7 +699,7 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # An alias or cwd signal is direct evidence, never overruled by abstention.
     # `forced` means cwd or an explicit alias resolved the subject; deixis is
     # only a problem when nothing else identifies what "this" refers to.
-    forced = _signalled(top_d)
+    forced = _located(top_d)
     # Enumeration outranks deixis. "where else does this pattern appear?" points
     # at its subject AND asks across the corpus; the deixis rule exists because
     # a pointing question gives no way to pick ONE scope, and an enumerative one
@@ -705,7 +724,7 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
     # nothing: when a question hits no vocabulary, every scope scores ~0 and the
     # winner is whoever took the 0.15 recency tiebreak, so `out_of_group`
     # swallowed both other reasons for every unroutable question under `hard`.
-    answer_elsewhere = (_signalled(top_all_d)
+    answer_elsewhere = (_located(top_all_d)
                         or _has_evidence(top_all_d, floor, min_matched,
                                          top_all in concentrated_owners))
 
@@ -733,7 +752,7 @@ def route(question: str, index: dict, *, cwd: str | Path | None = None,
         # same predicate the top scope faces, against the discounted floor.
         set_floor = floor * set_floor_ratio
         selected = [s for s in ranked
-                    if _signalled(detail[s])
+                    if _located(detail[s])
                     or _has_evidence(detail[s], set_floor, min_matched,
                                      s in concentrated_owners)][:max_set_scopes]
         if not selected:
