@@ -2101,6 +2101,39 @@ def test_a_relational_question_is_answered_from_the_table_not_the_router(
     assert "client/loci_memory.py:36" in A.render(answer, index={"scopes": {}})
 
 
+def test_an_empty_edge_table_falls_through_instead_of_answering_none(
+        loci_home, monkeypatch):
+    """The one regression that would make this whole path a net loss.
+
+    "No project uses another" is the shape of *"None of your projects use
+    OAuth"* -- the false statement that started this work. An empty scan is
+    indistinguishable from an uncollected one, so it never terminates the
+    question: routing still runs, and the coverage says what was actually
+    read.
+    """
+    import loci.ask as A
+    from loci.edges import save_edges
+    from loci.scopes import save_scopes
+
+    save_scopes([_signed("delroy", loci_home / "d"),
+                 _signed("loci", loci_home / "l", command=["loci"])])
+    save_edges({})
+    _install_index({"version": 3, "scopes": {}, "postings": {}, "sizes": {}})
+
+    reached = []
+    real_route = A.route
+    monkeypatch.setattr(A, "route",
+                        lambda *a, **k: (reached.append(1), real_route(*a, **k))[1])
+
+    answer = A.ask("in which project am I using another one of my projects?")
+    assert reached, "an empty table must not terminate the question"
+    assert answer.edges == []
+    assert "0 edge(s)" in answer.note and "0 of 2 project(s)" in answer.note
+    text = A.render(answer, index={"scopes": {}})
+    assert "no project uses another" not in text.lower()
+    assert "0 edge(s)" in text, "the coverage has to reach the reader"
+
+
 # -- docstring collector ---------------------------------------------------
 PY_SAMPLE = '''
 """Module level explanation that is long enough to be worth keeping around."""

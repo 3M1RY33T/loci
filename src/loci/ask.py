@@ -54,6 +54,9 @@ class Answer:
     # hit with a score, and rendering it as one would put a fact and a ranking
     # in the same list.
     edges: list[dict] = field(default_factory=list)
+    # Why the edge answer is empty, when it is. Carried alongside the routed
+    # answer rather than replacing it: an empty table is not a finding.
+    note: str = ""
 
     def to_json(self) -> dict:
         # `clarify` is a VIEW of `routing.candidates`, never a replacement for
@@ -65,7 +68,7 @@ class Answer:
         from .clarify import clarify
         return {"question": self.question, "routing": self.routing.to_json(),
                 "scopes": [s.to_json() for s in self.scopes],
-                "edges": list(self.edges),
+                "edges": list(self.edges), "note": self.note,
                 "clarify": clarify(self.routing)}
 
 
@@ -167,6 +170,7 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
     index = index if index is not None else load_index()
     store = store if store is not None else (load_episodes() if with_episodes else {})
 
+    relational_note = ""
     if force_scopes:
         # An explicit --scope outranks any group policy: the user has already
         # answered the question groups exist to answer.
@@ -211,13 +215,22 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
         # fact it wants is in the registry, and getting there through `route`
         # is not possible -- `route` can only choose scopes.
         rel = relational_edges(question, registry)
-        if rel is not None:
+        if rel:
             return Answer(question=question, edges=rel,
                           routing=RouteResult(
                               question=question,
                               query_tokens=unique_tokens(question),
                               ranked=[], selected=[], abstain=False,
                               top_score=0.0, top_matched=0))
+        # `[]`, not None: the question WAS about edges and the table holds
+        # none. That is not "no project uses another" -- an empty scan is
+        # indistinguishable from an uncollected one, and answering it as a
+        # finding is the *"None of your projects use OAuth"* shape that
+        # started this work. So the coverage is carried and the question goes
+        # on to route, where it can still abstain honestly.
+        if rel is not None:
+            from .edges import edge_report, load_edges
+            relational_note = "; ".join(edge_report(registry, load_edges()))
 
         conf = confinement(policy, registry, cwd=cwd, forced_group=group)
         rt = route(question, index, cwd=cwd,
@@ -281,7 +294,8 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
                 pass   # a cold fan-out is the old behaviour, not a new failure
         with ThreadPoolExecutor(max_workers=min(8, len(selected))) as pool:
             answers = list(pool.map(work, selected))
-    return Answer(question=question, routing=rt, scopes=answers)
+    return Answer(question=question, routing=rt, scopes=answers,
+                  note=relational_note)
 
 
 # Per candidate, presentational. The claims are already ordered by contribution,
@@ -337,6 +351,13 @@ def render(answer: Answer, *, index: dict, chars: int = 400) -> str:
     out: list[str] = []
     rt = answer.routing
     names = {sid: m["name"] for sid, m in index["scopes"].items()}
+
+    if answer.note:
+        # Above the routed answer, not instead of it. The question asked about
+        # edges, the table had none, and the reader needs to know how much was
+        # read before treating the routed answer as the whole story.
+        out.append(f"no cross-project edge answers this: {answer.note}")
+        out.append("")
 
     if answer.edges:
         # A different kind of answer, so a different shape: no scores, no
