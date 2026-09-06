@@ -1,5 +1,131 @@
 # Changelog
 
+## 0.5.0 — 2026-09-06
+
+**No reindex.** `INDEX_VERSION` stays at 3 and nothing about what a token is
+changed. Upgrading is `pipx upgrade loci-mem`, then one command to populate the
+new table:
+
+```bash
+loci update          # refreshes signboards, then collects edges
+```
+
+`loci update` now refreshes every scope's signboard whether or not it scanned,
+because an install that predates this release has none — and an edge can only
+name a project that has one.
+
+### A question the router could not be asked
+
+*"In which project am I using another one of my projects?"* Asked verbatim in
+three sessions on 2026-09-06, all three abandoned:
+
+```
+ABSTAINED - not enough of the question exists in any project.
+  candidates: loci (another), tensor-serve (using), Delroy (another, using)
+```
+
+The abstention was correct. Every content-bearing part of that question names a
+**relation between scopes**, and the evidence model is
+`token -> {scope: node_df}`, so there is nothing to look up — the shortlist is
+what `CANDIDATE_SHARE` admits when the only terms available are `another` and
+`using`. The fact the question wants is not in either store. It is in the
+registry, and reaching it took three pieces.
+
+**Signboards.** What a project is called from the outside — repository,
+distribution, import, command — read from git and root manifests at
+registration. loci is the case that forces the shape: `loci-mem` on PyPI,
+`loci` to import, `loci` to run, `3M1RY33T/loci` on GitHub. Four names, one
+project, and the only one any edge in the corpus mentions is the third.
+
+**Edges.** What a project reaches for, collected two ways, because a real
+corpus needs both:
+
+```
+3m1ry33t-github-io -> urthreads   "urthreads": "^1.2.0"   package.json:10
+delroy             -> loci        shutil.which("loci")    client/loci_memory.py:36
+```
+
+There is no `.gitmodules` anywhere in the 15-project corpus, no path dependency
+and no git-URL dependency — so the declared half rests entirely on the plain
+registry name — and `Delroy -> loci` is a binary resolved on `PATH`, declared
+in no manifest, lockfile or submodule. **Either collector alone has a recall of
+0.5.**
+
+**A relational path**, ahead of routing. Without it the capability is
+unreachable: `route` can only choose scopes, and this answer is not a scope.
+
+```
+loci ask "in which project am I using another one of my projects?"
+
+USES -> 2 cross-project edge(s)
+  3M1RY33T.github.io -> urthreads   (depends on `urthreads`)  package.json:10
+  Delroy -> loci                    (runs `loci`)  client/loci_memory.py:36
+```
+
+`loci uses` prints the same thing on demand; `loci doctor` reports the coverage.
+
+### An empty scan never answers "none"
+
+The one regression that would have made this a net loss. *"None of your
+projects use OAuth"* — false, and the statement this whole line of work started
+from — is what a confident empty scan produces. An empty edge table is
+indistinguishable from an uncollected one, so it never terminates the question:
+
+```
+no cross-project edge answers this: 0 edge(s) from 0 outbound reference(s),
+  collected from 0 of 1 project(s); nothing to collect from: Alpha ...
+
+ABSTAINED - not enough of the question exists in any project.
+```
+
+Coverage has two independent holes and both are reported, because either one
+shrinks the answer silently: a scope nothing could be collected **from** can
+never be the source of an edge, and a scope with no signboard can never be the
+**target** of one.
+
+### Routing did not move
+
+The relational path runs before `route`, and the guard on it is the registry: a
+named object is taken only when the name **is** a registered project, so
+*"which of my projects use wrangler?"* stays with the enumerative path that
+answers it.
+
+| family | 0.4.0 | 0.5.0 |
+|---|---|---|
+| behavior | 27.3% | *unchanged* |
+| confusable | 28.6% | *unchanged* |
+| cross | 25.0% | *unchanged* |
+| enumerative | 85.7% (7) | 87.5% (8) |
+| negative | 92.9% (14) | 93.3% (15) |
+
+Taxonomy holds at 100% top-1 with cwd and 100% abstention without. The two
+moves are the two new items passing.
+
+### Rejected on measurement
+
+**Trusting a `src/` layout as packaging intent.** A project's importable
+packages are part of its signboard, and reading them off the filesystem is the
+only way that works across setuptools, hatchling, poetry and flit. Both loose
+rules put fabricated identities on signboards:
+
+| rule | what it claimed |
+|---|---|
+| every root dir with `__init__.py` | `api`, `cli`, `search`, `agent_tools` |
+| trust `src/` on its own | `search`, `agent_tools` |
+
+One real project keeps application code in `src/` under a pyproject declaring
+only `[tool.pytest.ini_options]`. An edge naming `search` resolving to it is a
+fabricated dependency, which is worse than the missing edge it replaces. Import
+identity now requires a declared distribution in either layout.
+
+### Known, and not fixed here
+
+Vendored or copied code carrying no name, and *"I reused the approach from X"*.
+Those are similarity questions rather than identity questions, and nothing here
+reaches them. The function-word shortlist is also untouched: the relational path
+routes **around** it, and every other question that abstains still gets a
+candidate list built the same way.
+
 ## 0.4.0 — 2026-09-05
 
 **Upgrading requires one command.** `INDEX_VERSION` is now 3 and a v2 index is

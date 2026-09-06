@@ -43,6 +43,26 @@ def _named(scopes: list, limit: int = MAX_NAMED) -> str:
     return shown + (f" +{len(scopes) - limit} more" if len(scopes) > limit else "")
 
 
+def refresh_signboards(registry: list) -> int:
+    """Recompute every scope's signboard in place; return how many changed.
+
+    Cheap enough to run unconditionally: one `git remote get-url` and a few
+    root-level manifest reads per scope, in a command that is about to walk
+    every one of them for graphs and the index anyway.
+    """
+    from .identity import signboard, signboard_of
+
+    changed = 0
+    for s in registry:
+        if not Path(s.root).is_dir():
+            continue
+        fresh = signboard(s.root)
+        if fresh != signboard_of(s):
+            s.meta = {**(s.meta or {}), "identity": fresh}
+            changed += 1
+    return changed
+
+
 def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
         scan: bool | None = None, graphs: bool | None = None,
         embed: bool | None = None, calibrate: bool | None = None,
@@ -134,6 +154,17 @@ def run(roots: list[Path] | None = None, *, assume_yes: bool = False,
         print("  left registered and left alone; `doctor` reports them as "
               "coverage gaps until you drop them from scopes.json")
     print(f"  {len(registry)} project(s) registered")
+
+    # A scan refreshes signboards for free -- `meta` is not in
+    # `PRESERVED_FIELDS`, so `upsert` takes the fresh scope's -- but this
+    # command also runs with `--no-scan` and on installs with no recorded
+    # root. Every install that predates signboards has none, and an edge can
+    # only name a project that has one, so without this an upgrade collects
+    # edges that resolve to nothing and reports an empty table for the whole
+    # corpus: correct, coverage-qualified, and useless.
+    if refresh_signboards(registry):
+        save_scopes(registry)
+        registry = load_scopes()
 
     # Registry-layer data, so it belongs to this step rather than to the index:
     # nothing an edge knows is in either store, and recollecting is cheap --

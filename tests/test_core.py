@@ -2134,6 +2134,31 @@ def test_an_empty_edge_table_falls_through_instead_of_answering_none(
     assert "0 edge(s)" in text, "the coverage has to reach the reader"
 
 
+def test_update_refreshes_signboards_for_scopes_it_did_not_rescan(tmp_path):
+    """Every install that predates signboards has none, and an edge can only
+    name a project that has one. Without this, upgrading and running `loci
+    update` collects edges that resolve to nothing and reports an empty table
+    for the whole corpus -- correct, coverage-qualified, and useless.
+
+    A scan already refreshes it: `meta` is not in `PRESERVED_FIELDS`, so
+    `upsert` takes the freshly made scope's. This is the path with no scan --
+    `--no-scan`, or an install with no recorded root.
+    """
+    from loci.identity import signboard_of
+    from loci.update import refresh_signboards
+
+    root = tmp_path / "mine"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nname = "mine-dist"\n')
+    stale = Scope(id="mine", name="Mine", root=root)
+    assert signboard_of(stale) is None
+
+    changed = refresh_signboards([stale])
+    assert changed == 1
+    assert signboard_of(stale)["dist"] == ["mine-dist"]
+    assert refresh_signboards([stale]) == 0, "not idempotent"
+
+
 # -- docstring collector ---------------------------------------------------
 PY_SAMPLE = '''
 """Module level explanation that is long enough to be worth keeping around."""
