@@ -1833,6 +1833,54 @@ def test_a_malformed_manifest_yields_nothing_rather_than_raising(tmp_path):
     assert packaging_identity(tmp_path) == {"dist": [], "imports": [], "command": []}
 
 
+# -- edges: what a project reaches for -------------------------------------
+def test_declared_edges_from_every_manifest_kind(tmp_path):
+    from loci.edges import declared_edges
+
+    (tmp_path / ".gitmodules").write_text(
+        '[submodule "vendor/sub"]\n\tpath = vendor/sub\n'
+        '\turl = https://github.com/owner/subrepo.git\n')
+    (tmp_path / "package.json").write_text(
+        '{"dependencies": {"x": "github:owner/x", "y": "file:../y",'
+        ' "left-pad": "^1.0.0"}}')
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "here"\n'
+        'dependencies = ["rank-bm25>=0.2", "z @ git+https://github.com/owner/z.git"]\n')
+
+    edges = declared_edges(tmp_path)
+    by_target = {e["target"]: e for e in edges}
+
+    assert by_target["owner/subrepo"]["source"].startswith(".gitmodules:")
+    assert by_target["owner/x"]["source"].startswith("package.json:")
+    assert by_target["y"]["source"].startswith("package.json:")
+    assert by_target["left-pad"]["source"].startswith("package.json:")
+    assert by_target["rank-bm25"]["source"].startswith("pyproject.toml:")
+    assert by_target["owner/z"]["source"].startswith("pyproject.toml:")
+    assert {e["how"] for e in edges} == {"declared"}
+    assert all(int(e["source"].rsplit(":", 1)[1]) > 0 for e in edges), \
+        "a citation without a line number is not a citation"
+
+
+def test_a_tree_declaring_nothing_has_no_declared_edges(tmp_path):
+    from loci.edges import declared_edges
+
+    (tmp_path / "README.md").write_text("# nothing here\n")
+    assert declared_edges(tmp_path) == []
+
+
+def test_declared_edges_are_read_at_the_root_only(tmp_path):
+    """Same rule as the signboard: an inner manifest belongs to a sub-scope,
+    and its dependencies are that sub-scope's edges, not this one's.
+    """
+    from loci.edges import declared_edges
+
+    inner = tmp_path / "packages" / "inner"
+    inner.mkdir(parents=True)
+    (inner / "package.json").write_text('{"dependencies": {"deep": "^1.0.0"}}')
+
+    assert declared_edges(tmp_path) == []
+
+
 # -- docstring collector ---------------------------------------------------
 PY_SAMPLE = '''
 """Module level explanation that is long enough to be worth keeping around."""
