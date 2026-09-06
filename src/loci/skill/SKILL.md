@@ -88,6 +88,18 @@ an outcome, not an error, and not a prompt to try again.**
 Rephrasing and re-asking is the wrong move — abstention is about which
 vocabulary exists in which project, not about wording. Act on the reason:
 
+When the result carries a `clarify` object — `--json` on the CLI,
+`structuredContent` over MCP — **draw it with whatever question tool you have**
+instead of writing the choice out in prose. It is already shaped for one:
+`question`, a short `header`, and 2–4 `options` with a `label` and a
+`description` saying what put that project on the list. Claude Code has
+`AskUserQuestion`; Delroy has `ask_user_questions`; a terminal has a numbered
+list. Then re-ask with `--scope <the label they picked>`.
+
+A user choosing between four named projects is one interaction. The same
+question as a paragraph is a paragraph they have to read, and then answer by
+typing a project name that was already on their screen.
+
 | reason | what it means | what to do |
 |---|---|---|
 | `the question points at its subject without naming it` | the question said "this" or "it" and nothing identified the subject | name the project with `--scope`, or ask the user which one |
