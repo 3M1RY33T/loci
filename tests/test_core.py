@@ -1630,6 +1630,154 @@ def test_distribution_name_matches_the_install_hints():
     assert list(meta["scripts"]) == ["loci"]
 
 
+# -- signboard: what a project IS ------------------------------------------
+def test_packaging_identity_reads_every_manifest_kind(tmp_path):
+    from loci.identity import packaging_identity
+
+    py = tmp_path / "py"
+    (py / "src" / "widget").mkdir(parents=True)
+    (py / "src" / "widget" / "__init__.py").write_text("")
+    (py / "pyproject.toml").write_text(
+        '[project]\nname = "widget-dist"\n\n[project.scripts]\nwidget = "widget:main"\n')
+
+    npm = tmp_path / "npm"
+    npm.mkdir()
+    (npm / "package.json").write_text(
+        '{"name": "@acme/thing", "bin": {"thing": "cli.js"}}')
+
+    rust = tmp_path / "rust"
+    rust.mkdir()
+    (rust / "Cargo.toml").write_text('[package]\nname = "crate-name"\n')
+
+    go = tmp_path / "go"
+    go.mkdir()
+    (go / "go.mod").write_text("module github.com/acme/gotool\n\ngo 1.22\n")
+
+    assert packaging_identity(py) == {
+        "dist": ["widget-dist"], "imports": ["widget"], "command": ["widget"]}
+    assert packaging_identity(npm) == {
+        "dist": ["@acme/thing"], "imports": ["@acme/thing"], "command": ["thing"]}
+    assert packaging_identity(rust) == {
+        "dist": ["crate-name"], "imports": ["crate_name"], "command": ["crate-name"]}
+    assert packaging_identity(go) == {
+        "dist": ["github.com/acme/gotool"], "imports": ["github.com/acme/gotool"],
+        "command": ["gotool"]}
+
+
+def test_the_distribution_name_is_not_the_command_name(tmp_path):
+    """loci is the case this whole feature exists for: `loci-mem` on PyPI,
+    `loci` to import, `loci` to run, `3M1RY33T/loci` on GitHub. An edge that
+    says `loci` is a COMMAND, and a signboard holding only `dist` never
+    matches it.
+    """
+    from loci.identity import packaging_identity
+
+    root = Path(__file__).resolve().parent.parent
+    ident = packaging_identity(root)
+    assert ident["dist"] == ["loci-mem"]
+    assert ident["command"] == ["loci"]
+    assert "loci" in ident["imports"]
+    assert ident["dist"] != ident["command"]
+
+
+def test_packaging_identity_survives_without_tomllib(tmp_path, monkeypatch):
+    """3.10 has no tomllib and the library supports 3.10. Adding `tomli` for
+    three keys is not worth a dependency, so there is a regex fallback -- and
+    a fallback nothing exercises is a fallback that is already broken.
+    """
+    import loci.identity as I
+    from loci.identity import packaging_identity
+
+    monkeypatch.setattr(I, "_tomllib", None)
+    root = tmp_path / "py"
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "widget-dist"\nversion = "0.1.0"\n'
+        '\n[project.scripts]\nwidget = "widget:main"\nwidgetctl = "widget:ctl"\n'
+        '\n[tool.other]\nname = "not-the-project-name"\n')
+
+    ident = packaging_identity(root)
+    assert ident["dist"] == ["widget-dist"]
+    assert ident["command"] == ["widget", "widgetctl"]
+
+
+def test_a_root_layout_claims_only_the_package_it_distributes(tmp_path):
+    """Measured on the real corpus: root-layout scanning put `api`, `cli`,
+    `search` and `agent_tools` on two signboards. Those are internal package
+    directories, and an edge naming `search` resolving to `odysseus` is a
+    fabricated cross-project dependency -- the exact false positive this
+    feature exists to avoid producing.
+
+    A `src/` layout is an explicit packaging decision and is trusted whole. A
+    root layout is not, so only the directory that IS the distribution counts.
+    """
+    from loci.identity import packaging_identity
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "tensor-serve"\n')
+    for pkg in ("tensor_serve", "api", "cli"):
+        (tmp_path / pkg).mkdir()
+        (tmp_path / pkg / "__init__.py").write_text("")
+
+    assert packaging_identity(tmp_path)["imports"] == ["tensor_serve"]
+
+
+@pytest.mark.parametrize("layout", ["root", "src"])
+def test_no_distribution_means_no_import_identity(tmp_path, layout):
+    """An application, not a library. Nothing imports it by any name, so it
+    has no import identity to put on a signboard.
+
+    The `src/` case is here because trusting that layout on its own was
+    measured wrong: `odysseus` keeps its application code in `src/` with a
+    pyproject that declares only `[tool.pytest.ini_options]`, and the packages
+    inside it are `agent_tools` and `search`. `search` on a signboard makes
+    every edge naming a `search` command resolve to odysseus. A `src/` folder
+    is a place to put code; only a declared distribution says the code is
+    published under a name.
+    """
+    from loci.identity import packaging_identity
+
+    (tmp_path / "pyproject.toml").write_text('[tool.ruff]\nline-length = 88\n')
+    base = (tmp_path / "src") if layout == "src" else tmp_path
+    base.mkdir(exist_ok=True)
+    for pkg in ("search", "agent_tools"):
+        (base / pkg).mkdir()
+        (base / pkg / "__init__.py").write_text("")
+
+    assert packaging_identity(tmp_path)["imports"] == []
+
+
+def test_a_tree_with_no_manifest_has_an_empty_identity(tmp_path):
+    from loci.identity import packaging_identity
+
+    (tmp_path / "app.py").write_text("x = 1\n")
+    assert packaging_identity(tmp_path) == {"dist": [], "imports": [], "command": []}
+
+
+def test_manifests_are_read_at_the_root_only(tmp_path):
+    """A monorepo's inner manifests belong to its sub-scopes. Descending is
+    also what made fingerprinting take 32.9s before `SKIP_DIRS` pruning; the
+    signboard has no reason to repeat that mistake.
+    """
+    from loci.identity import packaging_identity
+
+    (tmp_path / "package.json").write_text('{"name": "outer"}')
+    inner = tmp_path / "packages" / "inner"
+    inner.mkdir(parents=True)
+    (inner / "package.json").write_text('{"name": "inner"}')
+
+    assert packaging_identity(tmp_path)["dist"] == ["outer"]
+
+
+def test_a_malformed_manifest_yields_nothing_rather_than_raising(tmp_path):
+    """`loci scan` walks every repository on the disk. One unparseable
+    package.json in one of them must not end the scan.
+    """
+    from loci.identity import packaging_identity
+
+    (tmp_path / "package.json").write_text("{not json at all")
+    assert packaging_identity(tmp_path) == {"dist": [], "imports": [], "command": []}
+
+
 # -- docstring collector ---------------------------------------------------
 PY_SAMPLE = '''
 """Module level explanation that is long enough to be worth keeping around."""
