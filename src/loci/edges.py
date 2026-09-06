@@ -454,3 +454,40 @@ def load_edges() -> dict[str, list[dict]]:
         return table if isinstance(table, dict) else {}
     except Exception:
         return {}
+
+
+def edge_report(scopes, table: dict[str, list[dict]]) -> list[str]:
+    """Cross-project coverage, as lines `doctor` and `uses` both print.
+
+    An empty answer is only honest beside its coverage, and there are two
+    independent ways for coverage to be missing:
+
+      nothing collected FROM a scope -- no manifest this reader understands
+        and no spawn in its source. It can never be the SOURCE of an edge.
+      no signboard ON a scope -- no remote, no distribution, no command. It
+        can never be the TARGET of one, however many projects reference it.
+
+    Both shrink the answer silently, so both are named. Reporting only the
+    first is how "no project uses another" gets believed about a corpus where
+    half the projects were unreadable.
+    """
+    from .identity import signboard_of, targets
+
+    lines: list[str] = []
+    edges = resolved(scopes, table)
+    total = sum(len(v) for v in table.values())
+    lines.append(f"{len(edges)} edge(s) from {total} outbound reference(s), "
+                 f"collected from {len(table)} of {len(scopes)} project(s)")
+
+    silent = sorted(s.name for s in scopes if s.id not in table)
+    if silent:
+        lines.append("  nothing to collect from: " + ", ".join(silent)
+                     + "   - no manifest and no spawn; cannot be the source "
+                       "of an edge")
+    unnamed = sorted(s.name for s in scopes
+                     if not targets(signboard_of(s) or {}))
+    if unnamed:
+        lines.append("  cannot be named by an edge: " + ", ".join(unnamed)
+                     + "   - no remote, distribution or command; "
+                       "`loci groups infer` refreshes signboards")
+    return lines

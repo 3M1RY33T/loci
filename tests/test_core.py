@@ -1965,10 +1965,14 @@ def test_an_edge_resolves_against_another_scopes_signboard(tmp_path):
          "source": "client/loci_memory.py:36"}]
 
 
-def test_an_unresolved_edge_is_kept_but_not_reported(tmp_path):
+def test_an_unresolved_edge_is_kept_but_not_reported(tmp_path, loci_home):
     """`react` is a real outbound reference and not a cross-project edge. It
     stays in the table because registering a scope later is what turns it into
     one, and it stays out of the answer because today it is not one.
+
+    Takes `loci_home`: this test round-trips through the store, and without it
+    `save_edges` writes the developer's own ~/.loci/edges.json -- which it did,
+    once, replacing a real 190-edge table with one row.
     """
     from loci.edges import resolved, save_edges, load_edges
 
@@ -2012,6 +2016,35 @@ def test_uses_prints_every_resolved_edge_with_its_citation(loci_home, capsys):
     assert "delroy -> loci" in out
     assert "client/loci_memory.py:36" in out
     assert "graphify" not in out, "an unresolved target is not a project"
+
+
+def test_edge_report_names_what_could_not_be_read(tmp_path):
+    """"No project uses another" is only sayable next to how many projects
+    could be read at all. Two holes, and they are different: a scope nothing
+    was collected FROM cannot be the source of an edge, and a scope with no
+    signboard cannot be the TARGET of one. Both have to be named, because
+    either one silently shrinks the answer.
+    """
+    from loci.edges import edge_report
+
+    scopes = [_signed("delroy", tmp_path / "d"),
+              _signed("loci", tmp_path / "l", command=["loci"]),
+              _signed("beacon", tmp_path / "b")]
+    table = {"delroy": [{"target": "loci", "how": "command", "source": "a.py:1"}]}
+
+    report = "\n".join(edge_report(scopes, table))
+    assert "1 edge(s)" in report
+    assert "1 of 3" in report, "only delroy had anything collected from it"
+    def named(marker):
+        # The names only. Each line ends with the remedy, and the remedy names
+        # a command -- `loci groups infer` -- so reading the whole line would
+        # find "loci" in it whatever the scope list said.
+        line = next(ln for ln in edge_report(scopes, table) if marker in ln)
+        return {n.strip() for n in line.split(": ", 1)[1].split("   - ")[0].split(",")}
+
+    assert named("nothing to collect") == {"beacon", "loci"}
+    assert named("cannot be named") == {"beacon", "delroy"}, \
+        "loci publishes a command; it is nameable"
 
 
 # -- docstring collector ---------------------------------------------------

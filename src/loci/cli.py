@@ -208,20 +208,17 @@ def cmd_uses(args) -> int:
               f"{names.get(e['to'], e['to'])}   ({how} `{e['target']}`)  "
               f"{e['source']}")
 
-    scanned = len(table)
-    total = sum(len(v) for v in table.values())
+    # Never a bare "none". `no edges` is indistinguishable from `nothing was
+    # collected` and from `collected, and this project declares nothing`
+    # unless the coverage is said out loud -- a confident empty scan is how a
+    # false negative gets believed. `edge_report` is the one place that
+    # sentence is written, so `doctor` and this command cannot disagree.
+    from .edges import edge_report
     if not edges:
-        # Never a bare "none". `no_edges` is indistinguishable from `not
-        # collected` and from `collected, but this project declares nothing`
-        # unless the coverage is said out loud, and a confident empty scan is
-        # how a false negative gets believed.
         print("  no project references another registered project.")
-        print(f"  scanned {scanned} of {len(scopes)} project(s); "
-              f"{total} outbound reference(s), none naming a registered scope.")
-        print("  `loci doctor` names the projects nothing could be read from.")
-        return 0
-    print(f"\n{len(edges)} edge(s) over {scanned} of {len(scopes)} project(s), "
-          f"{total} outbound reference(s) examined")
+    print("")
+    for ln in edge_report(scopes, table):
+        print(f"  {ln}")
     return 0
 
 
@@ -711,6 +708,14 @@ def cmd_doctor(args) -> int:
         print("\ngroups")
         for ln in lines:
             print(f"  {ln}")
+
+    # Cross-project coverage is a third gap, and the one whose absence is
+    # invisible: an uncollected scope makes `loci uses` quieter without making
+    # it look wrong.
+    from .edges import edge_report, load_edges
+    print("\ncross-project edges")
+    for ln in edge_report(scopes, load_edges()):
+        print(f"  {ln}")
     return 0 if all(h.ok for h in healths) else 1
 
 
