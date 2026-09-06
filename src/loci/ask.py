@@ -260,6 +260,12 @@ def _advice(rt: RouteResult) -> str:
     "or from inside the project directory" is the standing advice, and under a
     group it is actively wrong: for `out_of_group` the cwd is what SELECTED the
     confining group, so following it guarantees the same abstention again.
+
+    It is wrong for a second reason since a cwd stopped satisfying the evidence
+    floor for an enumeration. That abstention fires from INSIDE a project by
+    construction -- the working directory is what the router declined to treat
+    as evidence -- so the standing advice tells the reader to do the thing they
+    have already done.
     """
     if rt.group and not rt.ranked:
         return "run `loci groups` to see the groups that exist."
@@ -273,6 +279,8 @@ def _advice(rt: RouteResult) -> str:
         # shortlist can recover.
         return ("no project holds a distinctive term from this question -- "
                 "`loci doctor` shows what is not indexed.")
+    if any("cwd" in (d.get("signals") or {}) for d in rt.detail.values()):
+        return "re-run with --scope <name>: the working directory did not settle it."
     return "re-run with --scope <name>, or from inside the project directory."
 
 

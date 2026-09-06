@@ -3647,10 +3647,10 @@ def test_an_abstention_gives_advice_that_can_actually_work():
 
     index = _index(a=("Alpha", "/a", {"widget": 40}, 500))
 
-    def body(reason, group=None, ranked=("a",), candidates=None):
+    def body(reason, group=None, ranked=("a",), candidates=None, detail=None):
         rt = RouteResult(question="q", query_tokens=[], ranked=list(ranked),
                          selected=[], abstain=True, top_score=0.0, top_matched=0,
-                         group=group, abstain_reason=reason,
+                         group=group, abstain_reason=reason, detail=detail or {},
                          candidates=list(ranked if candidates is None else candidates))
         return render(Answer(question="q", routing=rt), index=index)
 
@@ -3673,6 +3673,14 @@ def test_an_abstention_gives_advice_that_can_actually_work():
     assert "--scope" not in nothing
     assert "inside the project directory" not in nothing
     assert "loci doctor" in nothing
+
+    # A FOURTH case, and the one this round created. Since a cwd stopped
+    # satisfying the evidence floor for an enumeration, the ordinary abstention
+    # fires most often from INSIDE a project -- where "or from inside the
+    # project directory" tells the reader to do what they have already done.
+    inside = body("no_evidence", detail={"a": {"signals": {"cwd": "/a"}}})
+    assert "--scope" in inside
+    assert "inside the project directory" not in inside
 
 
 def test_the_candidate_line_says_what_each_scope_holds():

@@ -60,8 +60,12 @@ loci ask "<the user's question>"
 Run it from the project root and let it read the working directory. **cwd is the
 primary routing signal, not a tiebreaker**: questions that name no project —
 *"how is this deployed?"*, *"how do I run the tests?"* — route correctly 100% of
-the time with it and are unanswerable without it. Never pass `--no-cwd` unless
-the user is deliberately asking across projects from an unrelated directory.
+the time with it and are unanswerable without it. It answers *which project*,
+never *which projects*: a question that asks across the corpus — *"which of my
+projects use X?"*, *"am I using any of my other projects here?"* — is not
+carried by the directory you are standing in, so `--no-cwd` buys nothing for
+one. Pass it only when the user asks about some *other* project from an
+unrelated directory.
 
 - `--scope <name>` when the user names a project. It skips routing entirely and
   drops the episode gate with it, so use it whenever the target is not in doubt.
