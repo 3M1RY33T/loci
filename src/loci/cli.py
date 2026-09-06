@@ -543,8 +543,15 @@ def cmd_ask(args) -> int:
                  with_episodes=not args.no_episodes,
                  force_scopes=forced, group=args.group,
                  policy=policy, registry=registry, index=index, store=store)
-    print(json.dumps(answer.to_json(), indent=2) if args.json
-          else render(answer, index=index, chars=args.chars))
+    text = render(answer, index=index, chars=args.chars)
+    # `--json` carries the rendered answer as well as the structure. A host
+    # reaching loci as a subprocess needs both -- the text for the model to
+    # read, the `clarify` card for the user to answer -- and asking twice
+    # doubles a call that loads an embedding model to answer once. It is the
+    # SAME `render` the plain branch prints, so there is no second renderer to
+    # drift from this one.
+    print(json.dumps({**answer.to_json(), "text": text}, indent=2)
+          if args.json else text)
     return 0
 
 

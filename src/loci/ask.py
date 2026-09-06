@@ -50,8 +50,16 @@ class Answer:
     scopes: list[ScopeAnswer] = field(default_factory=list)
 
     def to_json(self) -> dict:
+        # `clarify` is a VIEW of `routing.candidates`, never a replacement for
+        # it: a host that wants to draw its own card reads the raw shortlist,
+        # and one that just wants the question reads this. Imported inside the
+        # method so `clarify` stays off the import path of every CLI verb that
+        # never answers a question -- the same reason `semantic_symbols` imports
+        # its backends where it uses them.
+        from .clarify import clarify
         return {"question": self.question, "routing": self.routing.to_json(),
-                "scopes": [s.to_json() for s in self.scopes]}
+                "scopes": [s.to_json() for s in self.scopes],
+                "clarify": clarify(self.routing)}
 
 
 # How many nearest symbol labels contribute tokens. Measured: 1 or 2 give 6/7

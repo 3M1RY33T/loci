@@ -3693,6 +3693,51 @@ def test_clarify_names_its_cause_so_the_card_is_not_a_bare_list():
         "an unknown cause still has to say something true"
 
 
+def test_the_json_answer_carries_the_question_a_host_should_ask():
+    """`clarify` is a VIEW of the shortlist, never a replacement for it: a host
+    drawing its own card reads `routing.candidates`, one that just wants the
+    question reads this.
+    """
+    from loci.ask import Answer
+
+    idx = _shared_vocabulary_corpus()
+    rt = route("how does this project handle the shared widget", idx)
+    payload = Answer(question="q", routing=rt).to_json()
+
+    assert payload["clarify"]["options"][0]["label"] == "Alpha"
+    assert payload["routing"]["candidates"] == rt.candidates
+
+    routed = Answer(question="q",
+                    routing=route("how does Alpha handle the widget", idx)).to_json()
+    assert routed["clarify"] is None
+
+
+def test_the_json_answer_also_carries_the_text_it_would_have_printed(
+        loci_home, capsys):
+    """One invocation, both surfaces. A caller reaching loci as a subprocess --
+    which is every non-MCP host -- needs the readable answer AND the card, and
+    asking twice doubles a call that already loads a model.
+
+    `text` comes from the same `render` the plain branch prints, so there is no
+    second renderer anywhere that could drift from this one.
+    """
+    from loci.cli import main
+
+    _two_scope_corpus(loci_home)
+    argv = ["ask", "how", "does", "the", "flange", "grommet", "bolt", "work",
+            "--no-cwd", "--no-structure", "--no-episodes"]
+
+    assert main(argv) == 0
+    printed = capsys.readouterr().out
+    assert "ROUTED -> Beta" in printed, "fixture lost its point"
+
+    assert main(argv + ["--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["text"] == printed.rstrip("\n"), \
+        "the JSON text must be byte-identical to what the plain branch prints"
+    assert payload["clarify"] is None, "a routed answer has no question to ask"
+
+
 def test_a_policy_that_cannot_be_constructed_is_an_error_not_a_traceback(
         loci_home, capsys, monkeypatch):
     """`Policy.__post_init__` refuses an unknown `default_mode`. `load_policy`
