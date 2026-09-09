@@ -40,16 +40,25 @@ dependencies = [
 # graph.json data contract through an adapter, so a different extractor can be
 # substituted without touching anything above backends/.
 graphify = ["graphifyy>=0.9.9"]
-embeddings = ["sentence-transformers>=3.0"]
-rerank = ["sentence-transformers>=3.0"]
+# ONNX Runtime rather than torch, and the reason is measured rather than
+# stylistic: torch cost 6.2s of a 7.77s query, segfaulted inside the scope
+# fan-out (three locks did not close it -- see embed.py), and drew a progress
+# bar on the stderr that hosts read errors from.
+embeddings = ["onnxruntime>=1.17", "tokenizers>=0.15", "huggingface-hub>=0.20"]
+rerank = ["onnxruntime>=1.17", "tokenizers>=0.15", "huggingface-hub>=0.20"]
 # Upper-bounded on purpose. mcp 2.0 removed the low-level `@server.list_tools()`
 # and `@server.call_tool()` decorators that mcp_server.py is built on, leaving
 # only add_request_handler or a FastMCP rewrite. An unbounded `mcp>=1.0` resolves
 # to 2.x and the server dies at import with AttributeError -- a crash the CLI
 # never sees, because nothing else in loci imports mcp.
 mcp = ["mcp>=1.0,<2"]
-all = ["graphifyy>=0.9.9", "sentence-transformers>=3.0", "mcp>=1.0,<2"]
-dev = ["pytest>=8.0"]
+all = ["graphifyy>=0.9.9", "onnxruntime>=1.17", "tokenizers>=0.15",
+       "huggingface-hub>=0.20", "mcp>=1.0,<2"]
+# sentence-transformers is a DEV dependency and stays one. tests/test_embed.py
+# compares the ONNX encoder against it, and deleting the reference
+# implementation deletes the proof that loci still encodes the way the nine
+# floors in calibration.json were fitted to.
+dev = ["pytest>=8.0", "sentence-transformers>=3.0"]
 
 [project.urls]
 Homepage = "https://github.com/3M1RY33T/loci"
@@ -64,5 +73,14 @@ loci = "loci.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/loci"]
 
+# The parity harness is TRACKED, because it needs review and history, but it is
+# development scaffolding rather than distribution. .gitignore cannot say that
+# -- ignoring it would untrack it -- and hatchling filters the sdist by
+# .gitignore, so without this it ships to PyPI. Same failure as the .superpowers
+# review diffs in the 0.1.0 sdist, arriving by a different route.
+[tool.hatch.build.targets.sdist]
+exclude = ["parity/"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["reference: compares against sentence-transformers, the encoder being replaced"]

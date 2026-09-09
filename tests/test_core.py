@@ -2254,41 +2254,85 @@ def test_the_embedding_model_is_built_exactly_once_under_threads():
     """`ask` fans out across scopes, so every lazy init is reachable from
     several threads at once.
 
-    Unguarded, `if _MODEL is None: _MODEL = SentenceTransformer(...)` is a
+    Unguarded, `if _MODEL is None: _MODEL = SentenceTransformer(...)` was a
     check-then-act race, and two threads constructing one concurrently crashed
     the process -- SIGSEGV, SIGABRT and an indefinite hang on different runs of
     the same question.
+
+    The loader is onnxruntime now and the guard moved into `embed._session`
+    with it, so this reaches there rather than at the deleted
+    `episodes._MODEL`. The guarantee under test is unchanged, and it is the
+    reason the fan-out is safe: one construction, no hang, every thread
+    handed the same session.
     """
     import sys
     import threading
     import types
 
-    from loci.backends import episodes as ep
+    import numpy as np
+
+    from loci import embed
 
     built = []
     slow = threading.Event()
 
-    class FakeModel:
-        def __init__(self, name):
-            built.append(name)
+    class FakeInferenceSession:
+        def __init__(self, path, opts, providers=None):
+            built.append(path)
             slow.wait(0.5)          # widen the window the race needs
-        def encode(self, texts, **kw):
-            return [[0.0, 1.0] for _ in texts]
 
-    fake = types.ModuleType("sentence_transformers")
-    fake.SentenceTransformer = FakeModel
-    fake.CrossEncoder = object
-    prev_mod = sys.modules.get("sentence_transformers")
-    prev_model = ep._MODEL
-    sys.modules["sentence_transformers"] = fake
-    ep._MODEL = None
+        def get_inputs(self):
+            return [types.SimpleNamespace(name="input_ids"),
+                    types.SimpleNamespace(name="attention_mask")]
+
+        def run(self, _out, feed):
+            n = len(feed["input_ids"])
+            return [np.ones((n, 4, 8), dtype="float32")]
+
+    class FakeEncoding:
+        ids = [1, 2, 3, 4]
+        attention_mask = [1, 1, 1, 1]
+        type_ids = [0, 0, 0, 0]
+
+    class FakeTokenizer:
+        @staticmethod
+        def from_file(_path):
+            return FakeTokenizer()
+
+        def enable_truncation(self, **kw):
+            pass
+
+        def enable_padding(self, **kw):
+            pass
+
+        def encode_batch(self, batch):
+            return [FakeEncoding() for _ in batch]
+
+    fake_ort = types.ModuleType("onnxruntime")
+    fake_ort.SessionOptions = lambda: types.SimpleNamespace(log_severity_level=0)
+    fake_ort.InferenceSession = FakeInferenceSession
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.hf_hub_download = lambda repo, name: f"/nonexistent/{repo}/{name}"
+
+    fake_tok = types.ModuleType("tokenizers")
+    fake_tok.Tokenizer = FakeTokenizer
+
+    prev = {k: sys.modules.get(k)
+            for k in ("onnxruntime", "huggingface_hub", "tokenizers")}
+    sys.modules["onnxruntime"] = fake_ort
+    sys.modules["huggingface_hub"] = fake_hub
+    sys.modules["tokenizers"] = fake_tok
+    embed.reset_sessions()
     try:
         errors = []
+
         def call():
             try:
-                ep._encode_query("hello", "bge-small")
+                embed.encode(["hello"], model_name="bge-small")
             except Exception as exc:      # pragma: no cover - failure path
                 errors.append(exc)
+
         threads = [threading.Thread(target=call) for _ in range(8)]
         for t in threads:
             t.start()
@@ -2299,12 +2343,12 @@ def test_the_embedding_model_is_built_exactly_once_under_threads():
         assert not errors, errors
         assert len(built) == 1, f"model constructed {len(built)} times, not once"
     finally:
-        ep._MODEL = prev_model
-        if prev_mod is None:
-            sys.modules.pop("sentence_transformers", None)
-        else:
-            sys.modules["sentence_transformers"] = prev_mod
-
+        for k, v in prev.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+        embed.reset_sessions()
 
 def test_ask_warms_the_model_before_fanning_out_over_scopes(monkeypatch):
     """Native init must happen on ONE thread, before the pool starts.

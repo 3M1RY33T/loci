@@ -324,13 +324,11 @@ def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
     line arguments?" to `build_parser()`, where the expansion came out empty and
     no traversal ran at all. Nearest-label search finds both.
     """
-    import warnings
-    warnings.filterwarnings("ignore")
     import numpy as np
-    from sentence_transformers import SentenceTransformer
+
+    from . import embed
 
     store = load_episodes()
-    model = SentenceTransformer(model_name)
     arrays: dict[str, "np.ndarray"] = {}
 
     from .backends import get_structure_backend
@@ -348,9 +346,8 @@ def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
         labels = sb.labels(scope, exclude=nested_roots(scope, registry))[:MAX_SYMBOLS]
         if not labels:
             continue
-        arrays[f"{SYMBOL_PREFIX}{sid}"] = np.asarray(
-            model.encode(labels, normalize_embeddings=True, batch_size=256,
-                         show_progress_bar=False), dtype="float32")
+        arrays[f"{SYMBOL_PREFIX}{sid}"] = embed.encode(
+            labels, model_name=model_name, batch_size=256)
         Path(embeddings_file().parent / f".symbols-{sid}.json").write_text(
             json.dumps(labels), encoding="utf-8")
         if verbose:
@@ -360,9 +357,7 @@ def build_embeddings(model_name: str = DEFAULT_EMBED_MODEL,
         if not raw:
             continue
         texts = [f"{c.get('heading','')} {c['text']}" for c in raw]
-        arrays[sid] = np.asarray(
-            model.encode(texts, normalize_embeddings=True, batch_size=64,
-                         show_progress_bar=False), dtype="float32")
+        arrays[sid] = embed.encode(texts, model_name=model_name, batch_size=64)
         if verbose:
             print(f"  {store['scopes'].get(sid, sid):<18} {len(texts):>5} chunks "
                   f"-> {arrays[sid].shape}")

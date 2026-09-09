@@ -19,6 +19,7 @@ two lexical rankers and everything still works.
 from __future__ import annotations
 
 import math
+import os
 import re
 import subprocess
 import threading
@@ -80,32 +81,33 @@ STUB_LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\[\[.*\]\]|#[\w/]+|Category:.*|\|.*\
 ANY_LINK = re.compile(r"\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\)")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
-_QUERY_PREFIX = {"bge": "Represent this sentence for searching relevant passages: "}
 _FIT: dict[str, tuple] = {}
 _EMB: dict | None = None
-_MODEL = None
-_RERANKER = None
 
 # `ask` fans out across the selected scopes in a ThreadPoolExecutor, so every
-# lazy initializer below is reachable from several threads at once. Unguarded,
-# `if _MODEL is None: _MODEL = SentenceTransformer(...)` is a check-then-act
-# race, and two threads constructing a sentence-transformer concurrently do not
-# merely duplicate the work -- they DEADLOCK, because the loader spins up a
-# joblib/loky process pool and doing that from two threads hangs. Measured:
-# `loci ask "which of my projects use Cloudflare workers or D1?"` never
-# returned, while the same question with the model already warm took 0.2s, and
-# the same question with one scope selected always worked.
+# lazy initializer below is reachable from several threads at once.
 #
-# It is not new -- any question routing to two scopes on a cold model could hit
-# it -- but enumerative set mode selects two or more scopes far more often, so a
-# latent race became the first thing a user would run.
+# Historically that DEADLOCKED. Unguarded, `if _MODEL is None: _MODEL =
+# SentenceTransformer(...)` was a check-then-act race, and two threads
+# constructing a sentence-transformer concurrently did not merely duplicate the
+# work -- they hung, because the loader spun up a joblib/loky process pool and
+# doing that from two threads blocks. Measured: `loci ask "which of my projects
+# use Cloudflare workers or D1?"` never returned, while the same question with
+# the model already warm took 0.2s, and the same question with one scope
+# selected always worked. Enumerative set mode selects two or more scopes far
+# more often than anything else, so a latent race became the first thing a user
+# would run.
+#
+# No model is built here any more -- `embed` owns that, and onnxruntime has no
+# process pool to fork, which is what made concurrent construction a hang
+# rather than merely wasted work. The history stays because it is why the
+# fan-out is written the way it is, and because the locks that remain guard
+# DATA rather than a loader.
 #
 # Separate locks, not one: `_semantic` calls `_embeddings()` and then
 # `_encode_query()`, and a single shared lock would serialize every query behind
 # whichever thread is loading. Double-checked, so the lock is paid once.
 _EMB_LOCK = threading.Lock()
-_MODEL_LOCK = threading.Lock()
-_RERANKER_LOCK = threading.Lock()
 
 
 # ==========================================================================
@@ -406,7 +408,7 @@ class BuiltinEpisodeBackend:
             return []
         w_bm, w_ch, w_em = w_bm / tot, w_ch / tot, w_em / tot
 
-        now = datetime.now(timezone.utc)
+        now = _now()
         scored: list[tuple[float, int]] = []
         for i, c in enumerate(chunks):
             s = w_bm * bm_norm[i] + w_ch * float(ch[i])
@@ -539,40 +541,58 @@ def _semantic(question: str, scope_id: str, n_chunks: int):
 
 
 def _encode_query(text: str, model_name: str):
-    global _MODEL
+    """The query vector, or None when no model is configured.
+
+    No cached model object and no lock here any more: `embed` owns session
+    construction and its own double-checked lock, so this module's three locks
+    are down to the one that guards data.
+    """
     if not model_name:
         return None
-    if _MODEL is None:
-        with _MODEL_LOCK:
-            if _MODEL is None:
-                import warnings
-                warnings.filterwarnings("ignore")
-                from sentence_transformers import SentenceTransformer
-                _MODEL = SentenceTransformer(model_name)
-    prefix = next((v for kk, v in _QUERY_PREFIX.items() if kk in model_name.lower()), "")
-    return _MODEL.encode([prefix + text], normalize_embeddings=True)[0]
+    from .. import embed
+    return embed.encode([text], model_name=model_name, is_query=True)[0]
 
 
 def _rerank(question: str, hits: list[EpisodeHit], depth: int) -> list[EpisodeHit]:
     """Cross-encoder rerank of the head. Opt-in; see README for the numbers."""
-    global _RERANKER
+    from .. import embed
+
     head, tail = hits[:depth], hits[depth:]
     if len(head) < 2:
         return hits
-    if _RERANKER is None:
-        with _RERANKER_LOCK:
-            if _RERANKER is None:
-                import warnings
-                warnings.filterwarnings("ignore")
-                from sentence_transformers import CrossEncoder
-                _RERANKER = CrossEncoder(RERANK_MODEL, max_length=512)
-    scores = _RERANKER.predict(
+    scores = embed.rerank_scores(
         [(question, f"{h.chunk.heading} {h.chunk.text}") for h in head],
-        show_progress_bar=False)
+        model_name=RERANK_MODEL)
     for h, sc in zip(head, scores):
         h.rerank_score = float(sc)
     head.sort(key=lambda h: -(h.rerank_score or 0.0))
     return head + tail
+
+
+def _now() -> datetime:
+    """Scoring time, pinnable so a comparison is against ranking, not the clock.
+
+    RECENCY_WEIGHT folds elapsed time into the score of every chunk carrying a
+    timestamp, so two runs of one question over one unchanged corpus disagree
+    by however much the clock moved between them. That is correct ranking
+    behaviour, and it makes a RECORDED answer decay: measured at roughly 1e-4
+    of score per hour for a month-old chunk -- enough to move the 4-decimal
+    value `EpisodeHit.to_json` publishes -- and it grows without bound as the
+    recording ages. Left alone, two hits decaying at different rates eventually
+    swap, and a parity harness reports a ranking regression that no code change
+    caused.
+
+    $LOCI_NOW pins the instant. Unset -- which is everywhere except the parity
+    harness -- behaviour is exactly as before.
+    """
+    raw = os.environ.get("LOCI_NOW")
+    if raw:
+        try:
+            t = datetime.fromisoformat(raw)
+            return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass          # a malformed pin must not silently freeze the clock
+    return datetime.now(timezone.utc)
 
 
 def _recency(ts: str, now: datetime) -> float:
@@ -591,11 +611,15 @@ def _recency(ts: str, now: datetime) -> float:
 def warm_up(store: dict | None = None, scope_ids: list[str] | None = None) -> None:
     """Pay the one-off costs before a user is waiting on them.
 
-    Measured cold: the first query in a process costs ~4.4s and every one after
-    it costs 0.02-0.5s. Almost all of that is importing sentence_transformers
-    (1.6s) and sklearn (0.6s) plus constructing the embedding model -- process
-    startup, not work. A long-lived server should absorb it at boot; only a
-    one-shot CLI invocation has no way to avoid paying it per question.
+    Measured cold under torch: the first query in a process cost ~4.4s and
+    every one after it 0.02-0.5s, almost all of it importing
+    sentence_transformers (1.6s) and sklearn (0.6s) plus constructing the
+    model -- process startup, not work.
+
+    Under onnxruntime the same one-shot ask runs 1.9s against that 5.2s, so
+    the cost this exists to hide is a fraction of what it was. It still earns
+    its place: a long-lived server should absorb what remains at boot, and a
+    one-shot CLI invocation still has no way to avoid paying it per question.
     """
     emb = _embeddings()
     if emb:
