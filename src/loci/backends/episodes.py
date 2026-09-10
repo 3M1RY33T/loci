@@ -357,73 +357,34 @@ class BuiltinEpisodeBackend:
         if not q_tokens or lex is None:
             return []
 
-        grounded = lex.grounded(q_tokens)
-        need = max(min_grounded, int(round(min_grounded_frac * len(set(q_tokens)))))
-
-        # Query tokens are NOT deduplicated here, and must not be: rank_bm25
-        # iterates the raw list, so a repeated term counts twice.
-        bm = lex.bm25_scores(q_tokens)
-        bm_max = max(bm) if bm else 0.0
-        bm_norm = [(s / bm_max) if bm_max > 0 else 0.0 for s in bm]
-
-        ch = lex.char_scores(question)
-
         sem = _semantic(question, scope_id, len(chunks))
-
-        # Two-tier relevance gate, before any ranking is trusted. An absolute
-        # score floor stops working once a semantic ranker gives every chunk a
-        # nonzero score -- measured, "the airspeed velocity of an unladen
-        # swallow" scored 0.608 against a large scope with a HIGHER
-        # top-to-p90 ratio than a genuine question against a small one, so
-        # neither an absolute floor nor a distribution test separates them.
-        # Lexical grounding does. But grounding alone would reject exactly the
-        # questions embeddings were added for, so: grounded OR confident.
-        # `gate=False` is for a scope the caller named outright. The gate's job
-        # is to stop a question being answered from the WRONG scope; once the
-        # user has picked one, that risk is gone and the only remaining risk is
-        # a weak answer, which its score already reports. Measured: a 2-chunk
-        # scope scores 0.535 on "what does this project do?" -- inside the
-        # nonsense band (0.46-0.52), so the floor is right and must not move,
-        # but returning nothing to someone standing in that project is not.
-        semantic_ok = sem is not None and float(sem.max()) >= semantic_floor
-        if gate and grounded < need and not semantic_ok:
-            return []
-
-        # Renormalize over whichever rankers actually produced a signal.
-        #
-        # BM25 needs the second guard as much as embeddings need the first:
-        # Okapi IDF is log((N - df + 0.5) / (df + 0.5)), which is exactly 0 for
-        # a term appearing in half the corpus. In a 2-chunk scope every query
-        # term hits that case, BM25 returns all zeros, and left in the fusion it
-        # drags the surviving rankers below the score floor -- so a thin scope
-        # silently answers nothing rather than answering from what little it has.
-        w_bm, w_ch, w_em = BM25_WEIGHT, CHAR_WEIGHT, EMBED_WEIGHT
-        if sem is None:
-            w_em = 0.0
-        if bm_max <= 0:
-            w_bm = 0.0
-        tot = w_bm + w_ch + w_em
-        if tot <= 0:
-            return []
-        w_bm, w_ch, w_em = w_bm / tot, w_ch / tot, w_em / tot
-
         now = _now()
-        scored: list[tuple[float, int]] = []
-        for i, c in enumerate(chunks):
-            s = w_bm * bm_norm[i] + w_ch * float(ch[i])
-            if sem is not None:
-                s += w_em * max(0.0, float(sem[i]))
-            # Every ranker rewards brevity -- BM25 by length normalization,
-            # cosine because a short vector is dominated by the query terms. A
-            # one-line chunk echoing the question is not the answer.
-            s *= min(1.0, len(c.text) / LENGTH_SATURATION)
-            s += RECENCY_WEIGHT * _recency(c.ts, now) * (1.0 if s > 0 else 0.0)
-            if s >= score_floor:
-                scored.append((s, i))
-        scored.sort(key=lambda x: -x[0])
+
+        # The gate, the fusion and the sort are Rust; every constant crosses as
+        # an argument rather than being compiled in, because they are
+        # calibrated -- several per corpus -- and `evals/` sweeps them. A sweep
+        # must not need a rebuild.
+        #
+        # Recency is computed HERE, so `$LOCI_NOW` keeps working and no date
+        # parsing crosses the boundary. Query tokens are NOT deduplicated:
+        # rank_bm25 iterates the raw list, so a repeat counts twice.
+        scored = lex.search(
+            question,
+            q_tokens,
+            [float(x) for x in sem] if sem is not None else None,
+            [len(c.text) for c in chunks],
+            [_recency(c.ts, now) for c in chunks],
+            (BM25_WEIGHT, CHAR_WEIGHT, EMBED_WEIGHT, RECENCY_WEIGHT),
+            float(LENGTH_SATURATION),
+            float(score_floor),
+            int(min_grounded),
+            float(min_grounded_frac),
+            float(semantic_floor),
+            bool(gate),
+        )
 
         depth = max(k, rerank_depth) if rerank else k
-        hits = [EpisodeHit(chunk=chunks[i], score=s) for s, i in scored[:depth]]
+        hits = [EpisodeHit(chunk=chunks[i], score=s) for i, s in scored[:depth]]
         if rerank and len(hits) > 1:
             hits = _rerank(question, hits, rerank_depth)
         return hits[:k]

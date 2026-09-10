@@ -143,6 +143,56 @@ impl Lex {
         loci_core::lexical::char_scores(&self.inner, query)
     }
 
+    /// Gate, fuse, filter and order in one call.
+    ///
+    /// Every constant crosses from Python: they are calibrated, several per
+    /// corpus, and `evals/` sweeps them -- a sweep must not need a rebuild.
+    /// `recency` is precomputed there too, so `$LOCI_NOW` keeps working and no
+    /// date parsing happens here.
+    ///
+    /// The GIL is released for the duration. `ask` fans out across scopes in a
+    /// thread pool, and holding it would serialise exactly the work the pool
+    /// exists to overlap.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (question, q_tokens, sem, text_len, recency, weights,
+                        length_saturation, score_floor, min_grounded,
+                        min_grounded_frac, semantic_floor, gate))]
+    fn search(
+        &self,
+        py: Python<'_>,
+        question: &str,
+        q_tokens: Vec<String>,
+        sem: Option<Vec<f64>>,
+        text_len: Vec<u32>,
+        recency: Vec<f64>,
+        weights: (f64, f64, f64, f64),
+        length_saturation: f64,
+        score_floor: f64,
+        min_grounded: usize,
+        min_grounded_frac: f64,
+        semantic_floor: f64,
+        gate: bool,
+    ) -> Vec<(u32, f64)> {
+        let w = loci_core::search::Weights {
+            bm25: weights.0,
+            char_gram: weights.1,
+            embed: weights.2,
+            recency: weights.3,
+        };
+        let g = loci_core::search::Gate {
+            min_grounded,
+            min_grounded_frac,
+            semantic_floor,
+            enabled: gate,
+        };
+        py.allow_threads(|| {
+            loci_core::search::search(
+                &self.inner, question, &q_tokens, sem.as_deref(),
+                &text_len, &recency, w, length_saturation, score_floor, g,
+            )
+        })
+    }
+
     /// How many of these tokens the scope's vocabulary holds -- the grounding
     /// count `search` gates on.
     fn grounded(&self, tokens: Vec<String>) -> usize {
