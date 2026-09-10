@@ -659,15 +659,19 @@ def test_nested_roots_finds_subscopes_of_one_scope(tmp_path):
     assert nested_roots(prefix, everyone) == []
 
 
-def test_iter_files_does_not_descend_into_an_excluded_root(tmp_path, monkeypatch):
+def test_iter_files_does_not_descend_into_an_excluded_root(tmp_path):
     """Pruned, not filtered. Asserting only on the returned list cannot tell the
     two apart, and the difference is the entire reason this module exists:
     descending a sub-scope's node_modules to discard the result afterwards is
     the 32.9s it was written to avoid. So the walk itself is watched.
-    """
-    import os
 
-    import loci.walk as walk_mod
+    It used to be watched by spying on `os.walk`. The traversal is Rust now and
+    never calls it, so the walk reports the directories it entered instead --
+    `_core.walk_trace`, which shares its one traversal with `iter_files` so
+    there is no second path that could prune differently.
+    """
+    from loci import _core
+    from loci.defaults import SKIP_DIRS
     from loci.walk import iter_files
 
     root = tmp_path / "mono"
@@ -679,27 +683,19 @@ def test_iter_files_does_not_descend_into_an_excluded_root(tmp_path, monkeypatch
     everything = iter_files(root, ["**/*.md"])
     assert len(everything) == 2
 
-    visited: list[Path] = []
-    real_walk = os.walk
-
-    def spy(top, **kw):
-        # The yielded `dirnames` list is passed on as the same object, so the
-        # pruning `iter_files` performs still reaches the real walk.
-        for dirpath, dirnames, filenames in real_walk(top, **kw):
-            visited.append(Path(dirpath))
-            yield dirpath, dirnames, filenames
-
-    monkeypatch.setattr(walk_mod.os, "walk", spy)
-    pruned = iter_files(root, ["**/*.md"], exclude=[root / "glasses"])
-
-    assert [p.name for p in pruned] == ["a.md"]
-    # Without this the assertion below passes vacuously whenever the spy fails
-    # to take effect, which is the one way it could stop testing anything.
-    assert root in visited, "the spy never observed the walk"
     excluded = root / "glasses"
-    assert not [p for p in visited if p == excluded or excluded in p.parents], \
-        f"descended into an excluded subtree: {visited}"
+    pruned = iter_files(root, ["**/*.md"], exclude=[excluded])
+    assert [p.name for p in pruned] == ["a.md"]
 
+    files, visited = _core.walk_trace(
+        str(root), ["**/*.md"], [str(excluded)], sorted(SKIP_DIRS))
+    visited = [Path(v) for v in visited]
+    assert [Path(f).name for f in files] == ["a.md"]
+    # Without this the assertion below passes vacuously whenever the trace fails
+    # to take effect, which is the one way it could stop testing anything.
+    assert root in visited, "the trace never observed the walk"
+    assert not [p for p in visited if p == excluded or excluded in p.parents], \
+        f"the excluded root was walked: {visited}"
 
 def test_a_parent_and_its_subscope_share_no_chunk(tmp_path):
     """The same file collected twice inflates two vocabularies with identical
