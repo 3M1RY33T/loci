@@ -73,6 +73,9 @@ def edges_file() -> Path:
     return home() / "edges.json"
 
 
+LEX_SUFFIX = ".lex"
+
+
 def rankers_dir() -> Path:
     """Fitted lexical rankers, one file per scope.
 

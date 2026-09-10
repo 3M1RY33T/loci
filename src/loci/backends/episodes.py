@@ -27,7 +27,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..paths import atomic_write_via, embeddings_file, rankers_dir
+from ..paths import (LEX_SUFFIX, atomic_write_via, embeddings_file,
+                     rankers_dir)
 from ..redact import is_sensitive_file, redact
 from ..text import tokens as vtokens
 from ..text import token_set
@@ -351,23 +352,21 @@ class BuiltinEpisodeBackend:
         rerank_depth = RERANK_DEPTH if rerank_depth is None else rerank_depth
         if not chunks:
             return []
-        bm25, vec, mat, vocab = _fit(scope_id, chunks)
+        lex = _fit(scope_id, chunks)
         q_tokens = vtokens(question)
-        if not q_tokens:
+        if not q_tokens or lex is None:
             return []
 
-        grounded = sum(1 for t in dict.fromkeys(q_tokens) if t in vocab)
+        grounded = lex.grounded(q_tokens)
         need = max(min_grounded, int(round(min_grounded_frac * len(set(q_tokens)))))
 
-        bm = bm25.get_scores(q_tokens) if bm25 else [0.0] * len(chunks)
-        bm_max = max(bm) if len(bm) else 0.0
+        # Query tokens are NOT deduplicated here, and must not be: rank_bm25
+        # iterates the raw list, so a repeated term counts twice.
+        bm = lex.bm25_scores(q_tokens)
+        bm_max = max(bm) if bm else 0.0
         bm_norm = [(s / bm_max) if bm_max > 0 else 0.0 for s in bm]
 
-        if vec is not None:
-            from sklearn.metrics.pairwise import linear_kernel
-            ch = linear_kernel(vec.transform([question]), mat).ravel()
-        else:
-            ch = [0.0] * len(chunks)
+        ch = lex.char_scores(question)
 
         sem = _semantic(question, scope_id, len(chunks))
 
@@ -433,43 +432,21 @@ class BuiltinEpisodeBackend:
 # ==========================================================================
 # ranking internals
 # ==========================================================================
-def fit(chunks: list[Chunk]):
-    """Build the lexical rankers for one scope. Expensive; see `_fit`."""
-    from rank_bm25 import BM25Okapi
-    from sklearn.feature_extraction.text import TfidfVectorizer
-
+def _texts(chunks: list[Chunk]) -> tuple[list[str], list[list[str]]]:
     texts = [f"{c.heading} {c.text}" for c in chunks]
-    tokenized = [vtokens(t) for t in texts]
-    vocab: set[str] = set()
-    for toks in tokenized:
-        vocab.update(toks)
-    bm25 = BM25Okapi(tokenized) if texts else None
-    vec = mat = None
-    if texts:
-        # max_features is deliberately absent, and its removal is the only
-        # deliberate behaviour change in the port.
-        #
-        # `max_features=60000` kept the 60,000 most frequent n-grams -- but the
-        # cut lands where corpus counts are 1 to 5, and tens of thousands of
-        # n-grams share those counts. sklearn fills the last slots from that
-        # tied pool with `(-tfs[mask]).argsort()`, and numpy's default sort is
-        # not stable, so WHICH of them survived was decided by sort internals.
-        # Measured on this corpus: 24,281 of loci's 68,418 n-grams tie at
-        # count 1, so roughly 26% of its retained vocabulary was arbitrary.
-        #
-        # That is not a specification anything can be ported against. Breaking
-        # the tie lexicographically instead -- the obvious deterministic choice
-        # -- moved char-gram scores by up to 2.6e-02 and reordered the top-5
-        # for 15 of 39 corpus questions, which is a ranking change, not noise.
-        #
-        # Removing the cap removes the ambiguity at its source. It costs almost
-        # nothing because the terms it dropped were singletons, which add
-        # columns but almost no non-zero entries: measured at +5% matrix bytes
-        # for delroy and odysseus, and no change in fit or query time.
-        vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=1,
-                              lowercase=True)
-        mat = vec.fit_transform(texts)
-    return bm25, vec, mat, vocab
+    return texts, [vtokens(t) for t in texts]
+
+
+def fit(chunks: list[Chunk]):
+    """Build the lexical rankers for one scope, in memory. See `_fit`.
+
+    Rust, and no file: a query that finds no cached ranker must not write to
+    the rankers directory as a side effect of being asked.
+    """
+    from loci._core import Lex
+
+    texts, tokenized = _texts(chunks)
+    return Lex.fit(texts, tokenized)
 
 
 def save_rankers(scope_id: str, chunks: list[Chunk]) -> None:
@@ -477,32 +454,33 @@ def save_rankers(scope_id: str, chunks: list[Chunk]) -> None:
 
     Fitting char 3-5 gram TF-IDF over a large scope costs ~1.5s. The in-process
     cache below never survives a CLI or MCP invocation, so without this every
-    single question paid that cost -- measured at 4.6-6.1s per query end to end,
-    which is disqualifying for a tool an agent calls in a loop.
+    single question paid that cost -- measured at 4.6-6.1s per query end to
+    end, which is disqualifying for a tool an agent calls in a loop.
+
+    The format is `.lex` rather than joblib, and that is the other half: a
+    35MB pickle cost 1.046s to LOAD, every time, and the same data mmapped
+    opens in microseconds.
     """
-    import joblib
+    from loci._core import lex_fit_write
 
     d = rankers_dir()
     d.mkdir(parents=True, exist_ok=True)
-    bm25, vec, mat, vocab = fit(chunks)
-    blob = {"n": len(chunks), "bm25": bm25, "vec": vec, "mat": mat, "vocab": vocab}
-    atomic_write_via(d / f"{scope_id}.joblib",
-                     lambda tmp: joblib.dump(blob, tmp, compress=3))
+    texts, tokenized = _texts(chunks)
+    atomic_write_via(d / f"{scope_id}{LEX_SUFFIX}",
+                     lambda tmp: lex_fit_write(str(tmp), texts, tokenized))
 
 
 def _load_rankers(scope_id: str, n_chunks: int):
-    """Return persisted rankers, or None when absent or stale."""
-    f = rankers_dir() / f"{scope_id}.joblib"
-    if not f.is_file():
-        return None
-    try:
-        import joblib
-        blob = joblib.load(f)
-    except Exception:
-        return None
-    if blob.get("n") != n_chunks:
-        return None  # store changed under us; refit rather than misalign
-    return blob["bm25"], blob["vec"], blob["mat"], blob["vocab"]
+    """Return the persisted rankers, or None when absent or stale.
+
+    The document-count check lives in the Rust reader now, along with the
+    checks for a truncated file, a foreign one, and a version this build does
+    not read. All of them refuse rather than misread, for the reason this
+    guard has always existed: a misaligned ranking is worse than none.
+    """
+    from loci._core import Lex
+
+    return Lex.open(str(rankers_dir() / f"{scope_id}{LEX_SUFFIX}"), n_chunks)
 
 
 def _fit(scope_id: str, chunks: list[Chunk]):

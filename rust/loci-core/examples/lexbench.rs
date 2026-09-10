@@ -21,11 +21,11 @@ fn main() {
 
     let mut ngrams = BTreeMap::new();
     for i in 0..n_ngrams {
-        ngrams.insert(format!("{:06}", i), 1.0 + (i % 7) as f32);
+        ngrams.insert(format!("{:06}", i), 1.0 + (i % 7) as f64);
     }
     let mut bm25 = BTreeMap::new();
     for i in 0..40_000 {
-        bm25.insert(format!("t{:06}", i), (1 + (i % 30) as u32, 0.5 + (i % 5) as f32));
+        bm25.insert(format!("t{:06}", i), (1 + (i % 30) as u32, 0.5 + (i % 5) as f64));
     }
     let per = nnz / n_docs;
     let mut indptr = Vec::with_capacity(n_docs + 1);
@@ -42,7 +42,7 @@ fn main() {
         ngrams,
         indptr,
         indices: (0..total).map(|i| (i % n_ngrams) as u32).collect(),
-        data: vec![0.01f32; total],
+        data: vec![0.01f64; total],
     };
 
     let t = Instant::now();
