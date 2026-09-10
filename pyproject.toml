@@ -91,9 +91,10 @@ exclude = ["parity/**", "target/**", "rust/target/**"]
 testpaths = ["tests"]
 markers = [
   "reference: compares against sentence-transformers, the encoder being replaced",
-  # Must run in its own process. onnxruntime and scipy/sklearn each carry a
-  # native threading runtime and a process holding both aborts at exit ~1 run
-  # in 5. See tests/test_rust_parity.py. Two passes:
-  #   pytest -m "not lexical_reference" && pytest -m lexical_reference
-  "lexical_reference: compares against sklearn and rank_bm25; own process",
+  # Must run in its own PROCESS, which means its own FILE: importorskip runs
+  # at collection, so deselecting by marker still imports scikit-learn. See
+  # tests/test_lexical_reference.py. Two passes:
+  #   pytest tests --ignore=tests/test_lexical_reference.py
+  #   pytest tests/test_lexical_reference.py
+  "lexical_reference: compares against sklearn and rank_bm25; own file and process",
 ]
