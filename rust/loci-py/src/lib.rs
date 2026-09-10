@@ -41,6 +41,45 @@ fn strip_diacritics(text: &str) -> String {
     loci_core::text::strip_diacritics(text)
 }
 
+// -- walk ------------------------------------------------------------------
+#[pyfunction]
+fn glob_matches(rel: &str, pattern: &str) -> bool {
+    loci_core::walk::glob_matches(rel, pattern)
+}
+
+#[pyfunction]
+fn iter_files(
+    root: &str,
+    patterns: Vec<String>,
+    exclude: Vec<String>,
+    skip_dirs: Vec<String>,
+) -> Vec<String> {
+    use std::path::{Path, PathBuf};
+    let excl: Vec<PathBuf> = exclude.into_iter().map(PathBuf::from).collect();
+    let skip: std::collections::HashSet<String> = skip_dirs.into_iter().collect();
+    loci_core::walk::iter_files(Path::new(root), &patterns, &excl, &skip)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// (files, visited_directories). A test seam -- see `walk::iter_files_traced`.
+#[pyfunction]
+fn walk_trace(
+    root: &str,
+    patterns: Vec<String>,
+    exclude: Vec<String>,
+    skip_dirs: Vec<String>,
+) -> (Vec<String>, Vec<String>) {
+    use std::path::{Path, PathBuf};
+    let excl: Vec<PathBuf> = exclude.into_iter().map(PathBuf::from).collect();
+    let skip: std::collections::HashSet<String> = skip_dirs.into_iter().collect();
+    let (files, visited) =
+        loci_core::walk::iter_files_traced(Path::new(root), &patterns, &excl, &skip);
+    let s = |v: Vec<PathBuf>| v.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    (s(files), s(visited))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
@@ -50,5 +89,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_hex_blob, m)?)?;
     m.add_function(wrap_pyfunction!(is_unsegmented, m)?)?;
     m.add_function(wrap_pyfunction!(strip_diacritics, m)?)?;
+    m.add_function(wrap_pyfunction!(glob_matches, m)?)?;
+    m.add_function(wrap_pyfunction!(iter_files, m)?)?;
+    m.add_function(wrap_pyfunction!(walk_trace, m)?)?;
     Ok(())
 }

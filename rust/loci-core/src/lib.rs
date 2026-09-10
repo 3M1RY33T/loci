@@ -5,6 +5,7 @@
 //! types; `loci-py` holds every conversion.
 
 pub mod text;
+pub mod walk;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

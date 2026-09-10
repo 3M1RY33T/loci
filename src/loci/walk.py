@@ -4,13 +4,23 @@
 node_modules and .venv in full and leaves the caller to discard the results
 afterwards. Measured on one real repo that cost 32.9s to enumerate; pruning the
 walk brings the same enumeration to well under a second.
+
+The traversal is Rust, in ``rust/loci-core/src/walk.rs``. Two things stay here:
+
+* **Absolute patterns.** They are rare -- a scope pulling in prose that lives
+  outside its own tree -- and they need ``expanduser`` and ``Path.glob``
+  semantics that are fiddly to reproduce for no measurable gain. The result is
+  sorted at the end, so the two halves merge without caring which found what.
+* **``_matches``**, because the test suite imports it directly.
 """
 from __future__ import annotations
 
-import os
 import re
 from functools import lru_cache
 from pathlib import Path
+
+from loci._core import glob_matches as _rs_glob_matches
+from loci._core import iter_files as _rs_iter_files
 
 from .defaults import SKIP_DIRS
 
@@ -19,7 +29,10 @@ from .defaults import SKIP_DIRS
 def _compile(pattern: str) -> re.Pattern:
     """Translate a glob to a regex with pathlib semantics, not fnmatch's.
 
-    Two differences matter and both caused real bugs:
+    Kept in Python because the tests reach for it. The traversal uses the Rust
+    translation, and `test_rust_parity.py` asserts the two agree.
+
+    Two differences from fnmatch matter and both caused real bugs:
 
     `fnmatch` lets a single ``*`` cross a path separator, so ``"*.md"`` -- which
     pathlib treats as root-only -- would match every nested markdown file.
@@ -56,6 +69,23 @@ def _matches(rel: str, pattern: str) -> bool:
     return _compile(pattern).match(rel.replace("\\", "/")) is not None
 
 
+def _absolute_matches(patterns: list[str]) -> list[Path]:
+    """Files named by absolute or ``~`` patterns, honoured as-is."""
+    out: list[Path] = []
+    for pat in patterns:
+        p = Path(pat).expanduser()
+        if not p.is_absolute():
+            continue
+        try:
+            base = Path(p.anchor)
+            for f in sorted(base.glob(str(p.relative_to(base)))):
+                if f.is_file():
+                    out.append(f)
+        except (OSError, ValueError):
+            continue
+    return out
+
+
 def iter_files(root: Path, patterns: list[str], *,
                exclude: "list[Path] | tuple[Path, ...]" = ()) -> list[Path]:
     """Files under `root` matching any glob, skipping vendored subtrees.
@@ -68,52 +98,20 @@ def iter_files(root: Path, patterns: list[str], *,
     sub-scope's node_modules to discard the result is the cost this module
     exists to avoid.
     """
-    excluded = set()
-    for e in exclude or ():
-        try:
-            excluded.add(Path(e).resolve())
-        except (OSError, ValueError):
-            continue
+    pats = list(patterns or [])
+    absolute = [p for p in pats if Path(p).expanduser().is_absolute()]
+    relative = [p for p in pats if p not in absolute]
 
-    out: list[Path] = []
+    found = _absolute_matches(absolute)
+    if relative:
+        found += [Path(p) for p in _rs_iter_files(
+            str(root), relative, [str(e) for e in (exclude or ())],
+            sorted(SKIP_DIRS))]
+
     seen: set[Path] = set()
-    rel_patterns = []
-    for pat in patterns or []:
-        p = Path(pat).expanduser()
-        if p.is_absolute():
-            try:
-                base = Path(p.anchor)
-                for f in sorted(base.glob(str(p.relative_to(base)))):
-                    if f.is_file() and f not in seen:
-                        seen.add(f)
-                        out.append(f)
-            except (OSError, ValueError):
-                continue
-        else:
-            rel_patterns.append(pat)
-    if not rel_patterns:
-        return out
-
-    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
-        d = Path(dirpath)
-        dirnames[:] = [
-            x for x in dirnames
-            if x not in SKIP_DIRS and not x.startswith(".")
-            # `resolve` is a syscall per directory, so it is asked only when
-            # there is something for it to be compared against.
-            and not (excluded and (d / x).resolve() in excluded)
-        ]
-        for name in filenames:
-            f = d / name
-            if f in seen:
-                continue
-            try:
-                rel = str(f.relative_to(root))
-            except ValueError:
-                continue
-            for pat in rel_patterns:
-                if _matches(rel, pat):
-                    seen.add(f)
-                    out.append(f)
-                    break
+    out: list[Path] = []
+    for f in found:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
     return sorted(out)

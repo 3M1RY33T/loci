@@ -27,7 +27,10 @@ needs_corpus = pytest.mark.skipif(
 
 def _reference(name: str):
     ref = Path(__file__).parent / "reference" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, ref)
+    # Named under `loci` so `from .defaults import SKIP_DIRS` in the verbatim
+    # walk copy resolves. Setting __package__ alone works but disagrees with
+    # __spec__.parent, which Python warns about.
+    spec = importlib.util.spec_from_file_location(f"loci.{name}", ref)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -131,3 +134,158 @@ def test_is_unsegmented_matches_python(py, text, expected):
 @pytest.mark.parametrize("text", ["naïve café résumé", "hello", "日本語", ""])
 def test_strip_diacritics_matches_python(py, text):
     assert _core.strip_diacritics(text) == py.strip_diacritics(text)
+
+
+# -- walk ------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def pywalk():
+    return _reference("walk_0_5_0")
+
+
+def _scope_rows():
+    rows = json.loads((HOME / "scopes.json").read_text(encoding="utf-8"))
+    rows = rows.get("scopes", rows) if isinstance(rows, dict) else rows
+    return list(rows.values()) if isinstance(rows, dict) else rows
+
+
+@needs_corpus
+def test_walk_matches_python_over_every_registered_scope(pywalk):
+    """The walk decides what gets indexed. A pattern matching one file fewer is
+    a silently smaller corpus, and the ROADMAP records that exact failure: a
+    glob bug dropped 28 files, the routing number moved, and it was diagnosed
+    as threshold noise before anyone diffed the inputs."""
+    from loci.defaults import SKIP_DIRS
+
+    skip = sorted(SKIP_DIRS)
+    compared = 0
+    for s in _scope_rows():
+        root = Path(s["root"])
+        if not root.is_dir():
+            continue
+        pats = list(s.get("episode_globs") or []) + list(s.get("code_globs") or [])
+        got = _core.iter_files(str(root), pats, [], skip)
+        want = [str(p) for p in pywalk.iter_files(root, pats)]
+        assert got == want, (
+            f"{s['id']}: rust {len(got)} files, python {len(want)}; "
+            f"only-rust={sorted(set(got) - set(want))[:5]} "
+            f"only-python={sorted(set(want) - set(got))[:5]}")
+        compared += 1
+    assert compared >= 10, f"only {compared} scopes walked"
+
+
+def _tree(root: Path) -> None:
+    """A tree with every shape the walk has to handle."""
+    for rel in (
+        "top.md",
+        "docs/guide.md",
+        "docs/deep/nested/ref.md",
+        "src/app.py",
+        "sub/README.md",              # a nested scope's territory
+        "sub/deep/notes.md",
+        "node_modules/pkg/index.md",  # SKIP_DIRS
+        ".hidden/secret.md",          # dot-prefixed
+        "target/build.md",            # SKIP_DIRS
+    ):
+        f = root / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x", encoding="utf-8")
+
+
+PATTERNS = ["*.md", "docs/**/*.md", "**/*.py", "sub/**/*.md"]
+
+
+def test_walk_prunes_the_same_subtrees_as_python(pywalk, tmp_path):
+    """No registered scope currently has an excluded subtree, so the corpus
+    cannot exercise pruning at all -- the comparison over real scopes passes
+    vacuously for it. This builds a tree that does."""
+    from loci.defaults import SKIP_DIRS
+
+    _tree(tmp_path)
+    skip = sorted(SKIP_DIRS)
+
+    got = _core.iter_files(str(tmp_path), PATTERNS, [], skip)
+    want = [str(p) for p in pywalk.iter_files(tmp_path, PATTERNS)]
+    assert got == want
+
+    names = {Path(p).name for p in got}
+    assert "index.md" not in names, "node_modules was not pruned"
+    assert "build.md" not in names, "target was not pruned"
+    assert "secret.md" not in names, "a dot-directory was not pruned"
+    assert {"top.md", "guide.md", "ref.md", "app.py"} <= names
+
+
+def test_walk_honours_an_excluded_subtree(pywalk, tmp_path):
+    from loci.defaults import SKIP_DIRS
+
+    _tree(tmp_path)
+    skip = sorted(SKIP_DIRS)
+    excluded = [tmp_path / "sub"]
+
+    got = _core.iter_files(str(tmp_path), PATTERNS, [str(e) for e in excluded], skip)
+    want = [str(p) for p in pywalk.iter_files(tmp_path, PATTERNS, exclude=excluded)]
+    assert got == want
+    assert not any("/sub/" in p for p in got), "the excluded subtree was walked"
+    assert any(p.endswith("docs/guide.md") for p in got), "pruning took too much"
+
+
+def test_walk_returns_a_sorted_deduplicated_list(pywalk, tmp_path):
+    # Two patterns match the same file; it must appear once, and the order is
+    # sorted regardless of how the directories were traversed.
+    from loci.defaults import SKIP_DIRS
+
+    _tree(tmp_path)
+    pats = ["docs/**/*.md", "**/*.md"]
+    got = _core.iter_files(str(tmp_path), pats, [], sorted(SKIP_DIRS))
+    assert got == sorted(got)
+    assert len(got) == len(set(got))
+    assert got == [str(p) for p in pywalk.iter_files(tmp_path, pats)]
+
+
+@needs_corpus
+def test_walk_honours_exclusions_over_the_real_corpus(pywalk):
+    """Kept, but it reports when it has nothing to compare rather than
+    passing silently."""
+    from loci.defaults import SKIP_DIRS
+    from loci.scopes import load_scopes, nested_roots
+
+    skip = sorted(SKIP_DIRS)
+    registry = load_scopes()
+    compared = 0
+    for sc in registry:
+        excl = nested_roots(sc, registry)
+        if not excl or not sc.root.is_dir():
+            continue
+        pats = list(sc.episode_globs or []) + list(sc.code_globs or [])
+        got = _core.iter_files(str(sc.root), pats, [str(e) for e in excl], skip)
+        want = [str(p) for p in pywalk.iter_files(sc.root, pats, exclude=excl)]
+        assert got == want, f"{sc.id} with {len(excl)} exclusions"
+        compared += 1
+    if compared == 0:
+        pytest.skip("no registered scope has a nested sub-scope to exclude")
+
+
+@pytest.mark.parametrize("pattern,rel,expected", [
+    ("*.md", "guide.md", True),
+    ("*.md", "docs/guide.md", False),          # a single * must not cross /
+    ("docs/**/*.md", "docs/guide.md", True),   # ** matches ZERO directories
+    ("docs/**/*.md", "docs/a/b/guide.md", True),
+    ("docs/**/*.md", "guide.md", False),
+    ("**/*.py", "a/b/c.py", True),
+    ("**/*.py", "c.py", True),
+    ("?.py", "a.py", True),
+    ("?.py", "ab.py", False),
+    ("README*", "README.md", True),
+    ("README*", "docs/README.md", False),
+    ("*.md", "guide.markdown", False),         # anchored at the end
+])
+def test_glob_translation_has_pathlib_semantics_not_fnmatch(pywalk, pattern, rel, expected):
+    # Both were real bugs. fnmatch lets * cross a separator, and has no notion
+    # of ** at all, which silently skipped docs/guide.md across 28 files.
+    assert _core.glob_matches(rel, pattern) is expected
+    assert _core.glob_matches(rel, pattern) == pywalk._matches(rel, pattern)
+
+
+def test_a_windows_separator_is_normalised(pywalk):
+    assert _core.glob_matches("docs\\guide.md", "docs/*.md") is True
+    assert _core.glob_matches("docs\\guide.md", "docs/*.md") == pywalk._matches(
+        "docs\\guide.md", "docs/*.md")
