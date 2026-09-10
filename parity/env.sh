@@ -11,5 +11,9 @@ export LOCI_HOME="$HOME/.loci-rust"
 # and Phase 0b would edit files that never run. Caught by an ImportError on a
 # function that existed here and not there -- silent for anything else.
 export PYTHONPATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/src${PYTHONPATH:+:$PYTHONPATH}"
+# rustup was installed with --no-modify-path, so the toolchain is deliberately
+# NOT on the login shell's PATH -- it belongs to this port, not to the machine.
+[ -d "$HOME/.cargo/bin" ] && export PATH="$HOME/.cargo/bin:$PATH"
+
 export TOKENIZERS_PARALLELISM=false   # a fork warning on stderr is still noise
 echo "LOCI_HOME=$LOCI_HOME"

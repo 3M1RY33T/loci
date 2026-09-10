@@ -3,6 +3,10 @@
 .loci/
 .pytest_cache/
 .venv/
+# The Rust build venv. `python -m venv` writes its own self-ignoring file, but
+# relying on that leaves the intent invisible here and dependent on the venv
+# module keeping the behaviour.
+.venv-rust/
 __pycache__/
 build/
 dist/
@@ -25,3 +29,11 @@ evals/
 # file, so untracked alone would still ship them to PyPI. The harness that
 # produces them IS tracked -- only the recordings are not.
 parity/corpus/
+# Rust build output. The workspace root Cargo.toml sits at the REPO root, so
+# cargo writes /target, not /rust/target. Both are listed because a per-crate
+# build invoked directly produces the second. Anchored, so a source directory
+# named `target` deeper in the tree is not caught.
+/target/
+/rust/target/
+# The compiled extension, which maturin drops beside the Python sources.
+*.so

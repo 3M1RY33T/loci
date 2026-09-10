@@ -1,0 +1,16 @@
+[package]
+name = "loci-py"
+version = "0.6.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PyO3 bindings exposing loci-core as loci._core."
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+loci-core = { path = "../loci-core" }
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }

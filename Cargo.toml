@@ -1,0 +1,15 @@
+[workspace]
+members = ["rust/loci-core", "rust/loci-py"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/3M1RY33T/loci"
+
+[profile.release]
+# The index build is the only place this matters; a query is microseconds of
+# Rust either way. lto costs build time and buys the walk and the fit.
+lto = true
+codegen-units = 1

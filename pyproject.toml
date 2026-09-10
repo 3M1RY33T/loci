@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
 
 [project]
 name = "loci-mem"
@@ -70,16 +70,20 @@ Issues = "https://github.com/3M1RY33T/loci/issues"
 [project.scripts]
 loci = "loci.cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/loci"]
-
+# A Python package with ONE compiled module inside it, not a Rust package with
+# Python attached: router.py and everything above backends/ stay Python, and
+# src/loci remains the source of truth for them.
+[tool.maturin]
+python-source = "src"
+module-name = "loci._core"
+manifest-path = "rust/loci-py/Cargo.toml"
+features = ["pyo3/extension-module"]
 # The parity harness is TRACKED, because it needs review and history, but it is
 # development scaffolding rather than distribution. .gitignore cannot say that
-# -- ignoring it would untrack it -- and hatchling filters the sdist by
+# -- ignoring it would untrack it -- and the build backend filters by
 # .gitignore, so without this it ships to PyPI. Same failure as the .superpowers
 # review diffs in the 0.1.0 sdist, arriving by a different route.
-[tool.hatch.build.targets.sdist]
-exclude = ["parity/"]
+exclude = ["parity/**", "target/**", "rust/target/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
