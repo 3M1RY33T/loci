@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.6.0 — 2026-09-10
+
+**Reindex required.** The lexical rankers changed format and one ranking
+constant was removed, so an install that predates this release keeps working
+but gets slower and answers slightly differently until it rebuilds:
+
+```bash
+pipx upgrade loci-mem
+loci index --force   # writes rankers/<scope>.lex; the old .joblib is ignored
+```
+
+`loci doctor` now says so rather than leaving you to notice — a scope with no
+usable `.lex` refits in process on every question, ~1.5s per scope per
+invocation against ~0.03ms for a cached one. `INDEX_VERSION` stays at 3:
+nothing about what a token *is* changed, and `text.rules_signature()` returns
+the same value it did in 0.5.0.
+
+The old `rankers/*.joblib` files are dead once you reindex and can be deleted.
+
+### The arithmetic is Rust
+
+Tokenizer, file walk, index build, BM25, the char-gram matrix and the fusion
+all moved behind a compiled extension. `router.py` did not, and neither did any
+of the fourteen calibrated constants — they cross the boundary as arguments, so
+`evals/` still sweeps them without a rebuild.
+
+| | 0.5.0 | 0.6.0 |
+|---|---|---|
+| `loci ask`, one scope | 5.19s | **0.97s** |
+| ranker load, largest scope | 935ms | **0.033ms** |
+| tokenizer, 91k chars | 14.6ms | 4.4ms |
+| file walk, 15 scopes | 46.2ms | 20.8ms |
+| index build | 14.4s | 9.1s |
+
+Two of those are not Rust being fast. The 5.19s included torch loading
+`bge-small`; that is `onnxruntime` now. The 935ms was `joblib.load` on 35MB of
+pickled scipy; the `.lex` format is mmapped and cast in place, so opening it is
+a page fault rather than a deserialization.
+
+### One deliberate behaviour change: `max_features` is gone
+
+`TfidfVectorizer(max_features=60000)` kept the 60,000 most frequent char
+n-grams — but the cut lands where corpus counts are 1 to 5, and tens of
+thousands of n-grams share those counts. sklearn broke that tie with
+`(-tfs[mask]).argsort()`, and numpy's default sort is **not stable**, so *which*
+of them survived was decided by sort internals. Measured on a real corpus:
+24,281 of one scope's 68,418 n-grams tied at count 1, making roughly **26% of
+its retained vocabulary arbitrary**.
+
+That is not a specification anything can be ported against, and breaking the tie
+deterministically instead moved char-gram scores by up to 2.6e-02 and reordered
+the top-5 for 15 of 39 benchmark questions. Removing the cap removes the
+ambiguity at its source and costs almost nothing — the terms it discarded were
+singletons, which add columns but almost no non-zero entries, measured at +5%
+matrix bytes and no change in fit or query time.
+
+Verified on one fixed index: routing identical, retrieval identical (45/45
+evidence returned, 29/44 justifying file @1, 36/44 @3).
+
+### Everything else is unchanged, and that is the claim
+
+A 39-question benchmark recorded against 0.5.0 — every routing verdict, scope
+set, hit ordering and score — replays **39/39 identical** against 0.6.0. The
+eval harness output is byte-for-byte the same. 404 tests pass.
+
+### Install
+
+The base install is now **`numpy` and nothing else**: `scikit-learn`, `scipy`,
+`rank-bm25` and `joblib` all left the runtime. Wheels ship for macOS, Linux and
+Windows (abi3, one per platform for Python 3.10+); building from the sdist needs
+a Rust toolchain, 1.75 or newer.
+
 ## 0.5.0 — 2026-09-06
 
 **No reindex.** `INDEX_VERSION` stays at 3 and nothing about what a token is

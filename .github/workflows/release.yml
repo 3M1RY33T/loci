@@ -1,0 +1,225 @@
+name: release
+
+# Wheels for every platform, because 0.6.0 ships a compiled extension.
+#
+# Before it, `python -m build` on any machine produced one pure-Python wheel
+# that worked everywhere. It now produces one wheel for the machine that ran
+# it, and everyone else falls back to the sdist -- which builds from source and
+# needs a Rust toolchain. Releasing that way would break `pipx install loci-mem`
+# for most users while looking fine from the machine that published it.
+#
+# Building is automatic on a tag. Publishing is NOT: it runs only from a manual
+# dispatch with `publish: true`, because a PyPI version cannot be replaced and a
+# tag pushed by reflex should not be able to spend one.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload to PyPI. A version number cannot be reused."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  wheels:
+    name: wheel · ${{ matrix.os }} · ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64, manylinux: auto, native: true }
+          - { os: ubuntu-latest, target: aarch64, manylinux: auto, native: false }
+          - { os: macos-latest, target: aarch64, native: true }
+          - { os: macos-latest, target: x86_64, native: false }
+          - { os: windows-latest, target: x64, native: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # abi3-py310 means ONE wheel per platform serves 3.10 and up, so the
+          # interpreter here only decides the floor, not the matrix width.
+          python-version: "3.10"
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist
+          sccache: "true"
+
+      - name: The wheel must be abi3 and must carry the extension
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob, re, zipfile
+          whl = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(whl).namelist()
+          meta = zipfile.ZipFile(whl).read(
+              [n for n in names if n.endswith("METADATA")][0]).decode()
+          assert re.search(r"^Name: loci-mem$", meta, re.M), "distribution name drifted"
+          assert any(n.startswith("loci/") for n in names), "import package missing"
+          # A wheel without the extension imports and then fails at the first
+          # tokenize. Nothing else in this job would notice.
+          assert any(n.endswith((".so", ".pyd", ".dylib")) for n in names), \
+              f"no compiled extension in {whl}"
+          # Losing abi3 silently quadruples the release matrix, and the only
+          # symptom is users on 3.11+ finding no wheel.
+          assert "abi3" in whl, f"not an abi3 wheel: {whl}"
+          print("ok:", whl.split("/")[-1])
+          PY
+
+      - name: Install it and ask a real question
+        # Only where the wheel matches the runner. A cross-compiled wheel
+        # cannot be imported here, and pretending otherwise would make this
+        # step a no-op that still reports success.
+        if: matrix.native
+        shell: bash
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          mkdir -p /tmp/smoke/ledger
+          cat > /tmp/smoke/ledger/README.md <<'EOF'
+          # ledger
+
+          ## Settlement
+
+          Reconciles invoices against bank statements nightly and files any
+          discrepancy as a dunning notice for manual review.
+          EOF
+          git -C /tmp/smoke/ledger init -q
+          git -C /tmp/smoke/ledger add -A
+          git -C /tmp/smoke/ledger -c user.email=t@t -c user.name=t \
+            commit -q -m "initial ledger service"
+          export LOCI_HOME=/tmp/smoke/home
+          loci scan /tmp/smoke
+          loci index
+          cd /tmp/smoke/ledger
+          loci ask "how is a dunning notice raised?" --fast --no-structure \
+            | tee /tmp/r
+          # Assert on retrieved CONTENT, not the scope banner: grepping for the
+          # scope name passes while the body reads "no evidence in this scope".
+          grep -q "Reconciles invoices" /tmp/r
+          ! grep -q "no evidence" /tmp/r
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Nothing internal ships
+        shell: bash
+        run: |
+          set -e
+          # docs/, evals/, ROADMAP.md and parity/ are all excluded, and .superpowers
+          # put 500KB of review diffs into the 0.1.0 sdist the one time nobody looked.
+          if tar tzf dist/*.tar.gz | grep -E "docs/|evals/|parity/|target/|ROADMAP|\.superpowers"; then
+            echo "internal material in the sdist" >&2
+            exit 1
+          fi
+          # It must also BUILD, since it is the fallback for any platform the
+          # wheel matrix misses.
+          tar tzf dist/*.tar.gz | grep -q "Cargo.toml"
+          tar tzf dist/*.tar.gz | grep -q "rust/loci-core/src/lib.rs"
+          echo "sdist clean and complete"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  collect:
+    name: collect and check
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip twine
+      - name: Every platform is present, and twine accepts them
+        shell: bash
+        run: |
+          set -e
+          ls -la staged
+          python -m twine check staged/*
+          # Matched by ARCHITECTURE, not by the full platform tag. The macOS
+          # minimum version in that tag moves with the toolchain, and pinning
+          # it would fail this job for a reason that has nothing to do with
+          # loci.
+          for want in "macosx.*arm64" "macosx.*x86_64" "manylinux.*x86_64" \
+                      "manylinux.*aarch64" "win_amd64"; do
+            ls staged/*.whl | grep -qE "$want" \
+              || { echo "missing wheel matching /$want/" >&2; exit 1; }
+          done
+          test -n "$(ls staged/*.tar.gz)"
+          echo "all platforms present"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: staged/*
+
+  github-release:
+    name: github release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  pypi:
+    name: publish to pypi
+    # Manual dispatch only, and only when explicitly asked. A PyPI version
+    # cannot be replaced, so this must never happen as a side effect of a tag.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: collect
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip twine
+      - env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload dist/*
+      - name: What still has to happen by hand
+        run: |
+          echo "PyPI upload done. Two steps remain and neither can run here:"
+          echo "  1. Confirm the registry token is in the PUBLISHED description:"
+          echo "     curl -s https://pypi.org/pypi/loci-mem/json | grep -o 'mcp-name: [^ ]*'"
+          echo "  2. mcp-publisher login github && mcp-publisher publish"
+          echo "     (an interactive device flow, and it must come AFTER the"
+          echo "      upload because the registry reads that description)"

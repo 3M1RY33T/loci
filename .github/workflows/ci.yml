@@ -26,6 +26,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      # The wheel is built from source here, and since 0.6.0 that means
+      # compiling a Rust extension. Without a toolchain every job in this
+      # matrix fails at `python -m build`, on all three platforms at once.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
       - name: Install from a built wheel, not the source tree
         shell: bash
         run: |
@@ -33,7 +40,14 @@ jobs:
           python -m build --wheel
           python -m pip install dist/*.whl pytest
       - name: Test
-        run: python -m pytest tests -q
+        # Two passes, and they must stay separate. onnxruntime and
+        # scipy/sklearn each carry a native threading runtime, and a process
+        # holding both aborts at exit -- SIGABRT, roughly one run in five.
+        # See tests/test_rust_parity.py.
+        shell: bash
+        run: |
+          python -m pytest tests -q -m "not lexical_reference"
+          python -m pytest tests -q -m lexical_reference
       - name: Smoke the CLI end to end
         shell: bash
         run: |
@@ -120,6 +134,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
       - run: python -m pip install --upgrade pip build twine
       - run: python -m build
       - name: The distribution is loci-mem; the import is loci
@@ -135,6 +153,33 @@ jobs:
           assert any(n.startswith("loci/") for n in names), "import package missing"
           eps = zipfile.ZipFile(whl).read(
               [n for n in names if n.endswith("entry_points.txt")][0]).decode()
-          assert "loci = loci.cli:main" in eps, "console script drifted"
+          # Whitespace-insensitive on purpose. hatchling wrote
+          # "loci = loci.cli:main" and maturin writes "loci=loci.cli:main";
+          # both are valid, and the thing worth asserting is the target.
+          assert "loci=loci.cli:main" in eps.replace(" ", ""), "console script drifted"
+          # A wheel without the compiled extension imports and then fails at
+          # the first tokenize, which no other check here would catch.
+          assert any(n.endswith((".so", ".pyd", ".dylib")) for n in names), \
+              "the compiled extension is missing from the wheel"
+          # abi3: one wheel per platform for every Python from 3.10 up. A
+          # version-specific tag means the build lost the abi3 feature and the
+          # release matrix silently quadruples.
+          assert "abi3" in whl, f"not an abi3 wheel: {whl}"
           print("ok:", whl.split("/")[-1])
           PY
+
+
+  rust:
+    name: cargo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      # Every gate above is Python-side and would pass over unsound Rust.
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
