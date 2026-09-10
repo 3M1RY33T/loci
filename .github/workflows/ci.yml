@@ -40,14 +40,30 @@ jobs:
           python -m build --wheel
           python -m pip install dist/*.whl pytest
       - name: Test
-        # Two passes, and they must stay separate. onnxruntime and
-        # scipy/sklearn each carry a native threading runtime, and a process
-        # holding both aborts at exit -- SIGABRT, roughly one run in five.
-        # See tests/test_rust_parity.py.
+        # Two passes, separated by FILE and not by marker. `importorskip` runs
+        # when a module is imported, and pytest imports a module to collect it
+        # even when every test inside is deselected -- so `-m "not ..."` still
+        # pulled scikit-learn into the process. onnxruntime and scipy/sklearn
+        # each carry a native threading runtime and a process holding both
+        # aborts at exit with SIGABRT, about one run in eight.
+        #
+        # The second pass exits 5 here rather than 0. Its tests need
+        # scikit-learn AND a recorded corpus, and CI has neither, so pytest
+        # collects nothing and reports NO_TESTS_COLLECTED. That is expected;
+        # tolerating exactly 5 -- and nothing else -- is what stops the split
+        # failing every job in the matrix.
         shell: bash
         run: |
-          python -m pytest tests -q -m "not lexical_reference"
-          python -m pytest tests -q -m lexical_reference
+          python -m pytest tests -q --ignore=tests/test_lexical_reference.py
+          set +e
+          python -m pytest tests/test_lexical_reference.py -q
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then
+            echo "lexical reference pass failed with $rc" >&2
+            exit "$rc"
+          fi
+
       - name: Smoke the CLI end to end
         shell: bash
         run: |

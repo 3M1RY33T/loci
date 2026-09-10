@@ -882,12 +882,19 @@ def test_symbol_seeding_never_encodes_a_subscopes_labels(tmp_path, monkeypatch):
     about its sub-project out of its own vectors -- the failure `build` was just
     fixed for, reintroduced one function later.
 
-    The encoder is stubbed: sentence-transformers is an optional extra, and what
+    The encoder is stubbed: an embedding provider is an optional extra, and what
     matters is WHICH labels were selected, never what a model made of them.
-    """
-    import sys
-    import types
 
+    It stubs `embed.encode`, not a module. Until 0.6.0 it replaced
+    `sys.modules["sentence_transformers"]`, and when the encoder moved to
+    onnxruntime that stub stopped intercepting anything -- so the test went on
+    passing by DOWNLOADING AND RUNNING A REAL MODEL wherever onnxruntime
+    happened to be installed, and failing outright where it was not. The
+    `called` assertion below is what stops that recurring.
+    """
+    import numpy as np
+
+    import loci.embed as E
     import loci.paths as P
     from loci.backends.graphify import GraphifyBackend
     from loci.index import build, build_embeddings
@@ -899,18 +906,16 @@ def test_symbol_seeding_never_encodes_a_subscopes_labels(tmp_path, monkeypatch):
     build([parent, child], verbose=False)
     save_scopes([parent, child])
 
-    class _Encoder:
-        def __init__(self, *a, **kw):
-            pass
+    called = []
 
-        def encode(self, texts, **kw):
-            return [[float(len(t)), 0.0] for t in texts]
+    def _encode(texts, *, model_name, is_query=False, batch_size=64):
+        called.append(len(texts))
+        return np.asarray([[float(len(t)), 0.0] for t in texts], dtype="float32")
 
-    fake = types.ModuleType("sentence_transformers")
-    fake.SentenceTransformer = _Encoder
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake)
+    monkeypatch.setattr(E, "encode", _encode)
 
     build_embeddings(verbose=False)
+    assert called, "the stub was never reached; a real model was used instead"
 
     seeded = json.loads((P.embeddings_file().parent / f".symbols-{parent.id}.json")
                         .read_text(encoding="utf-8"))
