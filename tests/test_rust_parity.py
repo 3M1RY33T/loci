@@ -163,12 +163,15 @@ def test_walk_matches_python_over_every_registered_scope(pywalk):
         if not root.is_dir():
             continue
         pats = list(s.get("episode_globs") or []) + list(s.get("code_globs") or [])
-        got = _core.iter_files(str(root), pats, [], skip)
-        want = [str(p) for p in pywalk.iter_files(root, pats)]
+        got = set(_core.iter_files(str(root), pats, [], skip))
+        want = {str(p) for p in pywalk.iter_files(root, pats)}
         assert got == want, (
             f"{s['id']}: rust {len(got)} files, python {len(want)}; "
-            f"only-rust={sorted(set(got) - set(want))[:5]} "
-            f"only-python={sorted(set(want) - set(got))[:5]}")
+            f"only-rust={sorted(got - want)[:5]} only-python={sorted(want - got)[:5]}")
+        # Order is the shim's job, and the fingerprint depends on it.
+        from loci.walk import iter_files
+        assert [str(p) for p in iter_files(root, pats)] == \
+               [str(p) for p in pywalk.iter_files(root, pats)], f"{s['id']}: order"
         compared += 1
     assert compared >= 10, f"only {compared} scopes walked"
 
@@ -194,17 +197,32 @@ def _tree(root: Path) -> None:
 PATTERNS = ["*.md", "docs/**/*.md", "**/*.py", "sub/**/*.md"]
 
 
-def test_walk_prunes_the_same_subtrees_as_python(pywalk, tmp_path):
-    """No registered scope currently has an excluded subtree, so the corpus
-    cannot exercise pruning at all -- the comparison over real scopes passes
-    vacuously for it. This builds a tree that does."""
+# Two levels, and the distinction is not pedantic.
+#
+# `_core.iter_files` decides WHICH files exist. `loci.walk.iter_files` -- the
+# shipped function -- sorts them, and that sort must be Python's, because
+# `index.fingerprint` hashes the files IN ITERATION ORDER. A different order is
+# a different fingerprint for every scope, which silently reindexes the world.
+#
+# The two orders genuinely differ. Rust orders PathBuf component-wise and
+# case-sensitively; Python's PurePath comparison lowercases first ON WINDOWS
+# only. So `sub/README.md` sorts before `sub/deep/notes.md` in Rust and after
+# it in Python-on-Windows. Comparing raw Rust against Python passed on macOS
+# and Linux and failed all four Windows jobs -- which is what the matrix is for.
+#
+# So: content is asserted against the Rust, ORDER against the shim.
+def _content(root, patterns, exclude=()):
     from loci.defaults import SKIP_DIRS
+    return set(_core.iter_files(str(root), patterns,
+                                [str(e) for e in exclude], sorted(SKIP_DIRS)))
 
+
+def test_walk_finds_the_same_files_as_python(pywalk, tmp_path):
+    """No registered scope currently has an excluded subtree, so the corpus
+    cannot exercise pruning at all. This builds a tree that does."""
     _tree(tmp_path)
-    skip = sorted(SKIP_DIRS)
-
-    got = _core.iter_files(str(tmp_path), PATTERNS, [], skip)
-    want = [str(p) for p in pywalk.iter_files(tmp_path, PATTERNS)]
+    got = _content(tmp_path, PATTERNS)
+    want = {str(p) for p in pywalk.iter_files(tmp_path, PATTERNS)}
     assert got == want
 
     names = {Path(p).name for p in got}
@@ -214,41 +232,54 @@ def test_walk_prunes_the_same_subtrees_as_python(pywalk, tmp_path):
     assert {"top.md", "guide.md", "ref.md", "app.py"} <= names
 
 
-def test_walk_honours_an_excluded_subtree(pywalk, tmp_path):
-    from loci.defaults import SKIP_DIRS
+def test_the_shipped_walk_orders_exactly_as_python_does(pywalk, tmp_path):
+    """The order is Python's, on every platform, because the fingerprint hashes
+    it. The shim sorts; Rust's internal sort exists only so dedup is
+    deterministic and is not the public contract."""
+    from loci.walk import iter_files
 
     _tree(tmp_path)
-    skip = sorted(SKIP_DIRS)
-    excluded = [tmp_path / "sub"]
+    assert [str(p) for p in iter_files(tmp_path, PATTERNS)] == \
+           [str(p) for p in pywalk.iter_files(tmp_path, PATTERNS)]
 
-    got = _core.iter_files(str(tmp_path), PATTERNS, [str(e) for e in excluded], skip)
-    want = [str(p) for p in pywalk.iter_files(tmp_path, PATTERNS, exclude=excluded)]
-    assert got == want
-    assert not any("/sub/" in p for p in got), "the excluded subtree was walked"
-    assert any(p.endswith("docs/guide.md") for p in got), "pruning took too much"
+
+def test_walk_honours_an_excluded_subtree(pywalk, tmp_path):
+    from loci.walk import iter_files
+
+    _tree(tmp_path)
+    excluded = tmp_path / "sub"
+
+    assert _content(tmp_path, PATTERNS, [excluded]) == \
+           {str(p) for p in pywalk.iter_files(tmp_path, PATTERNS, exclude=[excluded])}
+
+    got = iter_files(tmp_path, PATTERNS, exclude=[excluded])
+    # Compared as PATHS, not substrings. `"/sub/" in p` is false on Windows
+    # whatever the walk did, so it passed vacuously there while its sibling
+    # assertion failed outright.
+    assert not [p for p in got if excluded in p.parents], \
+        "the excluded subtree was walked"
+    assert any(p.parts[-2:] == ("docs", "guide.md") for p in got), \
+        "pruning took too much"
 
 
 def test_walk_returns_a_sorted_deduplicated_list(pywalk, tmp_path):
-    # Two patterns match the same file; it must appear once, and the order is
-    # sorted regardless of how the directories were traversed.
-    from loci.defaults import SKIP_DIRS
+    # Two patterns match the same file; it must appear once.
+    from loci.walk import iter_files
 
     _tree(tmp_path)
     pats = ["docs/**/*.md", "**/*.md"]
-    got = _core.iter_files(str(tmp_path), pats, [], sorted(SKIP_DIRS))
+    got = iter_files(tmp_path, pats)
+    assert len(got) == len(set(got)), "a file matched by two patterns was duplicated"
     assert got == sorted(got)
-    assert len(got) == len(set(got))
-    assert got == [str(p) for p in pywalk.iter_files(tmp_path, pats)]
+    assert [str(p) for p in got] == [str(p) for p in pywalk.iter_files(tmp_path, pats)]
 
 
 @needs_corpus
 def test_walk_honours_exclusions_over_the_real_corpus(pywalk):
     """Kept, but it reports when it has nothing to compare rather than
     passing silently."""
-    from loci.defaults import SKIP_DIRS
     from loci.scopes import load_scopes, nested_roots
 
-    skip = sorted(SKIP_DIRS)
     registry = load_scopes()
     compared = 0
     for sc in registry:
@@ -256,9 +287,8 @@ def test_walk_honours_exclusions_over_the_real_corpus(pywalk):
         if not excl or not sc.root.is_dir():
             continue
         pats = list(sc.episode_globs or []) + list(sc.code_globs or [])
-        got = _core.iter_files(str(sc.root), pats, [str(e) for e in excl], skip)
-        want = [str(p) for p in pywalk.iter_files(sc.root, pats, exclude=excl)]
-        assert got == want, f"{sc.id} with {len(excl)} exclusions"
+        assert _content(sc.root, pats, excl) == \
+            {str(p) for p in pywalk.iter_files(sc.root, pats, exclude=excl)}
         compared += 1
     if compared == 0:
         pytest.skip("no registered scope has a nested sub-scope to exclude")
