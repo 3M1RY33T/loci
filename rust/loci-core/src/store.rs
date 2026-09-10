@@ -14,6 +14,11 @@
 //!   sorted and the CSR indices renumbered to match, so a column id IS its
 //!   position and no second lookup table exists. A permutation of columns does
 //!   not change a dot product, so scores are unaffected.
+//! * **float64 throughout.** sklearn and rank_bm25 both compute in float64.
+//!   Storing f32 would put ~1e-7 of error into the data itself, and with the
+//!   `--json` surface rounded to four decimals that is enough to straddle a
+//!   rounding boundary -- the same failure the recency clock produced. The
+//!   file is mmapped, so the extra bytes cost disk and not open time.
 //! * **Refuse rather than misread.** A bad magic, an unknown version, a
 //!   truncated section or a document count that disagrees with the caller all
 //!   return None. That preserves the guard the Python had -- `_load_rankers`
@@ -48,22 +53,22 @@ mod sec {
 #[derive(Debug, Default, Clone)]
 pub struct LexModel {
     pub n_docs: u32,
-    pub avgdl: f32,
+    pub avgdl: f64,
     /// Per-document token count, in document order.
     pub doc_len: Vec<u32>,
     /// BM25 term -> (document frequency, idf). Ordered, so the table is sorted
     /// by construction.
-    pub bm25: BTreeMap<String, (u32, f32)>,
+    pub bm25: BTreeMap<String, (u32, f64)>,
     /// BM25 postings per term, in the same order as `bm25`: (doc, term freq).
     pub postings: Vec<Vec<(u32, u32)>>,
     /// Token vocabulary, for the grounding check in `search`.
     pub vocab: Vec<String>,
     /// char n-gram -> idf. Ordered; the CSR is renumbered to match.
-    pub ngrams: BTreeMap<String, f32>,
+    pub ngrams: BTreeMap<String, f64>,
     /// CSR of the L2-normalised tf-idf matrix, columns in `ngrams` order.
     pub indptr: Vec<u32>,
     pub indices: Vec<u32>,
-    pub data: Vec<f32>,
+    pub data: Vec<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +117,7 @@ pub fn serialize(m: &LexModel) -> Vec<u8> {
         b.extend_from_slice(bytemuck::cast_slice(&v));
     });
     push(&mut body, sec::BM25_IDF, &|b| {
-        let v: Vec<f32> = m.bm25.values().map(|(_, idf)| *idf).collect();
+        let v: Vec<f64> = m.bm25.values().map(|(_, idf)| *idf).collect();
         b.extend_from_slice(bytemuck::cast_slice(&v));
     });
     push(&mut body, sec::BM25_POSTINGS, &|b| {
@@ -132,15 +137,29 @@ pub fn serialize(m: &LexModel) -> Vec<u8> {
     push(&mut body, sec::VOCAB, &|b| write_str_table(b, m.vocab.iter()));
     push(&mut body, sec::NGRAMS, &|b| write_str_table(b, m.ngrams.keys()));
     push(&mut body, sec::TFIDF_IDF, &|b| {
-        let v: Vec<f32> = m.ngrams.values().copied().collect();
+        let v: Vec<f64> = m.ngrams.values().copied().collect();
         b.extend_from_slice(bytemuck::cast_slice(&v));
     });
     push(&mut body, sec::CSR, &|b| {
         b.extend_from_slice(bytemuck::cast_slice(&m.indptr));
         b.extend_from_slice(bytemuck::cast_slice(&m.indices));
+        // indptr and indices are u32; `data` is f64 and bytemuck checks the
+        // POINTER's alignment even for an empty slice. With an odd combined
+        // count the f64 slice would start 4 mod 8 and the cast would panic --
+        // which the empty model hit first, because 1 indptr entry and 0
+        // indices is exactly that case.
+        pad_to_8(b);
         b.extend_from_slice(bytemuck::cast_slice(&m.data));
     });
 
+    // Header layout, fixed. avgdl and nnz are 8 bytes and sit at 8-byte
+    // aligned offsets on purpose; the u32 fields are packed ahead of them so
+    // no padding is needed to get there.
+    //
+    //   0  magic 8   8  version   12 n_docs   16 n_bm25
+    //   20 n_vocab   24 n_ngrams  28 n_sections
+    //   32 avgdl f64            40 nnz u64
+    //   48 section table, N_SECTIONS x (offset u64, len u64)
     let mut out: Vec<u8> = Vec::with_capacity(HEADER_LEN + body.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
@@ -148,10 +167,9 @@ pub fn serialize(m: &LexModel) -> Vec<u8> {
     out.extend_from_slice(&(m.bm25.len() as u32).to_le_bytes());
     out.extend_from_slice(&(m.vocab.len() as u32).to_le_bytes());
     out.extend_from_slice(&(m.ngrams.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(N_SECTIONS as u32).to_le_bytes());
     out.extend_from_slice(&m.avgdl.to_le_bytes());
     out.extend_from_slice(&(m.indices.len() as u64).to_le_bytes());
-    out.extend_from_slice(&(N_SECTIONS as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
     for (off, len) in sections {
         out.extend_from_slice(&off.to_le_bytes());
         out.extend_from_slice(&len.to_le_bytes());
@@ -198,10 +216,28 @@ impl<'a> StrTable<'a> {
     }
 }
 
+/// Where a view's bytes live. A cached `.lex` is mapped; a fit that had no
+/// file to read -- the in-process fallback `_fit` performs when the cache is
+/// absent -- owns its buffer instead. Everything above this is identical.
+enum Backing {
+    Mapped(Mmap),
+    Owned(Vec<u8>),
+}
+
+impl std::ops::Deref for Backing {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Backing::Mapped(m) => m,
+            Backing::Owned(v) => v,
+        }
+    }
+}
+
 pub struct LexView {
-    map: Mmap,
+    map: Backing,
     pub n_docs: u32,
-    pub avgdl: f32,
+    pub avgdl: f64,
     n_bm25: usize,
     n_vocab: usize,
     n_ngrams: usize,
@@ -220,7 +256,16 @@ impl LexView {
     /// no ranking, and the caller's fallback is to refit.
     pub fn open(path: &Path, expect_docs: Option<u32>) -> Option<LexView> {
         let file = File::open(path).ok()?;
-        let map = unsafe { Mmap::map(&file).ok()? };
+        let map = Backing::Mapped(unsafe { Mmap::map(&file).ok()? });
+        Self::from_backing(map, expect_docs)
+    }
+
+    /// The same view over bytes already in memory.
+    pub fn from_bytes(bytes: Vec<u8>, expect_docs: Option<u32>) -> Option<LexView> {
+        Self::from_backing(Backing::Owned(bytes), expect_docs)
+    }
+
+    fn from_backing(map: Backing, expect_docs: Option<u32>) -> Option<LexView> {
         if map.len() < HEADER_LEN || &map[..8] != MAGIC {
             return None;
         }
@@ -236,11 +281,11 @@ impl LexView {
         let n_bm25 = u32_at(&map, 16) as usize;
         let n_vocab = u32_at(&map, 20) as usize;
         let n_ngrams = u32_at(&map, 24) as usize;
-        let avgdl = f32::from_le_bytes([map[28], map[29], map[30], map[31]]);
-        let nnz = u64::from_le_bytes(map[32..40].try_into().ok()?) as usize;
-        if u32_at(&map, 40) as usize != N_SECTIONS {
+        if u32_at(&map, 28) as usize != N_SECTIONS {
             return None;
         }
+        let avgdl = f64::from_le_bytes(map[32..40].try_into().ok()?);
+        let nnz = u64::from_le_bytes(map[40..48].try_into().ok()?) as usize;
         let mut sections = [(0u64, 0u64); N_SECTIONS];
         for (i, s) in sections.iter_mut().enumerate() {
             let base = 48 + i * 16;
@@ -274,7 +319,7 @@ impl LexView {
     pub fn bm25_df(&self) -> &[u32] {
         bytemuck::cast_slice(self.bytes(sec::BM25_DF))
     }
-    pub fn bm25_idf(&self) -> &[f32] {
+    pub fn bm25_idf(&self) -> &[f64] {
         bytemuck::cast_slice(self.bytes(sec::BM25_IDF))
     }
     /// (indptr, flat pairs) -- postings for term `t` are
@@ -289,18 +334,21 @@ impl LexView {
     pub fn ngrams(&self) -> StrTable<'_> {
         self.table(sec::NGRAMS, self.n_ngrams)
     }
-    pub fn tfidf_idf(&self) -> &[f32] {
+    pub fn tfidf_idf(&self) -> &[f64] {
         bytemuck::cast_slice(self.bytes(sec::TFIDF_IDF))
     }
     /// (indptr, indices, data)
-    pub fn csr(&self) -> (&[u32], &[u32], &[f32]) {
+    pub fn csr(&self) -> (&[u32], &[u32], &[f64]) {
         let b = self.bytes(sec::CSR);
         let n_ptr = (self.n_docs as usize + 1) * 4;
         let n_idx = self.nnz * 4;
+        // Skip the padding the writer inserted to land `data` 8-byte aligned.
+        let head = n_ptr + n_idx;
+        let head = head + (8 - head % 8) % 8;
         (
             bytemuck::cast_slice(&b[..n_ptr]),
             bytemuck::cast_slice(&b[n_ptr..n_ptr + n_idx]),
-            bytemuck::cast_slice(&b[n_ptr + n_idx..n_ptr + n_idx * 2]),
+            bytemuck::cast_slice(&b[head..head + self.nnz * 8]),
         )
     }
 }
@@ -311,12 +359,12 @@ mod tests {
 
     fn sample() -> LexModel {
         let mut bm25 = BTreeMap::new();
-        bm25.insert("alpha".to_string(), (2u32, 0.51f32));
-        bm25.insert("beta".to_string(), (1u32, 1.20f32));
+        bm25.insert("alpha".to_string(), (2u32, 0.51f64));
+        bm25.insert("beta".to_string(), (1u32, 1.20f64));
         let mut ngrams = BTreeMap::new();
-        ngrams.insert(" al".to_string(), 1.4f32);
-        ngrams.insert(" be".to_string(), 1.9f32);
-        ngrams.insert("lph".to_string(), 2.1f32);
+        ngrams.insert(" al".to_string(), 1.4f64);
+        ngrams.insert(" be".to_string(), 1.9f64);
+        ngrams.insert("lph".to_string(), 2.1f64);
         LexModel {
             n_docs: 3,
             avgdl: 4.0,
@@ -422,6 +470,30 @@ mod tests {
         assert!(v.vocab().is_empty());
         assert_eq!(v.csr().1.len(), 0);
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn an_odd_csr_head_still_yields_an_aligned_data_slice() {
+        // indptr + indices are u32 and `data` is f64. With an odd combined
+        // count the f64 slice starts 4 mod 8, and bytemuck checks the pointer
+        // even when the slice is empty. Both parities are exercised.
+        for nnz in [0usize, 1, 2, 3] {
+            let m = LexModel {
+                n_docs: 2,
+                indptr: vec![0, nnz as u32, nnz as u32],
+                indices: (0..nnz as u32).collect(),
+                data: vec![0.25f64; nnz],
+                ..Default::default()
+            };
+            let p = write_tmp(&serialize(&m), &format!("csr{nnz}"));
+            let v = LexView::open(&p, Some(2)).expect("should open");
+            let (ip, ix, dt) = v.csr();
+            assert_eq!(ip.len(), 3);
+            assert_eq!(ix.len(), nnz);
+            assert_eq!(dt.len(), nnz);
+            assert!(dt.iter().all(|x| *x == 0.25));
+            let _ = std::fs::remove_file(&p);
+        }
     }
 
     #[test]

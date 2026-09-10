@@ -41,6 +41,7 @@ floors were fitted against, which is the one thing this module may not do.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import threading
 from pathlib import Path
@@ -175,5 +176,21 @@ def rerank_scores(pairs: list[tuple[str, str]], *, model_name: str) -> list[floa
 
 
 def reset_sessions() -> None:
-    """Drop loaded sessions. For tests."""
+    """Drop loaded sessions. For tests, and at interpreter shutdown."""
     _SESSIONS.clear()
+
+
+# onnxruntime holds native state that its own static destructors also touch, so
+# letting an InferenceSession be collected during interpreter teardown is a
+# race. Measured: a process holding BOTH an ORT session and scipy/sklearn's
+# OpenMP runtime aborted at exit roughly once in five runs --
+#
+#     libc++abi: terminating due to uncaught exception of type
+#     std::__1::system_error: recursive_mutex lock failed: Invalid argument
+#
+# -- with SIGABRT, which is indistinguishable from a crash to anything reading
+# the exit code. Releasing the sessions while the interpreter is still healthy
+# closes the window. Nothing under src/ imports sklearn any more, so a user's
+# process never holds both, but `loci mcp` is long-lived and should hand its
+# native state back deliberately rather than at teardown.
+atexit.register(reset_sessions)

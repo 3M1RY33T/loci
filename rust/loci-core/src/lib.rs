@@ -5,6 +5,7 @@
 //! types; `loci-py` holds every conversion.
 
 pub mod text;
+pub mod lexical;
 pub mod store;
 pub mod walk;
 
