@@ -4,6 +4,8 @@
 //! can be lifted into a standalone binary later without unpicking Python
 //! types; `loci-py` holds every conversion.
 
+pub mod text;
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
