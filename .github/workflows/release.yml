@@ -127,16 +127,26 @@ jobs:
         shell: bash
         run: |
           set -e
-          # docs/, evals/, ROADMAP.md and parity/ are all excluded, and .superpowers
-          # put 500KB of review diffs into the 0.1.0 sdist the one time nobody looked.
-          if tar tzf dist/*.tar.gz | grep -E "docs/|evals/|parity/|target/|ROADMAP|\.superpowers"; then
+          # Listed ONCE into a file, and every check reads the file.
+          #
+          # `tar tzf ... | grep -q` looks obvious and is a trap: grep -q exits
+          # on the first match, tar then writes into a closed pipe and dies on
+          # EPIPE, and this runner uses `bash -e -o pipefail`, so tar's death
+          # becomes the step's. It failed with `tar: stdout: write error` and
+          # exit 2 -- which reads exactly like the sdist being dirty, and is
+          # not. Locally, without pipefail, the same line passes.
+          tar tzf dist/*.tar.gz > /tmp/sdist-list.txt
+          # docs/, evals/, ROADMAP.md and parity/ are all excluded, and
+          # .superpowers put 500KB of review diffs into the 0.1.0 sdist the one
+          # time nobody looked.
+          if grep -E "docs/|evals/|parity/|target/|ROADMAP|\.superpowers" /tmp/sdist-list.txt; then
             echo "internal material in the sdist" >&2
             exit 1
           fi
           # It must also BUILD, since it is the fallback for any platform the
           # wheel matrix misses.
-          tar tzf dist/*.tar.gz | grep -q "Cargo.toml"
-          tar tzf dist/*.tar.gz | grep -q "rust/loci-core/src/lib.rs"
+          grep -q "Cargo.toml" /tmp/sdist-list.txt
+          grep -q "rust/loci-core/src/lib.rs" /tmp/sdist-list.txt
           echo "sdist clean and complete"
 
       - uses: actions/upload-artifact@v4
@@ -163,13 +173,15 @@ jobs:
           set -e
           ls -la staged
           python -m twine check staged/*
+          # Listed once, for the same EPIPE reason as the sdist job above.
+          ls staged/*.whl > /tmp/wheels.txt
           # Matched by ARCHITECTURE, not by the full platform tag. The macOS
           # minimum version in that tag moves with the toolchain, and pinning
           # it would fail this job for a reason that has nothing to do with
           # loci.
           for want in "macosx.*arm64" "macosx.*x86_64" "manylinux.*x86_64" \
                       "manylinux.*aarch64" "win_amd64"; do
-            ls staged/*.whl | grep -qE "$want" \
+            grep -qE "$want" /tmp/wheels.txt \
               || { echo "missing wheel matching /$want/" >&2; exit 1; }
           done
           test -n "$(ls staged/*.tar.gz)"
