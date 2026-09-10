@@ -308,6 +308,34 @@ def embeddings_status() -> list[str] | None:
     return stale
 
 
+def rankers_status() -> list[str]:
+    """Scopes whose lexical rankers are missing or fitted over other chunks.
+
+    Same failure as `embeddings_status`, and the same reason to surface it: a
+    query that finds no usable `.lex` refits in process, silently, and costs
+    ~1.5s per scope every invocation instead of ~0.03ms. Nothing errors, so
+    nothing says why the tool got slow.
+
+    It is the shape an UPGRADE takes. 0.5.0 wrote `rankers/<id>.joblib`; 0.6.0
+    reads `rankers/<id>.lex` and ignores the old file, so every install that
+    predates it is in exactly this state until `loci index` runs.
+    """
+    from loci._core import Lex
+
+    from .paths import LEX_SUFFIX, rankers_dir
+
+    store = load_episodes()
+    names = store.get("scopes", {})
+    d = rankers_dir()
+    stale = []
+    for sid, chunks in (store.get("chunks") or {}).items():
+        if not chunks:
+            continue
+        if Lex.open(str(d / f"{sid}{LEX_SUFFIX}"), len(chunks)) is None:
+            stale.append(names.get(sid, sid))
+    return stale
+
+
 SYMBOL_PREFIX = "sym::"
 MAX_SYMBOLS = 30000
 

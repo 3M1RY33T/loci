@@ -72,12 +72,17 @@ all `loci`. PyPI's `loci` is an unrelated outlier-detection package abandoned in
 2018 — the same split as `python-dateutil` installing as `dateutil`.
 
 ```bash
-pipx install loci-mem                 # routing + lexical search, ~3 small deps
+pipx install loci-mem                 # routing + lexical search, one dependency
 pipx install 'loci-mem[all]'          # + graphify, local embeddings, MCP server
 ```
 
-The base install pulls `rank-bm25`, `scikit-learn`, `numpy` and `joblib`. No
-torch, no vector database, no model download unless you ask for one.
+The base install pulls **`numpy`, and nothing else**. Routing, BM25 and the
+char-gram matrix are a compiled Rust extension as of 0.6.0, so `scikit-learn`
+(and `scipy` behind it), `rank-bm25` and `joblib` are gone. No torch, no vector
+database, no model download unless you ask for one.
+
+Wheels are published for macOS, Linux and Windows; installing from the sdist
+builds from source and needs a Rust toolchain (1.75+).
 
 | extra | adds |
 |---|---|
@@ -754,7 +759,7 @@ indexes would turn the cheap question into the expensive one.
 │                           -> {scope: node_df} map
 ├── episodes.json           the episode store: chunks   index
 │                           verbatim, already redacted
-├── rankers/<scope>.joblib  fitted BM25 + char-gram     index
+├── rankers/<scope>.lex     fitted BM25 + char-gram     index
 ├── embeddings.npz          chunk and symbol vectors    embed
 ├── .symbols-<scope>.json   symbol labels, in the       embed
 │                           order embeddings.npz has

@@ -695,12 +695,12 @@ def cmd_skill(args) -> int:
 
 def cmd_doctor(args) -> int:
     from .doctor import check, group_report, render
-    from .index import embeddings_status, load_episodes
+    from .index import embeddings_status, load_episodes, rankers_status
     from .scopes import load_scopes
     index = _load_index_or_die()
     scopes = load_scopes()
     healths = check(index, load_episodes(), scopes)
-    print(render(healths, embeddings_status()))
+    print(render(healths, embeddings_status(), rankers_status()))
     # Coverage is one gap; who a scope belongs to and what that does to routing
     # is the other, and no other command reports the second without being asked.
     lines = group_report(scopes, _policy_or_die())
