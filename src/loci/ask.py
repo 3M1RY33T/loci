@@ -287,6 +287,17 @@ def ask(question: str, *, cwd: str | Path | None = None, budget: int = 2000,
             # The work is not wasted: `_fit` and the model are cached, so the
             # threads below find everything built. It is the same total cost,
             # serialized only for the first question in the process.
+            #
+            # Both named causes are now gone: the sentence-transformer was
+            # replaced by an onnxruntime session behind a double-checked lock
+            # in `embed`, and the joblib rankers by an mmap that has no
+            # construction to race. Measured 2026-09-10, 40 multi-scope runs
+            # with this disabled came back clean.
+            #
+            # It stays anyway. Forty runs is not the evidence needed to retire
+            # a guard against an intermittent native crash, and the guard costs
+            # nothing but ordering. Remove it when something needs the latency
+            # back, with a run long enough to mean it.
             try:
                 from .backends import episodes as _ep
                 _ep.warm_up(store, list(selected))
