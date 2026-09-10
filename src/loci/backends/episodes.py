@@ -446,8 +446,28 @@ def fit(chunks: list[Chunk]):
     bm25 = BM25Okapi(tokenized) if texts else None
     vec = mat = None
     if texts:
+        # max_features is deliberately absent, and its removal is the only
+        # deliberate behaviour change in the port.
+        #
+        # `max_features=60000` kept the 60,000 most frequent n-grams -- but the
+        # cut lands where corpus counts are 1 to 5, and tens of thousands of
+        # n-grams share those counts. sklearn fills the last slots from that
+        # tied pool with `(-tfs[mask]).argsort()`, and numpy's default sort is
+        # not stable, so WHICH of them survived was decided by sort internals.
+        # Measured on this corpus: 24,281 of loci's 68,418 n-grams tie at
+        # count 1, so roughly 26% of its retained vocabulary was arbitrary.
+        #
+        # That is not a specification anything can be ported against. Breaking
+        # the tie lexicographically instead -- the obvious deterministic choice
+        # -- moved char-gram scores by up to 2.6e-02 and reordered the top-5
+        # for 15 of 39 corpus questions, which is a ranking change, not noise.
+        #
+        # Removing the cap removes the ambiguity at its source. It costs almost
+        # nothing because the terms it dropped were singletons, which add
+        # columns but almost no non-zero entries: measured at +5% matrix bytes
+        # for delroy and odysseus, and no change in fit or query time.
         vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=1,
-                              max_features=60000, lowercase=True)
+                              lowercase=True)
         mat = vec.fit_transform(texts)
     return bm25, vec, mat, vocab
 
