@@ -290,10 +290,21 @@ def embeddings_status() -> list[str] | None:
     """
     import numpy as np
 
+    from . import embed
+
     f = embeddings_file()
     if not f.is_file():
         return None
     store = load_episodes()
+    if not embed.available():
+        # Vectors on disk, but nothing installed that can encode a query
+        # against them. Every scope is unusable, so every scope is reported --
+        # `render` names the fix. Before this, a base install did not degrade
+        # here, it raised ModuleNotFoundError out of `loci ask`.
+        names = store.get("scopes", {})
+        return sorted(names.get(sid, sid)
+                      for sid, chunks in (store.get("chunks") or {}).items()
+                      if chunks)
     try:
         z = np.load(f, allow_pickle=False)
     except Exception:

@@ -509,6 +509,13 @@ def _encode_query(text: str, model_name: str):
     if not model_name:
         return None
     from .. import embed
+    if not embed.available():
+        # Vectors on disk but no encoder installed. Degrade to lexical, which
+        # is what `_semantic` already does for absent or stale vectors -- the
+        # alternative is dying inside `loci ask` with an ImportError, which is
+        # what both 0.5.0 and 0.6.0 did until this. `doctor` reports it, so it
+        # is quiet rather than silent.
+        return None
     return embed.encode([text], model_name=model_name, is_query=True)[0]
 
 

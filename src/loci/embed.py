@@ -175,6 +175,21 @@ def rerank_scores(pairs: list[tuple[str, str]], *, model_name: str) -> list[floa
     return [float(x) for x in (logits[:, 0] if logits.ndim == 2 else logits.ravel())]
 
 
+def available() -> bool:
+    """Whether an encoder can actually be constructed.
+
+    The semantic tier is an optional extra, but a base install whose data
+    directory HAS vectors would load them with numpy and then die importing the
+    provider -- `ModuleNotFoundError: No module named 'onnxruntime'` out of
+    `loci ask`, exit 1, no answer. 0.5.0 had the same crash one import earlier,
+    on sentence_transformers; it survived because nobody ran a base install
+    against a store built with the extras.
+    """
+    import importlib.util
+    return all(importlib.util.find_spec(m) is not None
+               for m in ("onnxruntime", "tokenizers", "huggingface_hub"))
+
+
 def reset_sessions() -> None:
     """Drop loaded sessions. For tests, and at interpreter shutdown."""
     _SESSIONS.clear()

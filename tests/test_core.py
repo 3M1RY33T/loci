@@ -5489,3 +5489,39 @@ def test_a_vendored_repo_does_not_inherit_its_containers_provenance(
     assert "mono-vendored" not in conf.eligible, \
         "the remedy `doctor` names does not keep the vendor out"
     assert {"mine", "mine2", "mono"} <= conf.eligible
+
+
+def test_vectors_without_an_encoder_degrade_instead_of_raising(monkeypatch):
+    """A base install whose data directory HAS vectors must fall back to
+    lexical, not die.
+
+    numpy is a base dependency, so `_embeddings()` loads embeddings.npz
+    happily; the encoder is an extra. Both 0.5.0 and 0.6.0 then raised
+    ModuleNotFoundError out of `loci ask` -- exit 1, no answer, on the primary
+    command. It survived because nobody ran a base install against a store
+    built with the extras.
+
+    The tier is optional by design, and `_semantic` already degrades for absent
+    or stale vectors. This makes a missing encoder the same kind of absence.
+    """
+    import loci.embed as E
+    from loci.backends import episodes as ep
+
+    monkeypatch.setattr(E, "available", lambda: False)
+
+    def _boom(*a, **kw):  # pragma: no cover - must never be reached
+        raise AssertionError("encode() was called with no encoder installed")
+
+    monkeypatch.setattr(E, "encode", _boom)
+    assert ep._encode_query("anything", "BAAI/bge-small-en-v1.5") is None
+
+
+def test_doctor_names_the_missing_encoder(monkeypatch):
+    # Quiet, not silent: degrading without saying why is how a tool gets slow
+    # and wrong at once.
+    import loci.doctor as D
+
+    monkeypatch.setattr(D, "_encoder_available", lambda: False)
+    out = D.render([], stale=["alpha"])
+    assert "no encoder is installed" in out
+    assert "loci-mem[embeddings]" in out

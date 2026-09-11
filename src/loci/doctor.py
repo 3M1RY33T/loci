@@ -188,6 +188,14 @@ def group_report(scopes: list, policy) -> list[str]:
     return lines
 
 
+def _encoder_available() -> bool:
+    try:
+        from .embed import available
+        return available()
+    except Exception:
+        return False
+
+
 def render(healths: list[ScopeHealth], stale: list[str] | None = None,
            unfitted: list[str] | None = None) -> str:
     lines = [f"{'scope':<20} {'nodes':>8} {'tokens':>7} {'chunks':>7}  status",
@@ -206,6 +214,9 @@ def render(healths: list[ScopeHealth], stale: list[str] | None = None,
     elif stale:
         lines.append(f"STALE embeddings for {', '.join(stale)} - semantic search "
                      f"is silently off for those scopes; run `loci embed`")
+        if not _encoder_available():
+            lines.append("  ...and no encoder is installed at all: "
+                         "`pip install 'loci-mem[embeddings]'`")
     if unfitted:
         lines.append(f"NO lexical rankers for {', '.join(unfitted)} - every question "
                      f"there refits in process (~1.5s per scope, per invocation) "
